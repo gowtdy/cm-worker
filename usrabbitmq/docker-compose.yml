@@ -1,0 +1,13 @@
+services:
+  usrabbitmq:
+    image: rabbitmq:3-management
+    hostname: usrabbitmq
+    container_name: usrabbitmq
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:5672:5672"      # broker 使用的端口
+      - "0.0.0.0:15672:15672"    # 管理界面 http://localhost:15672/
+    environment:
+      - TZ=America/Los_Angeles
+    env_file:
+      - /home/aigc/data/env/.env_usrabbitmq
