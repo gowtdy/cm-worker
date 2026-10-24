@@ -10,4 +10,4 @@ services:
     environment:
       - TZ=America/Los_Angeles
     env_file:
-      - /home/aigc/data/env/.env_usrabbitmq
+      - /home/aigc/data/env/.env_usmqdb
