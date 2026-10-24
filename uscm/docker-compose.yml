@@ -1,0 +1,25 @@
+services:
+  uscm-server:
+    image: uscm:0.1
+    hostname: uscm-server
+    container_name: uscm-server
+    network_mode: host
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    environment:
+      - APP_PORT=3100
+      - WORKERS=30
+      - AIGC_UID=${AIGC_UID:-1001}
+      - AIGC_GID=${AIGC_GID:-1001}
+      - TZ=America/Los_Angeles
+    env_file:
+      - /home/aigc/data/env/.env_mqdb
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      - /home/aigc/data/aioutput/uscm-server-logs:/app/log
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    #tty: true
