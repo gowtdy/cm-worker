@@ -1,1 +1,1 @@
-docker stop usaivoicemq
+docker stop usrabbitmq
