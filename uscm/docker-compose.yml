@@ -15,7 +15,7 @@ services:
       - AIGC_GID=${AIGC_GID:-1001}
       - TZ=America/Los_Angeles
     env_file:
-      - /home/aigc/data/env/.env_mqdb
+      - /home/aigc/data/env/.env_usmqdb
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
