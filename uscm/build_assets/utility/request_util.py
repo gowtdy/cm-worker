@@ -12,7 +12,6 @@ from fastapi import Request
 from config.comm_config import get_white_list, get_limit_config
 from utility.module_enum import ModuleType, get_generate_action
 from utility.util import aiflow_hmac_signature
-from sql.mysql_db import get_api_user_by_email
 
 # 常量定义
 MAX_FREE_TRIES = 4
@@ -209,55 +208,6 @@ def validate_text_length(text: str, max_length: int = 500, reqid: str = "", logg
         'msg': 'ok',
         'reqid': reqid
     }
-
-def validate_entapi_user_auth(email, api_key, real_ip, reqid, logger):
-    """
-    验证API用户的认证和授权
-    
-    Args:
-        email: 用户邮箱
-        api_key: API密钥
-        real_ip: 用户IP地址
-        reqid: 请求ID
-        logger: 日志记录器
-        
-    Returns:
-        tuple: (ret_code, message, user_info)
-        - ret_code: 0表示成功，其他值表示失败
-        - message: 错误信息或成功信息
-        - user_info: 用户信息对象，失败时为None
-    """
-    ret = 0
-    msg = 'ok'
-    user = None
-    if len(email.strip()) == 0 or len(api_key.strip()) == 0:
-        ret = 1
-        msg = "Email or api_key is empty!"
-        logger.info(f'auth_entapi, ip:{real_ip}, email:{email}, msg:{msg}')
-        return ret, msg, user
-    
-    user = get_api_user_by_email(email)
-    if not user or not user.api_key or user.api_key.strip() != api_key.strip():
-        ret = 1
-        msg = 'api auth failed!'
-        logger.info(f'auth failed, reqid:{reqid}, ip:{real_ip}, email:{email}, api_key:{api_key}')
-        return ret, msg, user
-    
-    usable_firstday = user.usable_firstday
-    usable_lastday = user.usable_lastday
-    total_usable = user.total_usable
-    used_char_count = user.used_char_count
-    current_date = datetime.datetime.now().date()
-    
-    logger.info(f'entapi_tts, email:{email}, usable_firstday:{usable_firstday}, usable_lastday:{usable_lastday}, total_usable:{total_usable}, used_char_count:{used_char_count}, current_date:{current_date}')
-    
-    if used_char_count >= total_usable or usable_lastday < current_date:
-        ret = 5
-        msg = f'API authorization has expired or the number of characters used has exceeded the limit, please repurchase. '
-        logger.info(f'auth failed, reqid:{reqid}, ip:{real_ip}, email:{email}, msg:{msg}')
-        return ret, msg, user
-    
-    return 0, 'ok', user
 
 ALLOWED_GENDER = ['male', 'female', 'duet']
 def validate_gender(gender: str) -> bool:
