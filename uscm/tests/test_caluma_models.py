@@ -1,6 +1,10 @@
+import tempfile
 import unittest
+from pathlib import Path
 
+from utility import caluma_models
 from utility.caluma_models import _parse_caluma
+from utility.file_reloader import FileReloader
 
 
 SAMPLE = """models:
@@ -57,6 +61,18 @@ class ParseCalumaTest(unittest.TestCase):
 
     def test_empty_text(self):
         self.assertEqual(_parse_caluma(""), {})
+
+
+class GetCommonModelTest(unittest.TestCase):
+    def test_lookup_and_miss(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "m.yaml"
+            p.write_text(SAMPLE)
+            r = FileReloader(interval=60)
+            r.register(caluma_models.MODELS_NAME, str(p), caluma_models._parse_caluma)
+            m = caluma_models.get_common_model("english", "voice-lady-female", reloader=r)
+            self.assertEqual(m["display"], "Female-Jessie(Voice Lady)")
+            self.assertIsNone(caluma_models.get_common_model("english", "nope", reloader=r))  # Review Focus #3
 
 
 if __name__ == "__main__":
