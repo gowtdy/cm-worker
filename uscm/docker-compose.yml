@@ -20,7 +20,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
       - /home/aigc/data/aioutput/uscm-server-logs:/app/log
-      - /home/aigc/models/aivoice_models/cloned_models/common_models/caluma_common_models.yaml:/app/models/caluma_common_models.yaml
+      - /home/aigc/models/aivoice_models/cloned_models/common_models:/app/models/aivoice_models
     extra_hosts:
       - "host.docker.internal:host-gateway"
     #tty: true
