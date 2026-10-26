@@ -59,7 +59,15 @@ class FileReloader:
             logger.exception("file_reloader load failed, name:%s path:%s", entry.name, entry.path)
 
     def _poll_loop(self) -> None:
-        pass
+        while True:
+            for entry in list(self._registry.values()):
+                try:
+                    if os.stat(entry.path).st_mtime_ns != entry.last_mtime_ns:
+                        self._load(entry)
+                except Exception:
+                    logger.exception(
+                        "file_reloader poll failed, name:%s path:%s", entry.name, entry.path)
+            time.sleep(self.interval)
 
 
 default_reloader = FileReloader()
