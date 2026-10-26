@@ -320,13 +320,6 @@ async def tts_endpoint(request: Request):
     #logger.info(logmsg)
     return res
 
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时的初始化操作"""
-    logger_entapi_tts.info('load common cloned models for entapi')
-    load_common_cloned_models()
-    logger_entapi_tts.info('load common cloned models for entapi done')
-
 #if __name__ == "__main__":
 #    import uvicorn
 
