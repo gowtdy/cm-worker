@@ -16,6 +16,22 @@ class _FileEntry:
         self.parse_fn = parse_fn
         self.last_mtime_ns = None
         self.value = None
+        self.failed = False
+
+
+def _read_text(path: str) -> str:
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _read_consistent(path: str):
+    """返回文件内容；若读取期间 mtime 变化（可能读到了半写入）返回 None。"""
+    before = os.stat(path).st_mtime_ns
+    text = _read_text(path)
+    after = os.stat(path).st_mtime_ns
+    if before != after:
+        return None
+    return text
 
 
 class FileReloader:
@@ -50,13 +66,19 @@ class FileReloader:
 
     def _load(self, entry: _FileEntry) -> None:
         try:
-            mtime = os.stat(entry.path).st_mtime_ns
-            with open(entry.path, encoding="utf-8") as f:
-                text = f.read()
+            before = os.stat(entry.path).st_mtime_ns
+            text = _read_consistent(entry.path)
+            if text is None:
+                raise OSError("file changed during read")
             entry.value = entry.parse_fn(text)
-            entry.last_mtime_ns = mtime
+            entry.last_mtime_ns = before
+            entry.failed = False
         except Exception:
-            logger.exception("file_reloader load failed, name:%s path:%s", entry.name, entry.path)
+            if entry.failed:
+                logger.debug("file_reloader load failed (retrying): name=%s path=%s", entry.name, entry.path)
+            else:
+                logger.exception("file_reloader load failed: name=%s path=%s", entry.name, entry.path)
+                entry.failed = True
 
     def _poll_loop(self) -> None:
         while True:
@@ -65,8 +87,11 @@ class FileReloader:
                     if os.stat(entry.path).st_mtime_ns != entry.last_mtime_ns:
                         self._load(entry)
                 except Exception:
-                    logger.exception(
-                        "file_reloader poll failed, name:%s path:%s", entry.name, entry.path)
+                    if entry.failed:
+                        logger.debug("file_reloader poll failed (retrying): name=%s path=%s", entry.name, entry.path)
+                    else:
+                        logger.exception("file_reloader poll failed: name=%s path=%s", entry.name, entry.path)
+                        entry.failed = True
             time.sleep(self.interval)
 
 

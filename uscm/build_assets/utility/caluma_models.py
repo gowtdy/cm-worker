@@ -13,12 +13,25 @@ MODELS_PATH = "/app/models/aivoice_models/caluma_common_models.yaml"
 
 
 def _parse_caluma(text: str) -> dict:
-    """把 caluma YAML 的 models.* 展平为 {catid:name: entry}。"""
+    """把 caluma YAML 的 models.* 展平为 {catid:name: entry}。
+
+    单个条目不是 dict、或缺少 catid/name 时跳过并记 warning，不拖累整份文件。
+    """
     data = yaml.safe_load(text) or {}
     result = {}
     for cat_models in (data.get("models") or {}).values():
+        if not isinstance(cat_models, list):
+            continue
         for item in cat_models:
-            result[f"{item['catid']}:{item['name']}"] = item
+            if not isinstance(item, dict):
+                logger.warning("caluma model entry is not a dict, skipped: %r", item)
+                continue
+            catid = item.get("catid")
+            name = item.get("name")
+            if not catid or not name:
+                logger.warning("caluma model entry missing catid/name, skipped: %r", item)
+                continue
+            result[f"{catid}:{name}"] = item
     return result
 
 

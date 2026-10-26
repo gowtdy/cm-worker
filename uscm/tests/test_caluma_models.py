@@ -62,6 +62,17 @@ class ParseCalumaTest(unittest.TestCase):
     def test_empty_text(self):
         self.assertEqual(_parse_caluma(""), {})
 
+    def test_bad_entry_skipped(self):
+        y = """models:
+  english:
+    - {id: 0, name: good, catid: english, display: ok}
+    - {id: 1, display: missing-name}
+    - not-a-dict
+"""
+        d = _parse_caluma(y)
+        self.assertEqual(len(d), 1)
+        self.assertIn("english:good", d)
+
 
 class GetCommonModelTest(unittest.TestCase):
     def test_lookup_and_miss(self):
