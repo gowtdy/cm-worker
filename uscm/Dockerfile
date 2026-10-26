@@ -10,10 +10,10 @@ RUN mkdir -p /app && rm -rf /app/*
 COPY build_assets/ /app/
 
 # 创建 log 目录并设置权限
-RUN mkdir -p /app/log
+RUN mkdir -p /app/log /app/models
 
 RUN chmod -R 755 /app
-RUN chmod -R 777 /app/log
+RUN chmod -R 777 /app/log /app/models
 
 # 给脚本执行权限
 RUN chmod +x /app/start_uscm.sh
