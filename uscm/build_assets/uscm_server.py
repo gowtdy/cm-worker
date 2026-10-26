@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request, Query
 
 from utility.util import gen_reqid, gen_res_dict, map_lang_abbrev
 from utility.encrypt_util import encrypt_url
-from utility.request_util import get_real_ip, validate_request, validate_signature, validate_text_length, validate_entapi_user_auth, \
+from utility.request_util import get_real_ip, validate_request, validate_signature, validate_text_length, \
     validate_gender, validate_audio_url
 from utility.module_enum import ModuleType
 
