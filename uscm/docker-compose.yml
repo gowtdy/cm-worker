@@ -1,6 +1,6 @@
 services:
   uscm-server:
-    image: uscm:0.1
+    image: uscm-image:0.1
     hostname: uscm-server
     container_name: uscm-server
     network_mode: host
