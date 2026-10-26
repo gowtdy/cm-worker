@@ -10,7 +10,7 @@ services:
       - 1.1.1.1
     environment:
       - APP_PORT=3100
-      - WORKERS=30
+      - WORKERS=2
       - AIGC_UID=${AIGC_UID:-1001}
       - AIGC_GID=${AIGC_GID:-1001}
       - TZ=America/Los_Angeles
