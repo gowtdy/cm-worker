@@ -154,12 +154,12 @@ async def tts_endpoint(request: Request):
             logger.warning(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} parse_speed_volume_params failed: {sv_err}')
             return gen_res_dict(1, sv_err)
         gpu_gen_indextts.delay(
-            modelname, text, modelcat, userid, t, reqid, output_format, modellang, email,
+            modelname, text, modelcat, userid, reqid, output_format, modellang, email,
             emo_type=emo_type, emo_alpha=emo_alpha, speed=speed, volume_db=volume_db,
             )
     else :
         modellang = map_lang_abbrev(modellang, modellang)
-        gpu_gen_tts.delay(modelname, text, modelcat, userid, t, reqid, output_format, modellang, email)
+        gpu_gen_tts.delay(modelname, text, modelcat, userid, 1, reqid, output_format, modellang, email)
 
     timeout: int = 180
     interval: float = 1.0
