@@ -20,5 +20,5 @@ celery_app = Celery(
 )
 
 celery_app.conf.task_routes = {
-    'task_gen_indextts': {'queue': 'us_indextts_tasks'}
+    'task_gen_indextts': {'queue': 'us_indextts_queue'}
 }
