@@ -194,7 +194,7 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, reqid='0', output_format
         ret = 1
         msg = f'modelname:{modelname} is invalid, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
         logger.warning(f'msg: {msg}')
-        #(task_id, msg, TaskStatus.FAILED)
+        #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
         return gen_res_dict(ret, msg)
 
     if (len(text.strip()) == 0):
