@@ -10,6 +10,7 @@ import urllib.request
 
 from fastapi import Request
 from config.comm_config import get_white_list, get_limit_config, ALLOWED_DOMAINS
+from utility.auth_session import authenticate_request
 from utility.module_enum import ModuleType, get_generate_action
 from utility.util import aiflow_hmac_signature
 
@@ -74,12 +75,12 @@ def get_real_ip(request: Request):
         real_ip = request.headers['x-real-ip']
     return real_ip
 
-def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: str, email: str, subscript: int, today: str, userid: int, module: ModuleType = ModuleType.TTS, domain: str = "") -> tuple[int, str]:
+def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: str, email: str, subscript: int, today: str, userid: int, module: ModuleType = ModuleType.TTS, domain: str = "", request: Request = None) -> tuple[int, str]:
     """
     验证请求的合法性
 
     Args:
-        request: FastAPI请求对象
+        request: FastAPI请求对象（caluma.ai 登录态校验需要读 cookie）
         reqid: 请求ID
         email: 用户邮箱
         subscript: 订阅状态
@@ -99,24 +100,36 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
         logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} subscript:{subscript} refer:{referer}, msg: {msg}')
         return ret, msg
 
+    # 用户如果登录，校验登录状态
+    if email and domain == "caluma.ai":
+        session, reason = authenticate_request(request, domain, logger=logger)
+        if session is None or session.email != email:
+            ret = 3
+            msg = 'Auth failed, please contact us!'
+            mismatch = session is not None and session.email != email
+            logger.warning(
+                f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} '
+                f'subscript:{subscript} refer:{referer}, '
+                f'reason:{"email_mismatch" if mismatch else reason}, msg: {msg}'
+            )
+            return ret, msg
+
+    day_count = 0
+    month_count = 0
     if real_ip != "":
         white_list = get_white_list()
         if first_ip not in white_list:
             day_count, month_count = _fetch_action_counts(logger, reqid, first_ip, email, userid, domain, module)
             logger.debug(f'11 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count}')
-            if subscript != 1:
-                month_limit = get_limit_config().get('month_count', 15)
-                logger.debug(f'22 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count} month_limit:{month_limit}')
-                if day_count > MAX_FREE_TRIES or month_count > month_limit:
-                    ret = 2
-                    msg = 'You have exceeded the free usage limit for today or last month.'
-                    logger.info(f'33 reqid:{reqid} ip:{real_ip} email:{email} subscript:{subscript} referer:{referer}, day_count:{day_count} month_count:{month_count} exceeded.')
-                    return ret, msg
-
-    if referer == "Not provided":
-        ret = 4
-        msg = "Need api? Please mail us!"
-        logger.info(f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, email:{email}, subscript:{subscript}, refer:{referer}')
+            # todo: 订阅状态校验， 以及相应的校验策略。
+            #if subscript != 1:
+            #    month_limit = get_limit_config().get('month_count', 15)
+            #    logger.debug(f'22 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count} month_limit:{month_limit}')
+            #    if day_count > MAX_FREE_TRIES or month_count > month_limit:
+            #        ret = 2
+            #        msg = 'You have exceeded the free usage limit for today or last month.'
+            #        logger.info(f'33 reqid:{reqid} ip:{real_ip} email:{email} subscript:{subscript} referer:{referer}, day_count:{day_count} month_count:{month_count} exceeded.')
+            #        return ret, msg
 
     return ret, msg
 
