@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 
 from fastapi import Request
-from config.comm_config import get_white_list, get_limit_config
+from config.comm_config import get_white_list, get_limit_config, ALLOWED_DOMAINS
 from utility.module_enum import ModuleType, get_generate_action
 from utility.util import aiflow_hmac_signature
 
@@ -93,10 +93,10 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
     msg = "ok"
     first_ip = real_ip.split(',')[0].strip() if real_ip else ""
     domain = domain.strip() if isinstance(domain, str) else str(domain or "").strip()
-    if not domain:
+    if domain not in ALLOWED_DOMAINS:
         ret = 1
         msg = f'domain is invalid, reqid:{reqid}!'
-        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} subscript:{subscript} refer:{referer}, msg: {msg}')
+        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} subscript:{subscript} refer:{referer}, msg: {msg}')
         return ret, msg
 
     if real_ip != "":
