@@ -185,7 +185,7 @@ def save_audio_file(sample_rate, audio, output_format, base_output_path, filenam
     logger.info(f'save_audio_file after write, output_path:{output_path}, output_file:{output_file}')
     return output_path, output_file
 
-@celery_app.task(name='gpu_indextts25_tasks.gpu_gen_indextts25')
+@celery_app.task(name='task_gen_indextts')
 @cuda_error_handler(logger)
 def gpu_gen_tts(modelname, text, modelcat='', userid=0, t=1, reqid='0', output_format=DEFAULT_FORMAT, modellang='en', email='',
                 emo_type='default', emo_alpha=1.0, speed=1.0, volume_db=0.0):
