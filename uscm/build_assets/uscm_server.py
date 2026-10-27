@@ -19,7 +19,7 @@ from utility.module_enum import ModuleType
 from utility.allused_voicemodels import register_allused_voicemodels, get_common_model
 from utility.voice_settings import parse_emo_params, parse_speed_volume_params
 
-from tasks_interface import gpu_gen_tts, gpu_gen_indextts25
+from tasks_interface import gpu_gen_tts, gpu_gen_indextts
 
 app = FastAPI()
 
@@ -153,7 +153,7 @@ async def tts_endpoint(request: Request):
         if not ok2:
             logger.warning(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} parse_speed_volume_params failed: {sv_err}')
             return gen_res_dict(1, sv_err)
-        gpu_gen_indextts25.delay(
+        gpu_gen_indextts.delay(
             modelname, text, modelcat, userid, t, reqid, output_format, modellang, email,
             emo_type=emo_type, emo_alpha=emo_alpha, speed=speed, volume_db=volume_db,
             )
