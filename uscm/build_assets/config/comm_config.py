@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+
+DEFAULT_USER_FIRST_IP = "100.100.100.100"
+
 def get_white_list() :
     white_list = []
     return white_list
