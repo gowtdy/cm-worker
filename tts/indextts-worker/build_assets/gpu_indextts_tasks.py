@@ -187,7 +187,7 @@ def save_audio_file(sample_rate, audio, output_format, base_output_path, filenam
 
 @celery_app.task(name='task_gen_indextts')
 @cuda_error_handler(logger)
-def gpu_gen_tts(modelname, text, modelcat='', userid=0, t=1, reqid='0', output_format=DEFAULT_FORMAT, modellang='en', email='',
+def gpu_gen_tts(modelname, text, modelcat='', userid=0, reqid='0', output_format=DEFAULT_FORMAT, modellang='en', email='',
                 emo_type='default', emo_alpha=1.0, speed=1.0, volume_db=0.0):
     isEapi = str(reqid).endswith('.eapi')
     task_id = reqid
@@ -251,19 +251,8 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, t=1, reqid='0', output_f
 
     try:
         model_file_prefix = modelname
-        if t == 1 :
-            # 公用模型
-            model_path = f'models/service_model/common_models/{modelcat}/common_model_{modelname}'
-        elif t == 2 :
-            # 用户私有模型
-            model_path = f'models/service_model/user_models/user{userid}/model_user{userid}_{modelname}'
-            model_file_prefix = f'user{userid}_{modelname}'
-        else :
-            ret = 1
-            msg = f't:{t} is invalid, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
-            logger.warning(f'msg: {msg}')
-            update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-            return gen_res_dict(ret, msg)
+        # 公用模型
+        model_path = f'models/service_model/common_models/{modelcat}/common_model_{modelname}'
 
         if not os.path.exists(model_path) :
             ret = 1
