@@ -1,0 +1,1 @@
+docker build -t indextts-worker:1.3 -f Dockerfile .
