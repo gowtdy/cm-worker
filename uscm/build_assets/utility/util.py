@@ -13,7 +13,7 @@ def gen_reqid(uid, timestamp):
     else:
         uid_hash = hash(str(uid)) & 0xFFFFFFFF
     seed = np.random.randint(low=1, high=100)
-    id = ((int(uid_hash<<10) ^ int(timestamp)) << 2) | int(seed) 
+    id = ((int(uid_hash<<10) ^ int(timestamp)) << 3) | int(seed) 
     #print(f'id:{id}, userid:{userid}, timestamp:{timestamp}')
     return id
 
