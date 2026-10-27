@@ -120,7 +120,7 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
 
     return ret, msg
 
-def validate_signature(logger: logging.Logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, subscript, referer, module: ModuleType = ModuleType.TTS):
+def validate_signature(logger: logging.Logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, module: ModuleType = ModuleType.TTS):
     """
     验证请求签名的有效性
     
@@ -155,17 +155,17 @@ def validate_signature(logger: logging.Logger, timestamp, signature, text, datet
         ret = 3 # 权限认证失败
         msg = f'Auth failed, please contact us!'
         logger.info(f'validate_signature22 diff time:{abs(current_time - timestamp)}, {datetime} reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, text:{text}' \
-            f'email:{email}, subscript:{subscript}, refer:{referer}, Signature expired,current time:{current_time}, tstamp({timestamp})')
+            f'email:{email}, Signature expired,current time:{current_time}, tstamp({timestamp})')
         return ret, msg
 
     server_sign = aiflow_hmac_signature(text, timestamp, module)
     logger.info(f'validate_signature33, {datetime} reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, text:{text},' \
-        f'email:{email}, subscript:{subscript}, refer:{referer}, server_sign:{server_sign}, signature:{signature}')
+        f'email:{email}, server_sign:{server_sign}, signature:{signature}')
     if not server_sign or not signature or not hmac.compare_digest(signature, server_sign):
         ret = 3 # 权限认证失败
         msg = f'Auth failed, please contact us!'
         logger.info(f'validate_signature44, {datetime} reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, text:{text}' \
-            f'email:{email}, subscript:{subscript}, refer:{referer}, Invalid signature, timestamp:{timestamp},'  \
+            f'email:{email}, Invalid signature, timestamp:{timestamp},'  \
             f'client signature:{signature}, server signature:{server_sign}')
         return ret, msg
     
