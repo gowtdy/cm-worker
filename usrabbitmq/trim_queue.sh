@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Trim a RabbitMQ queue: drop oldest ready messages, keep the newest N.
-# Default: container aivoicemq, queue gpu_indextts25_tasks, keep 50.
+# Default: container usrabbitmq, queue us_indextts_queue, keep 50.
 #
 # Usage:
-#   ./trim_queue.sh                          # keep last 50 of gpu_indextts25_tasks
-#   ./trim_queue.sh gpu_indextts25_tasks 50
-#   ./trim_queue.sh gpu_indextts25_tasks 50 --yes
+#   ./trim_queue.sh                          # keep last 50 of us_indextts_queue
+#   ./trim_queue.sh us_indextts_queue 50
+#   ./trim_queue.sh us_indextts_queue 50 --yes
 #   KEEP=100 QUEUE=gpu_tts_tasks ./trim_queue.sh --yes
 #
 # Env overrides:
@@ -20,7 +20,7 @@
 set -euo pipefail
 
 CONTAINER="${CONTAINER:-usaivoicemq}"
-QUEUE="${QUEUE:-gpu_indextts25_tasks}"
+QUEUE="${QUEUE:-us_indextts_queue}"
 KEEP="${KEEP:-50}"
 BATCH="${BATCH:-200}"
 MGMT_HOST="${MGMT_HOST:-127.0.0.1}"
