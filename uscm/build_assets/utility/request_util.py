@@ -1,17 +1,15 @@
-import json
 import logging
 import time
 import hmac
 import datetime
 import os
 import random
-import urllib.error
-import urllib.request
 
 from fastapi import Request
 from config.comm_config import get_white_list, get_limit_config, ALLOWED_DOMAINS
 from utility.auth_session import authenticate_request
-from utility.module_enum import ModuleType, get_generate_action
+from utility.module_enum import ModuleType
+from utility.userserver_client import fetch_action_counts
 from utility.util import aiflow_hmac_signature
 
 # 常量定义
@@ -21,51 +19,6 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 ALLOWED_AUDIO_TYPES = ['audio/webm', 'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/mp3', 'audio/m4a', 'audio/x-m4a',  'audio/mp4', 'audio/flac', 'audio/aac', 'audio/ogg',  \
     'video/webm', 'video/mp4', 'video/mov', 'video/avi', 'video/wmv', 'video/flv', 'video/x-flv', 'video/mkv', 'video/webm', 'video/quicktime']
 ALLOWED_FILE_EXTENSIONS = ['.mp3', '.wav',  '.m4a', '.flac', '.aac', '.ogg', '.mp4', '.mov', '.avi', '.wmv', '.flv', '.webm', '.mkv', '.quicktime']
-
-_ACTIONCOUNTS_TIMEOUT_SEC = 5
-
-def _fetch_action_counts(logger: logging.Logger, reqid: str, first_ip: str, email: str, userid, domain: str, module: ModuleType) -> tuple[int, int]:
-    """向 UserServer 查询当日/近30天行为次数。domain 为空、无对应 action、或请求失败时返回 (0, 0)。"""
-    action = get_generate_action(module)
-    domain = domain.strip() if isinstance(domain, str) else str(domain or "").strip()
-    if not domain or action is None:
-        logger.warning(f'reqid:{reqid} skip actioncounts, domain:{domain!r} action:{action} module:{module}')
-        return 0, 0
-
-    host = os.environ.get("US_COMMON_USERSERVER_HOST", "").strip()
-    port = os.environ.get("US_COMMON_USERSERVER_PORT", "").strip()
-    if not host or not port:
-        logger.error(f'reqid:{reqid} actioncounts missing US_COMMON_USERSERVER_HOST or US_COMMON_USERSERVER_PORT')
-        return 0, 0
-
-    url = f"http://{host}:{port}/inapi/actioncounts"
-    uid = "" if userid in (None, "", 0) else str(userid)
-    payload = {
-        "reqid": reqid,
-        "firstip": first_ip or "",
-        "email": email or "",
-        "uid": uid,
-        "domain": domain,
-        "action": action,
-    }
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=_ACTIONCOUNTS_TIMEOUT_SEC) as response:
-            raw = response.read().decode("utf-8")
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict) or "day_count" not in parsed or "month_count" not in parsed:
-                logger.error(f'reqid:{reqid} actioncounts bad response:{raw[:500]}')
-                return 0, 0
-            return int(parsed["day_count"]), int(parsed["month_count"])
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        logger.error(f'reqid:{reqid} actioncounts failed url:{url} err:{exc}')
-        return 0, 0
 
 def get_real_ip(request: Request):
     real_ip = ""
@@ -119,7 +72,7 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
     if real_ip != "":
         white_list = get_white_list()
         if first_ip not in white_list:
-            day_count, month_count = _fetch_action_counts(logger, reqid, first_ip, email, userid, domain, module)
+            day_count, month_count = fetch_action_counts(logger, reqid, first_ip, email, userid, domain, module)
             logger.debug(f'11 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count}')
             # todo: 订阅状态校验， 以及相应的校验策略。
             #if subscript != 1:
