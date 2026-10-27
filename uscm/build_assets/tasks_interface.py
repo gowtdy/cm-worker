@@ -14,7 +14,7 @@ us_encoded_rabbitmq_pass = quote_plus(US_RABBITMQ_PASS)
 
 # 队列配置
 us_celery_app = Celery(
-    "uscm_provider",
+    "uscm_producer",
     broker=f"amqp://{US_RABBITMQ_USER}:{us_encoded_rabbitmq_pass}@{US_RABBITMQ_HOST}:{US_RABBITMQ_PORT}//",
     backend="rpc://"
 )
