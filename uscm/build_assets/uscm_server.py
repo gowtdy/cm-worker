@@ -18,6 +18,7 @@ from utility.request_util import get_real_ip, validate_request, validate_signatu
 from utility.module_enum import ModuleType
 from utility.allused_voicemodels import register_allused_voicemodels, get_common_model
 from utility.voice_settings import parse_emo_params, parse_speed_volume_params
+from config.comm_config import DEFAULT_USER_FIRST_IP
 
 from tasks_interface import gpu_gen_tts, gpu_gen_indextts
 
@@ -75,7 +76,7 @@ async def tts_endpoint(request: Request):
     msg = 'ok'
 
     real_ip = get_real_ip(request)
-    first_ip = real_ip.split(',')[0].strip() if real_ip else ""
+    first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
     # 获取HTTP请求的Referer
     referer = request.headers.get("Referer", "Not provided")
 
@@ -87,24 +88,16 @@ async def tts_endpoint(request: Request):
 
     tm = time.time()
     userid = json_post_raw.get("userid", 0)
-    if isinstance(userid, int):
-        userid_hash = userid & 0xFFFFFFFF  # 直接取32位
-    else:
-        userid_hash = hash(str(userid)) & 0xFFFFFFFF
-    reqid = gen_reqid(userid_hash, tm)
+    reqid = gen_reqid(userid, tm)
     localtime = time.localtime(tm)
     today =  time.strftime(DAY_FORMAT, localtime)
     datetime = time.strftime("%Y%m%d_%H%M%S", localtime)
     cnt = 0
-    # 用户是否订阅,有4个取值, 0 未订阅, 1 已订阅, 2 虽订阅,字符已用完,
-    subscript = json_post_raw.get("subscript", 0)
+    
     email = json_post_raw.get("email", '')
     domain = json_post_raw.get("domain", '')
-
-    ret, msg = validate_request(logger, real_ip, referer, reqid, email, subscript, today, userid, ModuleType.TTS, domain)
-    if ret != 0 :
-        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} email:{email} userid:{userid} subscript:{subscript} ret:{ret}, msg:{msg}')
-        return gen_res_dict(ret, msg)
+    # 用户是否订阅,有4个取值, 0 未订阅, 1 已订阅, 2 虽订阅,字符已用完,
+    subscript = json_post_raw.get("subscript", 0)
 
     output_format = json_post_raw.get("output_format", DEFAULT_FORMAT)
 
@@ -121,6 +114,11 @@ async def tts_endpoint(request: Request):
     ret, msg = validate_signature(logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, subscript, referer, ModuleType.TTS)
     if ret != 0 :
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_request(logger, real_ip, referer, reqid, email, subscript, today, userid, ModuleType.TTS, domain)
+    if ret != 0 :
+        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} email:{email} userid:{userid} subscript:{subscript} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg)
 
     modelcat = json_post_raw.get("modelcat", '')
