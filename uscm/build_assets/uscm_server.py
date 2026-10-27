@@ -16,6 +16,7 @@ from utility.encrypt_util import encrypt_url
 from utility.request_util import get_real_ip, validate_request, validate_signature, validate_text_length, \
     validate_gender, validate_audio_url
 from utility.module_enum import ModuleType
+from utility.userserver_client import post_generate_add
 from utility.allused_voicemodels import register_allused_voicemodels, get_common_model
 from utility.voice_settings import parse_emo_params, parse_speed_volume_params
 from config.comm_config import DEFAULT_USER_FIRST_IP
@@ -141,6 +142,9 @@ async def tts_endpoint(request: Request):
     logger.debug(
         f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} handle, '
         f'modellang:{modellang} model_type:{tts_modeltype} model_typeversion:{tts_modelversion}'
+    )
+    post_generate_add(
+        logger, reqid, first_ip, email, userid, domain, text, real_ip, ModuleType.TTS,
     )
     if tts_modeltype == "index-tts" :
         ok, emo_type, emo_alpha, emo_err = parse_emo_params(json_post_raw, logger)
