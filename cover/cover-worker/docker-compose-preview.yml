@@ -24,7 +24,8 @@ services:
       - TZ=Asia/Shanghai
       - FILE_SYNC_TRANSPORT=quic
     env_file:
-      - /home/aigc/data/env/.env_mqdb
+      - /home/aigc/data/env/.env_mqdb       # QUIC_CLIENT_HOST / QUIC_CLIENT_PORT
+      - /home/aigc/data/env/.env_usmqdb     # US_RABBITMQ_* / US_COMMON_USERSERVER_* / INAPI_AUTH_TOKEN
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
