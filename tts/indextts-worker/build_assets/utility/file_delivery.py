@@ -44,7 +44,6 @@ class SyncJob:
     source_file: str
     target_dir: str
     task_id: str
-    is_eapi: bool
     short_uri_prefix: str
     output_file: str
     proxies: List[RsyncProxy] = field(default_factory=list)
@@ -144,25 +143,19 @@ def complete_sync_job(
     used_transport: Optional[str] = None,
     fallback: int = 0,
 ):
-    from sql.mysql_db import update_api_user_record, update_ip_use_record
+    from sql.mysql_db import update_ip_use_record
 
     used = used_transport if used_transport is not None else job.transport
     if ok:
         uri = f"/outdt{job.short_uri_prefix}/{job.output_file}"
-        if job.is_eapi:
-            update_api_user_record(job.task_id, uri, TaskStatus.COMPLETE)
-        else:
-            update_ip_use_record(job.task_id, uri, TaskStatus.COMPLETE)
+        update_ip_use_record(job.task_id, uri, TaskStatus.COMPLETE)
         logger.info(
             f"async_sync_complete task_id={job.task_id} uri={uri} "
             f"transport={job.transport} used_transport={used} fallback={fallback}"
         )
     else:
         msg = err_msg or "sync_files failed"
-        if job.is_eapi:
-            update_api_user_record(job.task_id, msg, TaskStatus.FAILED)
-        else:
-            update_ip_use_record(job.task_id, msg, TaskStatus.FAILED)
+        update_ip_use_record(job.task_id, msg, TaskStatus.FAILED)
         logger.error(
             f"async_sync_failed task_id={job.task_id} msg={msg} "
             f"transport={job.transport} used_transport={used} fallback={fallback}"
