@@ -13,12 +13,10 @@ from utility.file_delivery import (
     complete_sync_job,
     enqueue_delivery_job,
     reset_file_delivery_for_tests,
-    resolve_delivery_transport,
     start_file_delivery,
 )
 from utility.quic_http_transport import QuicHttpTransport, quic_x_filename
 from utility.socat_rsyc_util import RsyncTransport
-from utility.file_sync_config import get_file_sync_transport
 
 
 def _job(**kwargs):
@@ -48,29 +46,6 @@ class RecordingTransport:
         self.slots.append(slot)
         self.event.set()
         return self.ok, self.err
-
-
-class TestResolveTransport(unittest.TestCase):
-    def test_default_quic(self):
-        old = os.environ.pop("FILE_SYNC_TRANSPORT", None)
-        try:
-            self.assertEqual(get_file_sync_transport(), "quic")
-            self.assertEqual(resolve_delivery_transport("user@example.com"), "quic")
-        finally:
-            if old is not None:
-                os.environ["FILE_SYNC_TRANSPORT"] = old
-
-    def test_explicit_rsync(self):
-        with patch.dict(os.environ, {"FILE_SYNC_TRANSPORT": "rsync"}):
-            self.assertEqual(resolve_delivery_transport("user@example.com"), "rsync")
-
-    def test_invalid_env_falls_back_to_quic(self):
-        with patch.dict(os.environ, {"FILE_SYNC_TRANSPORT": "ftp"}):
-            self.assertEqual(get_file_sync_transport(), "quic")
-
-    def test_email_ignored_even_if_video_like(self):
-        with patch.dict(os.environ, {"FILE_SYNC_TRANSPORT": "quic"}):
-            self.assertEqual(resolve_delivery_transport("video_script_tts"), "quic")
 
 
 class TestFileDeliveryQueue(unittest.TestCase):
@@ -231,38 +206,34 @@ class TestDeliverJobFallback(unittest.TestCase):
 
 
 class TestCompleteSyncJob(unittest.TestCase):
-    def _patch_mysql_update(self):
-        import sys
-        from types import ModuleType
-
-        mysql_db = ModuleType("sql.mysql_db")
-        mysql_db.update_ip_sounds_record = MagicMock()
-        sql_pkg = ModuleType("sql")
-        sql_pkg.mysql_db = mysql_db
-        return patch.dict(sys.modules, {"sql": sql_pkg, "sql.mysql_db": mysql_db}), mysql_db
-
     def test_success_writes_outdt_complete(self):
+        from utility.module_enum import TaskStatus
+
         logger = logging.getLogger("test_complete")
         job = _job()
-        modules_patch, mysql_db = self._patch_mysql_update()
-        with modules_patch:
+        with patch("utility.file_delivery.update_task_status") as mock_update:
             complete_sync_job(logger, job, True)
-        mysql_db.update_ip_sounds_record.assert_called_once_with(
+        mock_update.assert_called_once_with(
+            logger,
             "t1",
+            "",
             "/outdt/sounds/tk/2026-09-13/sound_x.mp3",
-            task_status="complete",
+            TaskStatus.COMPLETE,
         )
 
     def test_failure_writes_failed_with_error(self):
+        from utility.module_enum import TaskStatus
+
         logger = logging.getLogger("test_complete")
         job = _job()
-        modules_patch, mysql_db = self._patch_mysql_update()
-        with modules_patch:
+        with patch("utility.file_delivery.update_task_status") as mock_update:
             complete_sync_job(logger, job, False, err_msg="quic timeout")
-        mysql_db.update_ip_sounds_record.assert_called_once_with(
+        mock_update.assert_called_once_with(
+            logger,
             "t1",
+            "",
             "quic timeout",
-            task_status="failed",
+            TaskStatus.FAILED,
         )
 
 
