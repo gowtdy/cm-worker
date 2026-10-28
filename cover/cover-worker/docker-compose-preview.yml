@@ -1,0 +1,52 @@
+services:
+  cover-worker-preview:
+    image: cover-worker:0.1
+    hostname: cover-worker-preview
+    container_name: cover-worker-preview
+    restart: unless-stopped
+    network_mode: host
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 192.168.3.1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    environment:
+      - AIGC_UID=${AIGC_UID:-1001}
+      - AIGC_GID=${AIGC_GID:-1001}
+      - GPU_INDEX=0
+      - CELERY_CONCURRENCY=1
+      - TZ=Asia/Shanghai
+      - FILE_SYNC_TRANSPORT=quic
+    env_file:
+      - /home/aigc/data/env/.env_mqdb
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      - /home/aigc/.ssh:/home/aigc/.ssh:ro
+      - /home/aigc/data/aioutput/worker-logs/cover-worker-preview-logs:/app/log
+      - /home/aigc/work/models/aivoice_models/gptsovits_model/VoiceConversionWebUI/rmvpe.pt:/app/assets/rmvpe/rmvpe.pt
+      - /home/aigc/work/models/aivoice_models/gptsovits_model/VoiceConversionWebUI/hubert_base.pt:/app/assets/hubert/hubert_base.pt
+      - /home/aigc/work/models/aivoice_models/gptsovits_model/uvr5_weights:/app/assets/uvr5_weights
+      - /home/aigc/work/models/aivoice_models/gptsovits_model/VoiceConversionWebUI/pretrained_v2:/app/assets/pretrained_v2
+      - /home/aigc/work/models/aivoice_models/gptsovits_model/VoiceConversionWebUI/pretrained:/app/assets/pretrained
+      - /home/aigc/work/models/aivoice_models/cloned_covermodels/rvc_models:/app/models/service_models
+      - /home/aigc/work/models/aivoice_models/cloned_models/common_models:/app/models/service_model/common_models
+      - /home/aigc/data/userupload/aivoicelab:/app/data/uploads
+      - /home/aigc/data/aioutput/cover/aivoicelab/middle:/app/data/middle
+      - /home/aigc/data/aioutput/cover/aivoicelab/final:/app/data/final
+      - /home/aigc/data/aioutput/cover/commshare/final/sepaudio:/app/data/sepaudio
+      - /home/aigc/data/aioutput/cover/commshare/final/sepvocal:/app/data/sepvocal
+      - /home/aigc/data/aioutput/cover/commshare/final/sepinstrum:/app/data/sepinstrum
+      #- /home/aigc/data/remote_rsync_servers:/app/data/remote_rsync_servers
+      #- /home/aigc/data/remote_rsync_proxy:/app/data/remote_rsync_proxy
+      - /home/aigc/data/ssh_control/cover-worker-preview:/app/data/ssh_control
+      - /home/aigc/data/socat_rsync_proxies:/app/data/socat_rsync_proxies
+      - /home/aigc/.ssh:/home/aigc/.ssh
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

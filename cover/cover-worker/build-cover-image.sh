@@ -1,0 +1,1 @@
+docker build -t cover-worker:0.1 -f Dockerfile .
