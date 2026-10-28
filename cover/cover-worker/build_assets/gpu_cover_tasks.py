@@ -1152,6 +1152,11 @@ def gpu_cover(modelcat, modelname, modelgender, upfileinfo, upgender, task_id='0
             return f'cover process failed, task_id:{task_id}, msg:{msg}'
         timing_stats['model_validation'] = time.time() - model_validation_start
 
+        if not isinstance(upfileinfo, dict) or not upfileinfo.get('relative_path'):
+            msg = f'invalid upfileinfo, task_id:{task_id}'
+            logger.warning(f'msg: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return f'cover process failed, task_id:{task_id}, msg:{msg}'
         relative_path = upfileinfo["relative_path"]
         update_str = upfileinfo['update_str']
         file_ext = upfileinfo['file_ext']
@@ -1331,6 +1336,11 @@ def gpu_vocal(upfileinfo, task_id='0', email='', domain=''):
         random_number = random.randint(1, 1000)
 
         reqid = task_id
+        if not isinstance(upfileinfo, dict) or not upfileinfo.get('relative_path'):
+            msg = f'invalid upfileinfo, task_id:{task_id}'
+            logger.warning(f'msg: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return f'vocal process failed, task_id:{task_id}, msg:{msg}'
         relative_path = upfileinfo["relative_path"]
         update_str = upfileinfo['update_str']
         file_ext = upfileinfo['file_ext']
@@ -1417,6 +1427,11 @@ def gpu_instrument(upfileinfo, task_id='0', email='', domain=''):
         random_number = random.randint(1, 1000)    
 
         reqid = task_id
+        if not isinstance(upfileinfo, dict) or not upfileinfo.get('relative_path'):
+            msg = f'invalid upfileinfo, task_id:{task_id}'
+            logger.warning(f'msg: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return f'instrument process failed, task_id:{task_id}, msg:{msg}'
         relative_path = upfileinfo["relative_path"]
         update_str = upfileinfo['update_str']
         file_ext = upfileinfo['file_ext']
