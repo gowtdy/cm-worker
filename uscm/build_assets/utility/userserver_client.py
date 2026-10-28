@@ -95,6 +95,7 @@ def post_generate_add(
     uid = "" if userid in (None, "", 0) else str(userid)
     payload = {
         "reqid": reqid,
+        "task_id": reqid,
         "firstip": first_ip or "",
         "email": email or "",
         "uid": uid,
