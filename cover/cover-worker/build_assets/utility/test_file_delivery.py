@@ -232,29 +232,15 @@ class TestDeliverJobFallback(unittest.TestCase):
 
 
 class TestCompleteSyncJob(unittest.TestCase):
-    def _patch_mysql_update(self):
-        import sys
-        from types import ModuleType
-
-        mysql_db = ModuleType("sql.mysql_db")
-        mysql_db.update_ip_tool_record = MagicMock()
-        sql_pkg = ModuleType("sql")
-        sql_pkg.mysql_db = mysql_db
-        return patch.dict(sys.modules, {"sql": sql_pkg, "sql.mysql_db": mysql_db}), mysql_db
-
     def test_success_writes_outdt_complete(self):
         from utility.module_enum import TaskStatus
 
         logger = logging.getLogger("test_complete")
         job = _job()
-        modules_patch, mysql_db = self._patch_mysql_update()
-        with modules_patch:
+        with patch("utility.file_delivery.update_task_status") as mock_update:
             complete_sync_job(logger, job, True)
-        mysql_db.update_ip_tool_record.assert_called_once_with(
-            "t1",
-            "/outdt/final/2026-09-13/song_cover.mp3",
-            TaskStatus.COMPLETE,
-        )
+        mock_update.assert_called_once_with(
+            logger, "t1", "", "/outdt/final/2026-09-13/song_cover.mp3", TaskStatus.COMPLETE)
 
     def test_vocal_success_uri(self):
         from utility.module_enum import TaskStatus
@@ -265,30 +251,21 @@ class TestCompleteSyncJob(unittest.TestCase):
             output_file="v.mp3",
             biz_type="extract_vocal",
         )
-        modules_patch, mysql_db = self._patch_mysql_update()
-        with modules_patch:
+        with patch("utility.file_delivery.update_task_status") as mock_update:
             complete_sync_job(logger, job, True)
-        mysql_db.update_ip_tool_record.assert_called_once_with(
-            "t1",
-            "/outdt/sepvocal/2026-09-13/v.mp3",
-            TaskStatus.COMPLETE,
-        )
+        mock_update.assert_called_once_with(
+            logger, "t1", "", "/outdt/sepvocal/2026-09-13/v.mp3", TaskStatus.COMPLETE)
 
     def test_failure_writes_failed_not_covered(self):
         from utility.module_enum import TaskStatus
 
         logger = logging.getLogger("test_complete")
         job = _job()
-        modules_patch, mysql_db = self._patch_mysql_update()
-        with modules_patch:
+        with patch("utility.file_delivery.update_task_status") as mock_update:
             complete_sync_job(logger, job, False, err_msg="quic timeout")
-        mysql_db.update_ip_tool_record.assert_called_once_with(
-            "t1",
-            "quic timeout",
-            TaskStatus.FAILED,
-        )
-        args = mysql_db.update_ip_tool_record.call_args[0]
-        self.assertNotIn("/covered", args[1])
+        mock_update.assert_called_once_with(
+            logger, "t1", "", "quic timeout", TaskStatus.FAILED)
+        self.assertNotIn("/covered", mock_update.call_args[0][3])
 
 
 class TestRsyncTransport(unittest.TestCase):

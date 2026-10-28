@@ -1,9 +1,40 @@
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import os
+from contextvars import ContextVar
 from typing import Optional
 
 logger = logging.getLogger()  # 不加名称 设置root logger
+
+_reqid_var: ContextVar[str] = ContextVar("reqid", default="-")
+
+DEFAULT_LOG_FORMAT = "%(asctime)s-%(filename)s[line:%(lineno)d]-%(levelname)s-[reqid:%(reqid)s]: %(message)s"
+
+
+def set_reqid(reqid: Optional[str]) -> None:
+    if reqid is None or str(reqid).strip() == "":
+        _reqid_var.set("-")
+        return
+    _reqid_var.set(str(reqid))
+
+
+def clear_reqid() -> None:
+    _reqid_var.set("-")
+
+
+def get_reqid() -> str:
+    return _reqid_var.get()
+
+
+class ReqIdFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.reqid = get_reqid()
+        return True
+
+
+def _add_reqid_filter(handler: logging.Handler) -> None:
+    handler.addFilter(ReqIdFilter())
+
 
 def setup_logger(
     logger_name: str,
@@ -12,7 +43,7 @@ def setup_logger(
     file_level: str = "INFO",
     when: str = 'midnight',  # 每天午夜切分
     backup_count: int = 30,  # 保留30天的日志
-    log_format: str = "%(asctime)s | %(levelname)s | %(name)s | %(filename)s:%(lineno)d | %(message)s"
+    log_format: str = DEFAULT_LOG_FORMAT
 ) -> logging.Logger:
     """
     配置并返回logger实例
@@ -35,7 +66,6 @@ def setup_logger(
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     
     logging.getLogger('pydub.converter').setLevel(logging.WARNING)
-    logging.getLogger('multipart').setLevel(logging.WARNING)
     # 获取logger实例
     logger = logging.getLogger(logger_name)
     
@@ -57,19 +87,21 @@ def setup_logger(
     fh.suffix = "%Y-%m-%d.log"
     fh.setLevel(getattr(logging, file_level.upper()))
     fh.setFormatter(formatter)
+    _add_reqid_filter(fh)
 
     # 设置控制台处理器
-    #ch = logging.StreamHandler()
-    #ch.setLevel(getattr(logging, console_level.upper()))
-    #ch.setFormatter(formatter)
+    ch = logging.StreamHandler()
+    ch.setLevel(getattr(logging, console_level.upper()))
+    ch.setFormatter(formatter)
+    _add_reqid_filter(ch)
 
-    #logger.addHandler(ch)
+    logger.addHandler(ch)
     logger.addHandler(fh)
     
     return logger
 
 def logset(logger, logfile):
-    LOG_FORMAT = "%(asctime)s-%(filename)s[line:%(lineno)d]-%(levelname)s: %(message)s"
+    LOG_FORMAT = DEFAULT_LOG_FORMAT
 
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter(LOG_FORMAT, datefmt='%Y-%m-%d %H:%M:%S')
@@ -78,15 +110,14 @@ def logset(logger, logfile):
     fh = logging.FileHandler(logfile)
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(formatter)
+    _add_reqid_filter(fh)
     
     # 使用StreamHandler输出到屏幕
     ch = logging.StreamHandler()
     ch.setLevel(logging.DEBUG)
     ch.setFormatter(formatter)
+    _add_reqid_filter(ch)
     
     # 添加两个Handler
     logger.addHandler(ch)
     logger.addHandler(fh)
-
-
-
