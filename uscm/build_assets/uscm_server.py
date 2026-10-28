@@ -367,7 +367,11 @@ async def extractaudio_endpoint(request: Request):
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} post_generate_add failed: {msg}')
         return gen_res_dict(ret, msg)
 
-    audio_extract.delay(upfileinfo, task_id=reqid, email=email, domain=domain)
+    try:
+        audio_extract.delay(upfileinfo, task_id=reqid, email=email, domain=domain)
+    except Exception as e:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} audio_extract.delay failed: {e}')
+        return gen_res_dict(1, f'dispatch failed: {e}')
 
     endtm = time.time()
     cost = int(endtm - tm)
