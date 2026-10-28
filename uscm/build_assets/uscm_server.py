@@ -112,7 +112,7 @@ async def tts_endpoint(request: Request):
     
     textlen = len(text)  # 重新定义 textlen 用于后续逻辑
     
-    ret, msg = validate_signature(logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, subscript, referer, ModuleType.TTS)
+    ret, msg = validate_signature(logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, ModuleType.TTS)
     if ret != 0 :
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} validate_signature failed: {msg}')
         return gen_res_dict(ret, msg)
@@ -161,7 +161,7 @@ async def tts_endpoint(request: Request):
             )
     else :
         modellang = map_lang_abbrev(modellang, modellang)
-        gpu_gen_tts.delay(modelname, text, modelcat, userid, 1, reqid, output_format, modellang, email)
+        gpu_gen_tts.delay(modelname, text, modelcat, userid, reqid, output_format, modellang, email)
 
     timeout: int = 180
     interval: float = 1.0
