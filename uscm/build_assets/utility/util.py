@@ -1,21 +1,16 @@
 # -*- coding: utf-8 -*-
-import numpy as np
 import hmac
 import hashlib
+import secrets
 import time
 
 from config.comm_config import get_tts_secret_key, get_cover_secret_key, get_sound_secret_key, get_transcribe_secret_key
 from utility.module_enum import ModuleType
 
-def gen_reqid(uid, timestamp):
-    if isinstance(uid, int):
-        uid_hash = uid & 0xFFFFFFFF  # 直接取32位
-    else:
-        uid_hash = hash(str(uid)) & 0xFFFFFFFF
-    seed = np.random.randint(low=1, high=100)
-    id = ((int(uid_hash<<10) ^ int(timestamp)) << 3) | int(seed) 
-    #print(f'id:{id}, userid:{userid}, timestamp:{timestamp}')
-    return id
+def gen_reqid(uid=None, timestamp=None):
+    """秒级时间戳 hex + 8 hex 随机（约 16 字符，字符集 [0-9a-f]）。"""
+    ts = int(timestamp if timestamp is not None else time.time())
+    return f"{ts:x}{secrets.token_hex(4)}"
 
 def gen_res_dict(ret: int, msg: str, dt=None):
     d = {}
