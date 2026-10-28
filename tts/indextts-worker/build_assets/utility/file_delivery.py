@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Protocol, Tuple
 
+from utility.log import clear_reqid, set_reqid
 from utility.module_enum import TaskStatus
 from utility.socat_rsyc_util import RsyncProxy, get_socat_proxy_configs
 from utility.userserver_client import update_task_status
@@ -171,6 +172,7 @@ def _worker_loop(logger, slot: int) -> None:
                 logger.info(f"async_sync_worker_stop slot={slot}")
                 return
 
+            set_reqid(job.task_id)
             queue_depth = _sync_queue.qsize()
             file_size = os.path.getsize(job.source_file) if os.path.exists(job.source_file) else 0
             size_str = _format_file_size(file_size)
@@ -212,6 +214,8 @@ def _worker_loop(logger, slot: int) -> None:
                 except Exception as update_err:
                     logger.error(f"async_sync_fail_update_error error={update_err}")
         finally:
+            if job is not _SYNC_SENTINEL:
+                clear_reqid()
             _sync_queue.task_done()
 
 
