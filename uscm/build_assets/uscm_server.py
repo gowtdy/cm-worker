@@ -21,7 +21,7 @@ from utility.allused_voicemodels import register_allused_voicemodels, get_common
 from utility.voice_settings import parse_emo_params, parse_speed_volume_params
 from config.comm_config import DEFAULT_USER_FIRST_IP
 
-from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound
+from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract
 
 app = FastAPI()
 
@@ -297,6 +297,94 @@ async def gensoundTask(request: Request):
         f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, '
         f'email:{email}, subscript:{subscript}, length:{length}, num:{num}, '
         f'cost:{cost}, refer:{referer}, today req cnt:{cnt}, '
+        f'ret:{ret}'
+    )
+    return res
+
+@app.post("/api/extractaudio")
+async def extractaudio_endpoint(request: Request):
+    ret = 0
+    msg = 'ok'
+    task_cmd = '/api/extractaudio'
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
+    # 获取HTTP请求的Referer
+    referer = request.headers.get("Referer", "Not provided")
+
+    json_post_raw = await request.json()
+
+    timestamp = json_post_raw.get('tstamp', 0)
+    signature = json_post_raw.get('snature', '')
+
+    tm = time.time()
+    userid = json_post_raw.get("userid", 0)
+    reqid = gen_reqid(userid, tm)
+    localtime = time.localtime(tm)
+    today = time.strftime(DAY_FORMAT, localtime)
+    datetime = time.strftime("%Y%m%d_%H%M%S", localtime)
+
+    email = json_post_raw.get("email", '')
+    domain = json_post_raw.get("domain", '')
+    subscript = json_post_raw.get("subscript", 0)
+
+    upurl = json_post_raw.get("upurl", '')
+
+    if len(upurl.strip()) == 0:
+        ret = 1
+        msg = f'upurl is invalid, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} userid:{userid} email:{email} subscript:{subscript} msg:{msg} upurl:{upurl} referer:{referer}')
+        return gen_res_dict(ret, msg)
+
+    # 验证音频URL
+    ret, msg, upfileinfo = validate_audio_url(upurl, reqid, first_ip, email, today, datetime, logger)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} userid:{userid} email:{email} validate_audio_url failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_signature(logger, timestamp, signature, upurl, datetime, reqid, first_ip, real_ip, userid, email, ModuleType.AUDIO_EXTRACTOR)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_request(logger, real_ip, referer, reqid, email, subscript, today, userid, ModuleType.AUDIO_EXTRACTOR, domain, request)
+    if ret != 0:
+        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} email:{email} userid:{userid} subscript:{subscript} ret:{ret}, msg:{msg}')
+        return gen_res_dict(ret, msg)
+
+    generate_content = upfileinfo['relative_path']
+    task_req = json.dumps({
+        "first_ip": first_ip,
+        "userid": userid,
+        "email": email,
+        "upurl": upurl,
+    }, ensure_ascii=False)
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, userid, domain, generate_content, real_ip, ModuleType.AUDIO_EXTRACTOR,
+        task_cmd=task_cmd, task_req=task_req,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    try:
+        audio_extract.delay(upfileinfo, task_id=reqid, email=email, domain=domain)
+    except Exception as e:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} audio_extract.delay failed: {e}')
+        return gen_res_dict(1, f'dispatch failed: {e}')
+
+    endtm = time.time()
+    cost = int(endtm - tm)
+
+    res = {
+        "ret": 0,
+        "msg": 'ok',
+        "reqid": reqid
+    }
+
+    logger.info(
+        f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, '
+        f'email:{email}, subscript:{subscript}, cost:{cost}, refer:{referer}, upurl:{upurl}, '
         f'ret:{ret}'
     )
     return res

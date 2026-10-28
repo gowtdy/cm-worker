@@ -1,0 +1,32 @@
+services:
+  audio-worker-preview:
+    image: audio-worker:0.4
+    hostname: audio-worker-preview
+    container_name: audio-worker-preview
+    restart: unless-stopped
+    network_mode: host
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 192.168.3.1
+    environment:
+      - AIGC_UID=${AIGC_UID:-1000}
+      - AIGC_GID=${AIGC_GID:-1000}
+      - CELERY_CONCURRENCY=1
+      - TZ=Asia/Shanghai
+      # quic or rsync, default is quic
+      - FILE_SYNC_TRANSPORT=quic
+    env_file:
+      - /home/aigc/data/env/.env_usmqdb
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      - /home/aigc/.ssh:/home/aigc/.ssh:ro
+      - /home/aigc/data/aioutput/worker-logs/audio-worker-preview-logs:/app/log
+      - /home/aigc/data/userupload/aivoicelab:/app/data/uploads
+      - /home/aigc/data/aioutput/cover/commshare/final/sepaudio:/app/data/sepaudio
+      - /home/aigc/data/ssh_control/audio-worker-preview:/app/data/ssh_control
+      - /home/aigc/data/socat_rsync_proxies:/app/data/socat_rsync_proxies
+      - /home/aigc/.ssh:/home/aigc/.ssh
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

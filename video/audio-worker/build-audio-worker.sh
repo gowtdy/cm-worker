@@ -1,0 +1,1 @@
+docker build -t audio-worker:0.4 -f Dockerfile .
