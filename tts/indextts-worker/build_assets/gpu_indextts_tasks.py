@@ -183,23 +183,18 @@ def save_audio_file(sample_rate, audio, output_format, base_output_path, filenam
 
 @celery_app.task(name='task_gen_indextts')
 @cuda_error_handler(logger)
-def gpu_gen_tts(modelname, text, modelcat='', userid=0, reqid='0', output_format=DEFAULT_FORMAT, modellang='en', email='',
+def gpu_gen_tts(modelname, text, modelcat='', userid=0, task_id='0', output_format=DEFAULT_FORMAT, modellang='en', email='',
                 emo_type='default', emo_alpha=1.0, speed=1.0, volume_db=0.0):
-    isEapi = str(reqid).endswith('.eapi')
-    task_id = reqid
-    if isEapi:
-        task_id = str(reqid).removesuffix('.eapi')
-
     if (len(modelname.strip()) == 0):
         ret = 1
-        msg = f'modelname:{modelname} is invalid, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
+        msg = f'modelname:{modelname} is invalid, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
         logger.warning(f'msg: {msg}')
         #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
         return gen_res_dict(ret, msg)
 
     if (len(text.strip()) == 0):
         ret = 1
-        msg = f'text:{text} is empty, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
+        msg = f'text:{text} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
         logger.warning(f'msg: {msg}')
         #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
         return gen_res_dict(ret, msg)
@@ -213,7 +208,7 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, reqid='0', output_format
         duration_factor = speed_to_duration_factor(speed)
     except ValueError as e:
         ret = 1
-        msg = f'{e}, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
+        msg = f'{e}, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
         logger.warning(f'msg: {msg}')
         #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
         return gen_res_dict(ret, msg)
@@ -230,13 +225,13 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, reqid='0', output_format
         if torch.cuda.is_available():
             # 检查并等待GPU内存
             if not check_and_wait_for_gpu_memory(logger, device, min_free_gb=2.0, max_wait_seconds=30):
-                logger.warning(f'GPU memory low at task start, attempting cleanup. reqid:{reqid}')
+                logger.warning(f'GPU memory low at task start, attempting cleanup. task_id:{task_id}')
                 manage_gpu_memory(logger, device)
                 # 再次检查
                 if not check_and_wait_for_gpu_memory(logger, device, min_free_gb=1.5, max_wait_seconds=10):
-                    logger.error(f'GPU memory insufficient for task, reqid:{reqid}')
+                    logger.error(f'GPU memory insufficient for task, task_id:{task_id}')
                     ret = 1
-                    msg = f'GPU memory insufficient, please try again later, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
+                    msg = f'GPU memory insufficient, please try again later, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
                     #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
                     return gen_res_dict(ret, msg)
     except Exception as e:
@@ -249,20 +244,20 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, reqid='0', output_format
 
         if not os.path.exists(model_path) :
             ret = 1
-            msg = f'modelname:{modelname} is invalid, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
+            msg = f'modelname:{modelname} is invalid, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
             logger.warning(f'model_path:{model_path}, modelname:{modelname}, worker:{WORKER_HOSTNAME}')
             #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
             return gen_res_dict(ret, msg)
 
         # 在加载模型前检查 GPU 健康状态
         if not check_gpu_health(logger, device, attempt_recovery=True):
-            logger.error(f'GPU health check failed, skipping task for reqid:{reqid}')
+            logger.error(f'GPU health check failed, skipping task for task_id:{task_id}')
                 
             # 记录详细错误信息
             log_gpu_error_details(logger, device, "GPU health check failed")
                 
             ret = 1
-            msg = f'GPU is in an unhealthy state, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
+            msg = f'GPU is in an unhealthy state, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
             logger.error(f'msg: {msg}')
             #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
             return gen_res_dict(ret, msg)
@@ -271,14 +266,14 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, reqid='0', output_format
         speacker_pt_path = f"{model_path}/{model_file_prefix}_audio_prompt.pt"
         if not os.path.exists(speacker_pt_path):
             ret = 1
-            msg = f'speacker_pt_path {speacker_pt_path} not found, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
+            msg = f'speacker_pt_path {speacker_pt_path} not found, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
             logger.warning(f'msg: {msg}')
             #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
             return gen_res_dict(ret, msg)
 
         text_lang = resolve_text_lang(text, fallback_lang=modellang, logger=logger)
         logger.debug(
-            f'reqid:{reqid}, resolve_text_lang text_lang:{text_lang}, modellang:{modellang}, '
+            f'task_id:{task_id}, resolve_text_lang text_lang:{text_lang}, modellang:{modellang}, '
             f'emo_type:{emo_type}, emo_alpha:{emo_alpha}, emo_vector:{emo_vector}, '
             f'speed:{speed}, duration_factor:{duration_factor}, volume_db:{volume_db}'
         )
@@ -310,20 +305,19 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, reqid='0', output_format
             source_file=output_path,
             target_dir=remote_target_dir,
             task_id=task_id,
-            is_eapi=isEapi,
             short_uri_prefix=short_uri_prefix,
             output_file=output_file,
             proxies=list(proxies),
             transport=delivery_transport,
         )
         if not enqueue_delivery_job(logger, sync_job):
-            msg = f'enqueue sync failed, queue full or workers down, reqid:{reqid}, worker:{WORKER_HOSTNAME}'
+            msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}, worker:{WORKER_HOSTNAME}'
             logger.error(msg)
             #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
 
     except Exception as e:
-        logger.error(f'Error in gpu_gen_tts for reqid:{reqid}, worker:{WORKER_HOSTNAME}: {e}')
-        msg = f'Error in gpu_gen_tts for reqid:{reqid}, worker:{WORKER_HOSTNAME}: {e}'
+        logger.error(f'Error in gpu_gen_tts for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}')
+        msg = f'Error in gpu_gen_tts for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}'
         #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
         try:
             if torch.cuda.is_available():
@@ -346,7 +340,7 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, reqid='0', output_format
     tts_time = time.time()
     cost_tts = tts_time - start_time
     logger.info(
-        f'reqid:{reqid}, inference finish, sync enqueued, transport:{delivery_transport} time[tts:{cost_tts}] '
+        f'task_id:{task_id}, inference finish, sync enqueued, transport:{delivery_transport} time[tts:{cost_tts}] '
         f'sample_rate:{sample_rate}, audio_file:{output_path}, '
         f'speed:{speed}, duration_factor:{duration_factor}, volume_db:{volume_db}'
     )
