@@ -278,7 +278,11 @@ async def gensoundTask(request: Request):
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} post_generate_add failed: {msg}')
         return gen_res_dict(ret, msg)
 
-    gpu_gen_sound.delay(text, length, num, userid, reqid, email, domain=domain)
+    try:
+        gpu_gen_sound.delay(text, length, num, userid, reqid, email, domain=domain)
+    except Exception as e:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} gpu_gen_sound.delay failed: {e}')
+        return gen_res_dict(1, f'dispatch failed: {e}')
 
     endtm = time.time()
     cost = int(endtm - tm)
