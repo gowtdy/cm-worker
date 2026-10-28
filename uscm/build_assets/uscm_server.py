@@ -143,9 +143,14 @@ async def tts_endpoint(request: Request):
         f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} handle, '
         f'modellang:{modellang} model_type:{tts_modeltype} model_typeversion:{tts_modelversion}'
     )
-    post_generate_add(
-        logger, reqid, first_ip, email, userid, domain, text, real_ip, ModuleType.TTS,
+    generate_content = f'{modelcat}|{modelname}|{text}'
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, userid, domain, generate_content, real_ip, ModuleType.TTS,
     )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg)
+    
     if tts_modeltype == "index-tts" :
         ok, emo_type, emo_alpha, emo_err = parse_emo_params(json_post_raw, logger)
         if not ok:
