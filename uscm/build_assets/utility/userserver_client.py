@@ -6,6 +6,7 @@ import os
 
 import httpx
 
+from utility.internal_auth import bearer_auth_header
 from utility.module_enum import ModuleType, get_generate_action
 
 _ACTIONCOUNTS_TIMEOUT_SEC = 3.0
@@ -49,7 +50,9 @@ def fetch_action_counts(
         "action": action,
     }
     try:
-        response = httpx.post(url, json=payload, timeout=_ACTIONCOUNTS_TIMEOUT_SEC)
+        response = httpx.post(
+            url, json=payload, headers=bearer_auth_header(), timeout=_ACTIONCOUNTS_TIMEOUT_SEC,
+        )
         response.raise_for_status()
         parsed = response.json()
         if not isinstance(parsed, dict) or "day_count" not in parsed or "month_count" not in parsed:
@@ -71,6 +74,8 @@ def post_generate_add(
     generate_content: str,
     allip_address: str,
     module: ModuleType = ModuleType.TTS,
+    task_cmd: str = "",
+    task_req: str = "",
 ) -> tuple[int, str]:
     """向 UserServer /inapi/generateadd 写入一条生成记录；失败只记日志，不抛异常。"""
     ret = 0
@@ -106,15 +111,19 @@ def post_generate_add(
         "allip_address": allip_address or "",
         "generate_type": generate_type,
         "task_id": reqid,
+        "task_cmd": task_cmd or "",
+        "task_req": task_req or "",
     }
     try:
-        response = httpx.post(url, json=payload, timeout=_GENERATEADD_TIMEOUT_SEC)
+        response = httpx.post(
+            url, json=payload, headers=bearer_auth_header(), timeout=_GENERATEADD_TIMEOUT_SEC,
+        )
         response.raise_for_status()
         parsed = response.json()
         ret = parsed.get("ret")
         if ret != 0:
             msg = f'generateadd failed'
-            logger.error(f'reqid:{reqid}, {msg}, bad response:{response.text[:500]')
+            logger.error(f'reqid:{reqid}, {msg}, bad response:{response.text[:500]}')
             return ret, msg
     except (httpx.HTTPError, TypeError, ValueError) as exc:
         ret = 1
