@@ -6,6 +6,7 @@ import random
 import hmac
 import hashlib
 import datetime
+import json
 import yaml
 import asyncio
 
@@ -144,14 +145,8 @@ async def tts_endpoint(request: Request):
         f'modellang:{modellang} model_type:{tts_modeltype} model_typeversion:{tts_modelversion}'
     )
     generate_content = f'{modelcat}|{modelname}|{text}'
-    ret, msg = post_generate_add(
-        logger, reqid, first_ip, email, userid, domain, generate_content, real_ip, ModuleType.TTS,
-    )
-    if ret != 0:
-        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} post_generate_add failed: {msg}')
-        return gen_res_dict(ret, msg)
-    
-    if tts_modeltype == "index-tts" :
+    emo_type, emo_alpha, speed, volume_db = 'default', 1.0, 1.0, 0.0
+    if tts_modeltype == "index-tts":
         ok, emo_type, emo_alpha, emo_err = parse_emo_params(json_post_raw, logger)
         if not ok:
             logger.warning(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} parse_emo_params failed: {emo_err}')
@@ -160,11 +155,32 @@ async def tts_endpoint(request: Request):
         if not ok2:
             logger.warning(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} parse_speed_volume_params failed: {sv_err}')
             return gen_res_dict(1, sv_err)
+
+    task_cmd = '/api/genaudio'
+    task_req = json.dumps({
+        "first_ip": first_ip,
+        "userid": userid,
+        "email": email,
+        "emo_type": emo_type,
+        "emo_alpha": emo_alpha,
+        "speed": speed,
+        "volume_db": volume_db,
+        "output_format": output_format,
+    }, ensure_ascii=False)
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, userid, domain, generate_content, real_ip, ModuleType.TTS,
+        task_cmd=task_cmd, task_req=task_req,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    if tts_modeltype == "index-tts":
         gpu_gen_indextts.delay(
             modelname, text, modelcat, userid, reqid, output_format, modellang, email,
-            emo_type=emo_type, emo_alpha=emo_alpha, speed=speed, volume_db=volume_db,
+            domain=domain, emo_type=emo_type, emo_alpha=emo_alpha, speed=speed, volume_db=volume_db,
             )
-    else :
+    else:
         modellang = map_lang_abbrev(modellang, modellang)
         gpu_gen_tts.delay(modelname, text, modelcat, userid, reqid, output_format, modellang, email)
 
