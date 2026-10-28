@@ -15,7 +15,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ['0']
+              device_ids: ['1']
               capabilities: [gpu]
     environment:
       - AIGC_UID=${AIGC_UID:-1001}
@@ -29,7 +29,7 @@ services:
       # quic or rsync, default is quic
       - FILE_SYNC_TRANSPORT=quic
     env_file:
-      - /home/aigc/data/env/.env_mqdb
+      - /home/aigc/data/env/.env_usmqdb
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
