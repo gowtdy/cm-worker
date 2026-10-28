@@ -13,7 +13,6 @@ import asyncio
 from fastapi import FastAPI, Request, Query
 
 from utility.util import gen_reqid, gen_res_dict, map_lang_abbrev
-from utility.encrypt_util import encrypt_url
 from utility.request_util import get_real_ip, validate_request, validate_signature, validate_text_length, \
     validate_gender, validate_audio_url
 from utility.module_enum import ModuleType
@@ -71,7 +70,7 @@ MAX_TTS_TEXT_LENGTH = 700
 MAX_ENTTTS_TEXT_LENGTH = 400
 MAX_SOUND_TEXT_LENGTH = 100
 
-# for web api, 同步请求
+# for web api, 异步提交生成；结果由专门 check 接口查询
 @app.post("/api/genaudio")
 async def tts_endpoint(request: Request):
     ret = 0
@@ -184,29 +183,12 @@ async def tts_endpoint(request: Request):
         modellang = map_lang_abbrev(modellang, modellang)
         gpu_gen_tts.delay(modelname, text, modelcat, userid, reqid, output_format, modellang, email)
 
-    timeout: int = 180
-    interval: float = 1.0
-
-    uri = ''
-    encrypted_uri = ''
-    #uri, task_status, task_detail = get_tts_out_path_by_id(reqid, timeout, interval)
-    #if uri is None:
-    #    ret = 6
-    #    msg = "System is busy now, please try again later!"
-    #    logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} process failed, task_status:{task_status}, task_detail:{task_detail}')
-    #    return gen_res_dict(ret, msg)
-    #encrypted_uri = encrypt_url(uri)
-
     endtm = time.time()
     cost = int(endtm - tm)
-
-    #torch.cuda.empty_cache()
 
     res = {
         "ret": 0,
         "msg": 'ok',
-        "uri": uri,
-        "enurl": encrypted_uri,
         "reqid": reqid
     }
     
@@ -214,7 +196,7 @@ async def tts_endpoint(request: Request):
         f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, '
         f'modelcat:{modelcat}, modellang:{modellang} email:{email}, subscript:{subscript}, '
         f'cost:{cost}, modelname:{modelname}, refer:{referer}, today req cnt:{cnt}, '
-        f'ret:{ret}, uri:{uri}, enurl:{encrypted_uri}'
+        f'ret:{ret}'
     )
     return res
 
