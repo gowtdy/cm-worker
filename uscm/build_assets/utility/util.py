@@ -17,12 +17,13 @@ def gen_reqid(uid, timestamp):
     #print(f'id:{id}, userid:{userid}, timestamp:{timestamp}')
     return id
 
-def gen_res_dict(ret: int, msg: str, dt={}):
+def gen_res_dict(ret: int, msg: str, dt=None):
     d = {}
-    d.update(dt)
-    dt['ret'] = ret
-    dt['msg'] = msg
-    return dt
+    if dt:
+        d.update(dt)
+    d['ret'] = ret
+    d['msg'] = msg
+    return d
 
 def aiflow_hmac_signature(text: str, timestamp: int, module: ModuleType) -> str:
     """验证 HMAC 签名
