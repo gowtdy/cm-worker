@@ -1320,6 +1320,11 @@ def gpu_cover(modelcat, modelname, modelgender, upfileinfo, upgender, task_id='0
 
         result = f"CoverProcessed: {task_id}"
         return result
+    except Exception as e:
+        msg = f'Error in gpu_cover for task_id:{task_id}: {e}'
+        logger.error(f'msg: {msg}')
+        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+        return f'cover process failed, task_id:{task_id}, msg:{msg}'
     finally:
         clear_reqid()
 @celery_app.task(name='task_cover.vocal')
@@ -1411,6 +1416,11 @@ def gpu_vocal(upfileinfo, task_id='0', email='', domain=''):
 
         result = f"Vocal Processed: {task_id}"
         return result
+    except Exception as e:
+        msg = f'Error in gpu_vocal for task_id:{task_id}: {e}'
+        logger.error(f'msg: {msg}')
+        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+        return f'vocal process failed, task_id:{task_id}, msg:{msg}'
     finally:
         clear_reqid()
 @celery_app.task(name='task_cover.instrument')
@@ -1502,6 +1512,11 @@ def gpu_instrument(upfileinfo, task_id='0', email='', domain=''):
 
         result = f"Instrument Processed: {task_id}"
         return result
+    except Exception as e:
+        msg = f'Error in gpu_instrument for task_id:{task_id}: {e}'
+        logger.error(f'msg: {msg}')
+        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+        return f'instrument process failed, task_id:{task_id}, msg:{msg}'
     finally:
         clear_reqid()
 def initialize_file_delivery():
