@@ -2,24 +2,23 @@ import os
 from urllib.parse import quote_plus
 from celery import Celery
 
-# 从环境变量获取配置，提供默认值 - 与 .env_mqdb / audio-worker 对齐
-RABBITMQ_USER = os.getenv('TTS_RABBITMQ_USER', 'aigc')
-RABBITMQ_PASS = os.getenv('TTS_RABBITMQ_PASS', 'password')
-RABBITMQ_HOST = os.getenv('TTS_RABBITMQ_HOST', '192.168.3.9')
-RABBITMQ_PORT = os.getenv('TTS_RABBITMQ_PORT', '5672')
+# 从环境变量获取配置，提供默认值 - 对齐 .env_usmqdb
+US_RABBITMQ_HOST = os.getenv('US_RABBITMQ_HOST', '149.28.202.108')
+US_RABBITMQ_PORT = os.getenv('US_RABBITMQ_PORT', '5672')
+US_RABBITMQ_USER = os.getenv('US_RABBITMQ_USER', 'aigc')
+US_RABBITMQ_PASS = os.getenv('US_RABBITMQ_PASS', 'password')
 
 # URL编码密码中的特殊字符
-encoded_password = quote_plus(RABBITMQ_PASS)
+us_encoded_rabbitmq_pass = quote_plus(US_RABBITMQ_PASS)
 
 celery_app = Celery(
     "cover_worker",
-    #broker="amqp://aigc:ygj%230508@host.docker.internal:5672//",
-    broker=f"amqp://{RABBITMQ_USER}:{encoded_password}@{RABBITMQ_HOST}:{RABBITMQ_PORT}//",
+    broker=f"amqp://{US_RABBITMQ_USER}:{us_encoded_rabbitmq_pass}@{US_RABBITMQ_HOST}:{US_RABBITMQ_PORT}//",
     backend="rpc://"
 )
 
 celery_app.conf.task_routes = {
-    'gpu_cover_tasks.gpu_cover': {'queue': 'gpu_cover_tasks'},
-    'gpu_vocal_tasks.gpu_vocal': {'queue': 'gpu_vocal_tasks'},
-    'gpu_instrum_tasks.gpu_instrum': {'queue': 'gpu_instrum_tasks'}
+    'task_cover.cover': {'queue': 'us_cover_queue'},
+    'task_cover.vocal': {'queue': 'us_cover_queue'},
+    'task_cover.instrument': {'queue': 'us_cover_queue'}
 }
