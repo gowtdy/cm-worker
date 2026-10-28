@@ -1,0 +1,1 @@
+docker build -t stable-sound-worker:0.1 -f Dockerfile .

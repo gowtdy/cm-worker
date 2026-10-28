@@ -21,7 +21,7 @@ from utility.allused_voicemodels import register_allused_voicemodels, get_common
 from utility.voice_settings import parse_emo_params, parse_speed_volume_params
 from config.comm_config import DEFAULT_USER_FIRST_IP
 
-from tasks_interface import gpu_gen_tts, gpu_gen_indextts
+from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound
 
 app = FastAPI()
 
@@ -196,6 +196,107 @@ async def tts_endpoint(request: Request):
         f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, '
         f'modelcat:{modelcat}, modellang:{modellang} email:{email}, subscript:{subscript}, '
         f'cost:{cost}, modelname:{modelname}, refer:{referer}, today req cnt:{cnt}, '
+        f'ret:{ret}'
+    )
+    return res
+
+# for web api, 异步提交生成；结果由专门 check 接口查询
+@app.post("/api/gensound")
+async def gensoundTask(request: Request):
+    ret = 0
+    msg = 'ok'
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
+    # 获取HTTP请求的Referer
+    referer = request.headers.get("Referer", "Not provided")
+
+    json_post_raw = await request.json()
+
+    # 验证签名
+    timestamp = json_post_raw.get('tstamp', 0)
+    signature = json_post_raw.get('snature', '')
+
+    tm = time.time()
+    userid = json_post_raw.get("userid", 0)
+    reqid = gen_reqid(userid, tm)
+    localtime = time.localtime(tm)
+    today =  time.strftime(DAY_FORMAT, localtime)
+    datetime = time.strftime("%Y%m%d_%H%M%S", localtime)
+    cnt = 0
+
+    email = json_post_raw.get("email", '')
+    domain = json_post_raw.get("domain", '')
+    # 用户是否订阅,有4个取值, 0 未订阅, 1 已订阅, 2 虽订阅,字符已用完,
+    subscript = json_post_raw.get("subscript", 0)
+
+    text = json_post_raw.get("text", '')
+    length = json_post_raw.get("length", 15)
+    num = json_post_raw.get("num", 1)
+    try:
+        length = int(length)
+    except (TypeError, ValueError):
+        length = 15
+    try:
+        num = int(num)
+    except (TypeError, ValueError):
+        num = 1
+
+    # 验证文本长度
+    text_validation = validate_text_length(text, MAX_SOUND_TEXT_LENGTH, reqid, logger)
+    if text_validation['ret'] != 0:
+        logger.info(f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid},' \
+            f'email:{email}, subscript:{subscript}, refer:{referer}, textlen:{len(text)} exceeds limit!')
+        return text_validation
+
+    textlen = len(text)  # 重新定义 textlen 用于后续逻辑
+
+    ret, msg = validate_signature(logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, ModuleType.SOUND)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_request(logger, real_ip, referer, reqid, email, subscript, today, userid, ModuleType.SOUND, domain, request)
+    if ret != 0:
+        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} email:{email} userid:{userid} subscript:{subscript} ret:{ret}, msg:{msg}')
+        return gen_res_dict(ret, msg)
+
+    generate_content = text
+    task_cmd = '/api/gensound'
+    task_req = json.dumps({
+        "first_ip": first_ip,
+        "userid": userid,
+        "email": email,
+        "length": length,
+        "num": num,
+    }, ensure_ascii=False)
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, userid, domain, generate_content, real_ip, ModuleType.SOUND,
+        task_cmd=task_cmd, task_req=task_req,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    try:
+        gpu_gen_sound.delay(text, length, num, userid, reqid, email, domain=domain)
+    except Exception as e:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} gpu_gen_sound.delay failed: {e}')
+        return gen_res_dict(1, f'dispatch failed: {e}')
+
+    endtm = time.time()
+    cost = int(endtm - tm)
+
+    res = {
+        "ret": 0,
+        "msg": 'ok',
+        "reqid": reqid
+    }
+
+    logger.info(
+        f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, '
+        f'email:{email}, subscript:{subscript}, length:{length}, num:{num}, '
+        f'cost:{cost}, refer:{referer}, today req cnt:{cnt}, '
         f'ret:{ret}'
     )
     return res
