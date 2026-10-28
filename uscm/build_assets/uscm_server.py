@@ -21,7 +21,7 @@ from utility.allused_voicemodels import register_allused_voicemodels, get_common
 from utility.voice_settings import parse_emo_params, parse_speed_volume_params
 from config.comm_config import DEFAULT_USER_FIRST_IP
 
-from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound
+from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract
 
 app = FastAPI()
 
@@ -306,87 +306,83 @@ async def extractaudio_endpoint(request: Request):
     ret = 0
     msg = 'ok'
     task_cmd = '/api/extractaudio'
-    start_tm = time.time()
-    localtime = time.localtime(start_tm)
-    today =  time.strftime(DAY_FORMAT, localtime)
-    datetime = time.strftime('%Y%m%d%H%M%S', localtime)
 
     real_ip = get_real_ip(request)
-    first_ip = real_ip.split(',')[0].strip() if real_ip else ""
+    first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
     # 获取HTTP请求的Referer
     referer = request.headers.get("Referer", "Not provided")
 
-    data = await request.form()
-    uid = data.get('uid', "avuiddefault")
-    email = data.get('email', '')
-    subscript = int(data.get('subscript', 0))
-    upurl = data.get('upurl', '')
-    domain = data.get('domain', '')
+    json_post_raw = await request.json()
 
-    reqid = gen_reqid(uid, start_tm)
+    timestamp = json_post_raw.get('tstamp', 0)
+    signature = json_post_raw.get('snature', '')
 
-    ret, msg = validate_request(logger_audio_extract, real_ip, referer, reqid, email, subscript, today, uid, ModuleType.AUDIO_EXTRACTOR)
-    if ret != 0 :
-        logger_audio_extract.info(f'reqid:{reqid} ip:{real_ip} referer:{referer} uid:{uid} email:{email} subscript:{subscript} upurl:{upurl} ret:{ret}, msg:{msg}')
-        return gen_res_dict(ret, msg)
+    tm = time.time()
+    userid = json_post_raw.get("userid", 0)
+    reqid = gen_reqid(userid, tm)
+    localtime = time.localtime(tm)
+    today = time.strftime(DAY_FORMAT, localtime)
+    datetime = time.strftime("%Y%m%d_%H%M%S", localtime)
 
-    if (len(upurl.strip()) == 0):
+    email = json_post_raw.get("email", '')
+    domain = json_post_raw.get("domain", '')
+    subscript = json_post_raw.get("subscript", 0)
+
+    upurl = json_post_raw.get("upurl", '')
+
+    if len(upurl.strip()) == 0:
         ret = 1
         msg = f'upurl is invalid, reqid:{reqid}!'
-        logger_audio_extract.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} subscript:{subscript} msg:{msg} upurl:{upurl} referer:{referer}')
-        return gen_res_dict(ret, msg)
-
-    timestamp = data.get('tstamp', 0)
-    signature = data.get('snature', '')
-    ret, msg = validate_signature(logger_audio_extract, timestamp, signature, upurl, datetime, reqid, first_ip, real_ip, uid, email, subscript, referer, ModuleType.AUDIO_EXTRACTOR)
-    if ret != 0 :
-        logger_audio_extract.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_signature failed: {msg}')
+        logger.warning(f'reqid:{reqid} ip:{real_ip} userid:{userid} email:{email} subscript:{subscript} msg:{msg} upurl:{upurl} referer:{referer}')
         return gen_res_dict(ret, msg)
 
     # 验证音频URL
-    ret, msg, upfileinfo = validate_audio_url(upurl, reqid, first_ip, email, today, datetime, logger_audio_extract)
+    ret, msg, upfileinfo = validate_audio_url(upurl, reqid, first_ip, email, today, datetime, logger)
     if ret != 0:
-        logger_audio_extract.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_audio_url failed: {msg}')
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} userid:{userid} email:{email} validate_audio_url failed: {msg}')
         return gen_res_dict(ret, msg)
 
-    ret = add_ip_tool_record(first_ip, today, ToolType.AUDIO_EXTRACTOR, task_id=reqid, uid=uid, user_email=email, allip_address=real_ip, task_cmd=task_cmd)
+    ret, msg = validate_signature(logger, timestamp, signature, upurl, datetime, reqid, first_ip, real_ip, userid, email, ModuleType.AUDIO_EXTRACTOR)
     if ret != 0:
-        logger_audio_extract.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} add_ip_tool_record failed: {msg}')
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} validate_signature failed: {msg}')
         return gen_res_dict(ret, msg)
 
-    logger_audio_extract.info(f'extractaudio, reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} add_ip_tool_record done, add to extractaudio task queue')
-    task_audio_extract.delay(upfileinfo, task_id=reqid, first_ip=first_ip, email=email)  
-    logger_audio_extract.info(f'extractaudio, reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} waiting for extractaudio worker task done')
-
-    timeout: int = 180
-    interval: float = 2.0
-    dbret, uri = get_tool_out_path_by_task_id(reqid, timeout, interval)
-    if dbret != 0 :
-        ret = 6
-        msg = "System is busy now, please try again later!"
-        if dbret == 2:
-            logger_audio_extract.error(f'extractaudio reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} process failed, dbret:{dbret}, uri:{uri}, msg: {msg}')
-        elif dbret == 1:
-            logger_audio_extract.error(f'extractaudio reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} proceess timeout, dbret:{dbret}, uri:{uri}, msg: {msg}')
-        else :
-            logger_audio_extract.error(f'extractaudio reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} process unknown error, dbret:{dbret}, uri:{uri}, msg: {msg}')
+    ret, msg = validate_request(logger, real_ip, referer, reqid, email, subscript, today, userid, ModuleType.AUDIO_EXTRACTOR, domain, request)
+    if ret != 0:
+        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} email:{email} userid:{userid} subscript:{subscript} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg)
 
-    encrypted_uri = encrypt_url(uri)
+    generate_content = upfileinfo['relative_path']
+    task_req = json.dumps({
+        "first_ip": first_ip,
+        "userid": userid,
+        "email": email,
+        "upurl": upurl,
+    }, ensure_ascii=False)
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, userid, domain, generate_content, real_ip, ModuleType.AUDIO_EXTRACTOR,
+        task_cmd=task_cmd, task_req=task_req,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    audio_extract.delay(upfileinfo, task_id=reqid, email=email, domain=domain)
 
     endtm = time.time()
-    cost = int(endtm - start_tm)
+    cost = int(endtm - tm)
 
     res = {
         "ret": 0,
         "msg": 'ok',
-        "uri": uri,
-        "enurl": encrypted_uri,
         "reqid": reqid
     }
-    
-    logmsg = f'vocal, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, email:{email}, subscript:{subscript}, cost:{cost}, refer:{referer}, ret:{ret}, uri:{uri}, enurl:{encrypted_uri}'
-    logger_audio_extract.info(logmsg)
+
+    logger.info(
+        f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, '
+        f'email:{email}, subscript:{subscript}, cost:{cost}, refer:{referer}, upurl:{upurl}, '
+        f'ret:{ret}'
+    )
     return res
 
 #if __name__ == "__main__":
