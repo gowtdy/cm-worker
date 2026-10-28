@@ -2,7 +2,7 @@
 
 Workers dispatch by SyncJob.transport to rsync or QUIC backends.
 On quic failure, one rsync fallback attempt is made (socat warmed at startup).
-Completion updates MySQL task records; GPU inference does not wait.
+Completion updates task records via UserServer /inapi/update_task; GPU inference does not wait.
 """
 
 import atexit
@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Protocol, Tuple
 
 from utility.module_enum import TaskStatus
 from utility.socat_rsyc_util import RsyncProxy, get_socat_proxy_configs
+from utility.userserver_client import update_task_status
 from utility.file_sync_config import get_file_sync_transport
 
 VIDEO_SCRIPT_TTS_EMAIL = "video_script_tts"
@@ -48,6 +49,7 @@ class SyncJob:
     output_file: str
     proxies: List[RsyncProxy] = field(default_factory=list)
     transport: str = "quic"
+    domain: str = ""
 
 
 class FileTransport(Protocol):
@@ -143,19 +145,17 @@ def complete_sync_job(
     used_transport: Optional[str] = None,
     fallback: int = 0,
 ):
-    from sql.mysql_db import update_ip_use_record
-
     used = used_transport if used_transport is not None else job.transport
     if ok:
         uri = f"/outdt{job.short_uri_prefix}/{job.output_file}"
-        update_ip_use_record(job.task_id, uri, TaskStatus.COMPLETE)
+        update_task_status(logger, job.task_id, job.domain, uri, TaskStatus.COMPLETE)
         logger.info(
             f"async_sync_complete task_id={job.task_id} uri={uri} "
             f"transport={job.transport} used_transport={used} fallback={fallback}"
         )
     else:
         msg = err_msg or "sync_files failed"
-        update_ip_use_record(job.task_id, msg, TaskStatus.FAILED)
+        update_task_status(logger, job.task_id, job.domain, msg, TaskStatus.FAILED)
         logger.error(
             f"async_sync_failed task_id={job.task_id} msg={msg} "
             f"transport={job.transport} used_transport={used} fallback={fallback}"
