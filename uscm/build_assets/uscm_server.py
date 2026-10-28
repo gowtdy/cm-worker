@@ -389,6 +389,291 @@ async def extractaudio_endpoint(request: Request):
     )
     return res
 
+@app.post("/api/cover")
+async def cover_endpoint(request: Request):
+    ret = 0
+    msg = 'ok'
+    task_cmd = '/api/cover'
+    start_tm = time.time()
+    localtime = time.localtime(start_tm)
+    today =  time.strftime(DAY_FORMAT, localtime)
+    datetime = time.strftime('%Y%m%d%H%M%S', localtime)
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else ""
+    # 获取HTTP请求的Referer
+    referer = request.headers.get("Referer", "Not provided")
+
+    data = await request.form()
+    uid = data.get('uid', "avuiddefault")
+    email = data.get('email', '')
+    subscript = int(data.get('subscript', 0))
+    modelname = data.get('modelname', '')
+    modelcat = data.get('modelcat', '')
+    modelgender = data.get('modelgender', '').lower()
+    tabtype = data.get('tabtype', '')
+    lang = data.get('lang', 'english')
+    converturl = data.get('converturl', '')
+    upgender = data.get('upgender', '').lower()
+
+    reqid = gen_reqid(uid, start_tm)
+    logger_cover.debug(f'reqid:{reqid} real_ip:{real_ip} referer:{referer} uid:{uid} email:{email} subscript:{subscript} modelname:{modelname} modelcat:{modelcat}' \
+        f'tabtype:{tabtype} lang:{lang} converturl:{converturl} upgender:{upgender} modelgender:{modelgender}')
+
+    ret, msg = validate_request(logger_cover, real_ip, referer, reqid, email, subscript, today, uid, ModuleType.COVER)
+    if ret != 0 :
+        logger_cover.info(f'reqid:{reqid} ip:{real_ip} referer:{referer} uid:{uid} email:{email} subscript:{subscript} modelname:{modelname} modelcat:{modelcat}' \
+            f'tabtype:{tabtype} lang:{lang} converturl:{converturl} upgender:{upgender} modelgender:{modelgender} ret:{ret}, msg:{msg}')
+        return gen_res_dict(ret, msg)
+
+    if not validate_gender(upgender) or not validate_gender(modelgender):
+        ret = 1
+        msg = f'upgender:{upgender} or modelgender:{modelgender} is invalid, reqid:{reqid}!'
+        logger_cover.warning(f'cover, reqid:{reqid} ip:{real_ip} uid:{uid} email:{email}, msg: {msg}')
+        return gen_res_dict(ret, msg)
+
+    if (len(modelname.strip()) == 0 or len(modelcat.strip()) == 0 or len(lang.strip()) == 0 or len(converturl.strip()) == 0):
+        ret = 1
+        msg = f'modelname:{modelname} or modelcat:{modelcat} or lang:{lang} or converturl:{converturl} is invalid, reqid:{reqid}!'
+        logger_cover.warning(f'reqid:{reqid} ip:{real_ip} email:{email}, msg: {msg}')
+        return gen_res_dict(ret, msg)
+    
+    ret, msg, upfileinfo = validate_audio_url(converturl, reqid, first_ip, email, today, datetime, logger_cover)
+    if ret != 0:
+        logger_cover.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_audio_url failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    timestamp = data.get('tstamp', 0)
+    signature = data.get('snature', '')
+    ret, msg = validate_signature(logger_cover, timestamp, signature, converturl, datetime, reqid, first_ip, real_ip, uid, email, subscript, referer, ModuleType.COVER)
+    if ret != 0 :
+        logger_cover.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    model_path = f'{cover_model_dir}/{lang}/{modelcat}/{modelname}'
+    model_index_path = f'{model_path}/{modelname}_v2.index'
+    model_file_path = f'{model_path}/{modelname}_weights.pth'
+    if not os.path.exists(model_path) or not os.path.exists(model_index_path) or not os.path.exists(model_file_path):
+        ret = 1
+        msg = f'model {modelcat}-{modelname} is not exists, reqid:{reqid}!'
+        logger_cover.warning(f'reqid:{reqid} ip:{real_ip} email:{email},  {model_index_path} or {model_file_path} is not exists,  msg: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret = add_ip_tool_record(first_ip, today, ToolType.COVER, task_id=reqid, uid=uid, user_email=email, allip_address=real_ip, task_cmd=task_cmd)
+    if ret != 0:
+        logger_cover.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} add_ip_tool_record failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    logger_cover.info(f'cover, reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} add_ip_tool_record done, add to cover task queue')
+    gpu_cover.delay(modelcat, modelname, modelgender, upfileinfo, upgender, task_id=reqid, first_ip=first_ip, email=email, lang=lang)  
+    logger_cover.info(f'cover, reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} waiting for cover worker task done')
+
+    timeout: int = 180
+    interval: float = 2.0
+    dbret, uri = get_tool_out_path_by_task_id(reqid, timeout, interval)
+    if dbret != 0 :
+        ret = 6
+        msg = "System is busy now, please try again later!"
+        if dbret == 2:
+            logger_cover.error(f'cover reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} process failed, dbret:{dbret}, uri:{uri}, msg: {msg}')
+        elif dbret == 1:
+            logger_cover.error(f'cover reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} proceess timeout, dbret:{dbret}, uri:{uri}, msg: {msg}')
+        else :
+            logger_cover.error(f'cover reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} process unknown error, dbret:{dbret}, uri:{uri}, msg: {msg}')
+        return gen_res_dict(ret, msg)
+
+    encrypted_uri = encrypt_url(uri)
+    endtm = time.time()
+    cost = int(endtm - start_tm)
+
+    res = {
+        "ret": 0,
+        "msg": 'ok',
+        "uri": uri,
+        "enurl": encrypted_uri,
+        "reqid": reqid
+    }
+    
+    logmsg = f'cover, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, modelcat:{modelcat}, modellang:{lang} email:{email}, subscript:{subscript}, cost:{cost}, modelname:{modelname}, refer:{referer}, ret:{ret}, uri:{uri}, enurl:{encrypted_uri}'
+    logger_cover.info(logmsg)
+
+    return res
+
+@app.post("/api/vocal")
+async def vocal_endpoint(request: Request):
+    ret = 0
+    msg = 'ok'
+    task_cmd = '/api/vocal'
+    start_tm = time.time()
+    localtime = time.localtime(start_tm)
+    today =  time.strftime(DAY_FORMAT, localtime)
+    datetime = time.strftime('%Y%m%d%H%M%S', localtime)
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else ""
+    # 获取HTTP请求的Referer
+    referer = request.headers.get("Referer", "Not provided")
+
+    data = await request.form()
+    uid = data.get('uid', "avuiddefault")
+    email = data.get('email', '')
+    subscript = int(data.get('subscript', 0))
+    upurl = data.get('upurl', '')
+
+    reqid = gen_reqid(uid, start_tm)
+
+    ret, msg = validate_request(logger_cover, real_ip, referer, reqid, email, subscript, today, uid, ModuleType.VOCAL_ISOLATOR)
+    if ret != 0 :
+        logger_echobeat_cover.info(f'reqid:{reqid} ip:{real_ip} referer:{referer} uid:{uid} email:{email} subscript:{subscript} upurl:{upurl} ret:{ret}, msg:{msg}')
+        return gen_res_dict(ret, msg)
+
+    if (len(upurl.strip()) == 0):
+        ret = 1
+        msg = f'upurl is invalid, reqid:{reqid}!'
+        logger_echobeat_cover.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} subscript:{subscript} msg:{msg} upurl:{upurl} referer:{referer}')
+        return gen_res_dict(ret, msg)
+
+    timestamp = data.get('tstamp', 0)
+    signature = data.get('snature', '')
+    ret, msg = validate_signature(logger_cover, timestamp, signature, upurl, datetime, reqid, first_ip, real_ip, uid, email, subscript, referer, ModuleType.VOCAL_ISOLATOR)
+    if ret != 0 :
+        logger_echobeat_cover.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    # 验证音频URL
+    ret, msg, upfileinfo = validate_audio_url(upurl, reqid, first_ip, email, today, datetime, logger_cover)
+    if ret != 0:
+        logger_echobeat_cover.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_audio_url failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret = add_ip_tool_record(first_ip, today, ToolType.VOCAL_ISOLATOR, task_id=reqid, uid=uid, user_email=email, allip_address=real_ip, task_cmd=task_cmd)
+    if ret != 0:
+        logger_echobeat_cover.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} add_ip_tool_record failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    logger_echobeat_cover.info(f'vocal, reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} add_ip_tool_record done, add to vocal task queue')
+    gpu_vocal.delay(upfileinfo, task_id=reqid, first_ip=first_ip, email=email)  
+    logger_echobeat_cover.info(f'vocal, reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} waiting for vocal worker task done')
+
+    timeout: int = 180
+    interval: float = 2.0
+    dbret, uri = get_tool_out_path_by_task_id(reqid, timeout, interval)
+    if dbret != 0 :
+        ret = 6
+        msg = "System is busy now, please try again later!"
+        if dbret == 2:
+            logger_echobeat_cover.error(f'vocal reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} process failed, dbret:{dbret}, uri:{uri}, msg: {msg}')
+        elif dbret == 1:
+            logger_echobeat_cover.error(f'vocal reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} proceess timeout, dbret:{dbret}, uri:{uri}, msg: {msg}')
+        else :
+            logger_echobeat_cover.error(f'vocal reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} process unknown error, dbret:{dbret}, uri:{uri}, msg: {msg}')
+        return gen_res_dict(ret, msg)
+
+    encrypted_uri = encrypt_url(uri)
+
+    endtm = time.time()
+    cost = int(endtm - start_tm)
+
+    res = {
+        "ret": 0,
+        "msg": 'ok',
+        "uri": uri,
+        "enurl": encrypted_uri,
+        "reqid": reqid
+    }
+    
+    logmsg = f'vocal, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, email:{email}, subscript:{subscript}, cost:{cost}, refer:{referer}, ret:{ret}, uri:{uri}, enurl:{encrypted_uri}'
+    logger_echobeat_cover.info(logmsg)
+
+    return res
+
+@app.post("/api/instrument")
+async def instrument_endpoint(request: Request):
+    ret = 0
+    msg = 'ok'
+    task_cmd = '/api/instrument'
+    start_tm = time.time()
+    localtime = time.localtime(start_tm)
+    today =  time.strftime(DAY_FORMAT, localtime)
+    datetime = time.strftime('%Y%m%d%H%M%S', localtime)
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else ""
+    # 获取HTTP请求的Referer
+    referer = request.headers.get("Referer", "Not provided")
+
+    data = await request.form()
+    uid = data.get('uid', "avuiddefault")
+    email = data.get('email', '')
+    subscript = int(data.get('subscript', 0))
+    upurl = data.get('upurl', '')
+
+    reqid = gen_reqid(uid, start_tm)
+
+    ret, msg = validate_request(logger_cover, real_ip, referer, reqid, email, subscript, today, uid, ModuleType.VOCAL_REMOVER)
+    if ret != 0 :
+        logger_cover.info(f'reqid:{reqid} ip:{real_ip} referer:{referer} uid:{uid} email:{email} subscript:{subscript} upurl:{upurl} ret:{ret}, msg:{msg}')
+        return gen_res_dict(ret, msg)
+
+    if (len(upurl.strip()) == 0):
+        ret = 1
+        msg = f'upurl is invalid, reqid:{reqid}!'
+        logger_cover.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} subscript:{subscript} msg:{msg} upurl:{upurl} referer:{referer}')
+        return gen_res_dict(ret, msg)
+
+    timestamp = data.get('tstamp', 0)
+    signature = data.get('snature', '')
+    ret, msg = validate_signature(logger_cover, timestamp, signature, upurl, datetime, reqid, first_ip, real_ip, uid, email, subscript, referer, ModuleType.VOCAL_REMOVER)
+    if ret != 0 :
+        logger_cover.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    # 验证音频URL
+    ret, msg, upfileinfo = validate_audio_url(upurl, reqid, first_ip, email, today, datetime, logger_cover)
+    if ret != 0:
+        logger_cover.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_audio_url failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret = add_ip_tool_record(first_ip, today, ToolType.VOCAL_REMOVER, task_id=reqid, uid=uid, user_email=email, allip_address=real_ip, task_cmd=task_cmd)
+    if ret != 0:
+        logger_cover.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} add_ip_tool_record failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    logger_cover.info(f'instrument, reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} add_ip_tool_record done, add to instrument task queue')
+    gpu_instrument.delay(upfileinfo, task_id=reqid, first_ip=first_ip, email=email)  
+    logger_cover.info(f'instrument, reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} waiting for instrument worker task done')
+
+    timeout: int = 180
+    interval: float = 2.0
+    dbret, uri = get_tool_out_path_by_task_id(reqid, timeout, interval)
+    if dbret != 0 :
+        ret = 6
+        msg = "System is busy now, please try again later!"
+        if dbret == 2:
+            logger_cover.error(f'instrument reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} process failed, dbret:{dbret}, uri:{uri}, msg: {msg}')
+        elif dbret == 1:
+            logger_cover.error(f'instrument reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} proceess timeout, dbret:{dbret}, uri:{uri}, msg: {msg}')
+        else :
+            logger_cover.error(f'instrument reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} process unknown error, dbret:{dbret}, uri:{uri}, msg: {msg}')
+        return gen_res_dict(ret, msg)
+    encrypted_uri = encrypt_url(uri)
+
+    endtm = time.time()
+    cost = int(endtm - start_tm)
+
+    res = {
+        "ret": 0,
+        "msg": 'ok',
+        "uri": uri,
+        "enurl": encrypted_uri,
+        "reqid": reqid
+    }
+    
+    logmsg = f'instrument, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, email:{email}, subscript:{subscript}, cost:{cost}, refer:{referer}, ret:{ret}, uri:{uri}, enurl:{encrypted_uri}'
+    logger_cover.info(logmsg)
+
+    return res
+
 #if __name__ == "__main__":
 #    import uvicorn
 
