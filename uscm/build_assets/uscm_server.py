@@ -43,10 +43,10 @@ LOG_FORMAT = "%(asctime)s-%(filename)s[line:%(lineno)d]-%(levelname)s: %(message
 _formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
 
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.DEBUG)
+console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(_formatter)
 logger.addHandler(console_handler)
 
