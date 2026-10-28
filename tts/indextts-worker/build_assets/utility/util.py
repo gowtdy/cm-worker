@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-import numpy as np
-import time
 import hmac
 import hashlib
+import secrets
+import time
 
 from utility.voice_config import get_hmac_secret_key
 
-def genid(userid:int, timestamp:int):
-    seed = np.random.randint(low=1, high=100)
-    id = ((int(userid<<10) ^ int(timestamp)) << 2) | int(seed) 
-    print(f'id:{id}, userid:{userid}, timestamp:{timestamp}')
-    return id
+def gen_reqid(uid=None, timestamp=None):
+    """秒级时间戳 hex + 8 hex 随机（约 16 字符，字符集 [0-9a-f]）。"""
+    ts = int(timestamp if timestamp is not None else time.time())
+    return f"{ts:x}{secrets.token_hex(4)}"
 
 def gen_res_dict(ret: int, msg: str, dt=None):
     d = {}
