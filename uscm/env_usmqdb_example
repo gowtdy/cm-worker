@@ -7,3 +7,5 @@ US_RABBITMQ_PASS=xxxx
 # common userserver 配置
 US_COMMON_USERSERVER_HOST=149.28.202.108
 US_COMMON_USERSERVER_PORT=2200
+# common server 内部调用鉴权 
+INAPI_AUTH_TOKEN=xxxxxx

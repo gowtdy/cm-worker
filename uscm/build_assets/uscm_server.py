@@ -6,18 +6,20 @@ import random
 import hmac
 import hashlib
 import datetime
+import json
 import yaml
 import asyncio
 
 from fastapi import FastAPI, Request, Query
 
 from utility.util import gen_reqid, gen_res_dict, map_lang_abbrev
-from utility.encrypt_util import encrypt_url
 from utility.request_util import get_real_ip, validate_request, validate_signature, validate_text_length, \
     validate_gender, validate_audio_url
 from utility.module_enum import ModuleType
+from utility.userserver_client import post_generate_add
 from utility.allused_voicemodels import register_allused_voicemodels, get_common_model
 from utility.voice_settings import parse_emo_params, parse_speed_volume_params
+from config.comm_config import DEFAULT_USER_FIRST_IP
 
 from tasks_interface import gpu_gen_tts, gpu_gen_indextts
 
@@ -41,19 +43,19 @@ LOG_FORMAT = "%(asctime)s-%(filename)s[line:%(lineno)d]-%(levelname)s: %(message
 _formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
 
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(_formatter)
 logger.addHandler(console_handler)
 
-app_handler = logging.FileHandler(os.path.join(log_dir, 'app.log'))
+app_handler = logging.FileHandler(os.path.join(log_dir, 'uscm_server.log'))
 app_handler.setLevel(logging.DEBUG)
 app_handler.setFormatter(_formatter)
 logger.addHandler(app_handler)
 
-error_handler = logging.FileHandler(os.path.join(log_dir, 'error.log'))
+error_handler = logging.FileHandler(os.path.join(log_dir, 'uscm_server_error.log'))
 error_handler.setLevel(logging.ERROR)
 error_handler.setFormatter(_formatter)
 logger.addHandler(error_handler)
@@ -68,14 +70,14 @@ MAX_TTS_TEXT_LENGTH = 700
 MAX_ENTTTS_TEXT_LENGTH = 400
 MAX_SOUND_TEXT_LENGTH = 100
 
-# for web api, 同步请求
+# for web api, 异步提交生成；结果由专门 check 接口查询
 @app.post("/api/genaudio")
 async def tts_endpoint(request: Request):
     ret = 0
     msg = 'ok'
 
     real_ip = get_real_ip(request)
-    first_ip = real_ip.split(',')[0].strip() if real_ip else ""
+    first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
     # 获取HTTP请求的Referer
     referer = request.headers.get("Referer", "Not provided")
 
@@ -87,24 +89,16 @@ async def tts_endpoint(request: Request):
 
     tm = time.time()
     userid = json_post_raw.get("userid", 0)
-    if isinstance(userid, int):
-        userid_hash = userid & 0xFFFFFFFF  # 直接取32位
-    else:
-        userid_hash = hash(str(userid)) & 0xFFFFFFFF
-    reqid = gen_reqid(userid_hash, tm)
+    reqid = gen_reqid(userid, tm)
     localtime = time.localtime(tm)
     today =  time.strftime(DAY_FORMAT, localtime)
     datetime = time.strftime("%Y%m%d_%H%M%S", localtime)
     cnt = 0
-    # 用户是否订阅,有4个取值, 0 未订阅, 1 已订阅, 2 虽订阅,字符已用完,
-    subscript = json_post_raw.get("subscript", 0)
+    
     email = json_post_raw.get("email", '')
     domain = json_post_raw.get("domain", '')
-
-    ret, msg = validate_request(logger, real_ip, referer, reqid, email, subscript, today, userid, ModuleType.TTS, domain)
-    if ret != 0 :
-        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} email:{email} userid:{userid} subscript:{subscript} ret:{ret}, msg:{msg}')
-        return gen_res_dict(ret, msg)
+    # 用户是否订阅,有4个取值, 0 未订阅, 1 已订阅, 2 虽订阅,字符已用完,
+    subscript = json_post_raw.get("subscript", 0)
 
     output_format = json_post_raw.get("output_format", DEFAULT_FORMAT)
 
@@ -118,9 +112,14 @@ async def tts_endpoint(request: Request):
     
     textlen = len(text)  # 重新定义 textlen 用于后续逻辑
     
-    ret, msg = validate_signature(logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, subscript, referer, ModuleType.TTS)
+    ret, msg = validate_signature(logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, ModuleType.TTS)
     if ret != 0 :
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_request(logger, real_ip, referer, reqid, email, subscript, today, userid, ModuleType.TTS, domain, request)
+    if ret != 0 :
+        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} email:{email} userid:{userid} subscript:{subscript} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg)
 
     modelcat = json_post_raw.get("modelcat", '')
@@ -144,7 +143,9 @@ async def tts_endpoint(request: Request):
         f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} handle, '
         f'modellang:{modellang} model_type:{tts_modeltype} model_typeversion:{tts_modelversion}'
     )
-    if tts_modeltype == "index-tts" :
+    generate_content = f'{modelcat}|{modelname}|{text}'
+    emo_type, emo_alpha, speed, volume_db = 'default', 1.0, 1.0, 0.0
+    if tts_modeltype == "index-tts":
         ok, emo_type, emo_alpha, emo_err = parse_emo_params(json_post_raw, logger)
         if not ok:
             logger.warning(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} parse_emo_params failed: {emo_err}')
@@ -153,37 +154,41 @@ async def tts_endpoint(request: Request):
         if not ok2:
             logger.warning(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} parse_speed_volume_params failed: {sv_err}')
             return gen_res_dict(1, sv_err)
+
+    task_cmd = '/api/genaudio'
+    task_req = json.dumps({
+        "first_ip": first_ip,
+        "userid": userid,
+        "email": email,
+        "emo_type": emo_type,
+        "emo_alpha": emo_alpha,
+        "speed": speed,
+        "volume_db": volume_db,
+        "output_format": output_format,
+    }, ensure_ascii=False)
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, userid, domain, generate_content, real_ip, ModuleType.TTS,
+        task_cmd=task_cmd, task_req=task_req,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    if tts_modeltype == "index-tts":
         gpu_gen_indextts.delay(
             modelname, text, modelcat, userid, reqid, output_format, modellang, email,
-            emo_type=emo_type, emo_alpha=emo_alpha, speed=speed, volume_db=volume_db,
+            domain=domain, emo_type=emo_type, emo_alpha=emo_alpha, speed=speed, volume_db=volume_db,
             )
-    else :
+    else:
         modellang = map_lang_abbrev(modellang, modellang)
-        gpu_gen_tts.delay(modelname, text, modelcat, userid, 1, reqid, output_format, modellang, email)
-
-    timeout: int = 180
-    interval: float = 1.0
-
-    uri = ''
-    encrypted_uri = ''
-    #uri, task_status, task_detail = get_tts_out_path_by_id(reqid, timeout, interval)
-    #if uri is None:
-    #    ret = 6
-    #    msg = "System is busy now, please try again later!"
-    #    logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} process failed, task_status:{task_status}, task_detail:{task_detail}')
-    #    return gen_res_dict(ret, msg)
-    #encrypted_uri = encrypt_url(uri)
+        gpu_gen_tts.delay(modelname, text, modelcat, userid, reqid, output_format, modellang, email)
 
     endtm = time.time()
     cost = int(endtm - tm)
 
-    #torch.cuda.empty_cache()
-
     res = {
         "ret": 0,
         "msg": 'ok',
-        "uri": uri,
-        "enurl": encrypted_uri,
         "reqid": reqid
     }
     
@@ -191,7 +196,7 @@ async def tts_endpoint(request: Request):
         f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, '
         f'modelcat:{modelcat}, modellang:{modellang} email:{email}, subscript:{subscript}, '
         f'cost:{cost}, modelname:{modelname}, refer:{referer}, today req cnt:{cnt}, '
-        f'ret:{ret}, uri:{uri}, enurl:{encrypted_uri}'
+        f'ret:{ret}'
     )
     return res
 

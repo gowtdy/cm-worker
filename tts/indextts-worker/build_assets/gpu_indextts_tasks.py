@@ -21,6 +21,7 @@ from utility.voice_config import (
     get_file_sync_transport, get_quic_client_host, get_quic_client_port,
 )
 from utility.module_enum import TaskStatus
+from utility.userserver_client import update_task_status
 from utility.socat_rsyc_util import (
     RsyncTransport,
     get_socat_proxy_configs,
@@ -45,7 +46,7 @@ from indextts_worker import (
     normalize_emo_type,
     parse_emo_alpha,
 )
-from utility.log import logset, setup_logger
+from utility.log import logset, setup_logger, set_reqid, clear_reqid
 from utility.voice_config import get_remote_ttssave_dir, get_localnet_video_tts_dir
 from utility.gpu_util import cuda_error_handler, check_and_wait_for_gpu_memory, manage_gpu_memory, \
     check_gpu_health, log_gpu_error_details
@@ -183,176 +184,175 @@ def save_audio_file(sample_rate, audio, output_format, base_output_path, filenam
 
 @celery_app.task(name='task_gen_indextts')
 @cuda_error_handler(logger)
-def gpu_gen_tts(modelname, text, modelcat='', userid=0, reqid='0', output_format=DEFAULT_FORMAT, modellang='en', email='',
-                emo_type='default', emo_alpha=1.0, speed=1.0, volume_db=0.0):
-    isEapi = str(reqid).endswith('.eapi')
-    task_id = reqid
-    if isEapi:
-        task_id = str(reqid).removesuffix('.eapi')
-
-    if (len(modelname.strip()) == 0):
-        ret = 1
-        msg = f'modelname:{modelname} is invalid, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
-        logger.warning(f'msg: {msg}')
-        #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-        return gen_res_dict(ret, msg)
-
-    if (len(text.strip()) == 0):
-        ret = 1
-        msg = f'text:{text} is empty, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
-        logger.warning(f'msg: {msg}')
-        #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-        return gen_res_dict(ret, msg)
-
+def gpu_gen_tts(modelname, text, modelcat='', userid=0, task_id='0', output_format=DEFAULT_FORMAT, modellang='en', email='',
+                domain='', emo_type='default', emo_alpha=1.0, speed=1.0, volume_db=0.0):
+    set_reqid(task_id)
     try:
-        emo_type = normalize_emo_type(emo_type)
-        emo_alpha = parse_emo_alpha(emo_alpha, logger=logger)
-        emo_vector = emo_type_to_vector(emo_type)
-        speed = parse_speed(speed)
-        volume_db = parse_volume_db(volume_db)
-        duration_factor = speed_to_duration_factor(speed)
-    except ValueError as e:
-        ret = 1
-        msg = f'{e}, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
-        logger.warning(f'msg: {msg}')
-        #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-        return gen_res_dict(ret, msg)
-
-    localtime = time.localtime(time.time())
-    today = time.strftime(DAY_FORMAT, localtime)
-    datetime_str = time.strftime("%Y%m%d%H%M%S", localtime)
-    random_number = random.randint(1, 1000)
-    start_time = time.time()
-    textlen = len(text)
-
-    # 任务开始时安全地管理GPU内存
-    try:
-        if torch.cuda.is_available():
-            # 检查并等待GPU内存
-            if not check_and_wait_for_gpu_memory(logger, device, min_free_gb=2.0, max_wait_seconds=30):
-                logger.warning(f'GPU memory low at task start, attempting cleanup. reqid:{reqid}')
-                manage_gpu_memory(logger, device)
-                # 再次检查
-                if not check_and_wait_for_gpu_memory(logger, device, min_free_gb=1.5, max_wait_seconds=10):
-                    logger.error(f'GPU memory insufficient for task, reqid:{reqid}')
-                    ret = 1
-                    msg = f'GPU memory insufficient, please try again later, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
-                    #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-                    return gen_res_dict(ret, msg)
-    except Exception as e:
-        logger.warning(f'GPU memory check failed at task start: {e}')
-
-    try:
-        model_file_prefix = modelname
-        # 公用模型
-        model_path = f'models/service_model/common_models/{modelcat}/common_model_{modelname}'
-
-        if not os.path.exists(model_path) :
+        if (len(modelname.strip()) == 0):
             ret = 1
-            msg = f'modelname:{modelname} is invalid, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
-            logger.warning(f'model_path:{model_path}, modelname:{modelname}, worker:{WORKER_HOSTNAME}')
-            #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-            return gen_res_dict(ret, msg)
-
-        # 在加载模型前检查 GPU 健康状态
-        if not check_gpu_health(logger, device, attempt_recovery=True):
-            logger.error(f'GPU health check failed, skipping task for reqid:{reqid}')
-                
-            # 记录详细错误信息
-            log_gpu_error_details(logger, device, "GPU health check failed")
-                
-            ret = 1
-            msg = f'GPU is in an unhealthy state, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
-            logger.error(f'msg: {msg}')
-            #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-            return gen_res_dict(ret, msg)
-        
-        filename_prefix = f'idx_{modelname}_{datetime_str}_{random_number}'
-        speacker_pt_path = f"{model_path}/{model_file_prefix}_audio_prompt.pt"
-        if not os.path.exists(speacker_pt_path):
-            ret = 1
-            msg = f'speacker_pt_path {speacker_pt_path} not found, reqid:{reqid}, worker:{WORKER_HOSTNAME}!'
+            msg = f'modelname:{modelname} is invalid, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
             logger.warning(f'msg: {msg}')
-            #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
             return gen_res_dict(ret, msg)
 
-        text_lang = resolve_text_lang(text, fallback_lang=modellang, logger=logger)
-        logger.debug(
-            f'reqid:{reqid}, resolve_text_lang text_lang:{text_lang}, modellang:{modellang}, '
-            f'emo_type:{emo_type}, emo_alpha:{emo_alpha}, emo_vector:{emo_vector}, '
-            f'speed:{speed}, duration_factor:{duration_factor}, volume_db:{volume_db}'
-        )
-        sample_rate, audio = indextts_infer(
-            logger, indextts_model, speacker_pt_path, text, text_lang=text_lang, reqid=task_id,
-            duration_factor=duration_factor,
-            emo_vector=emo_vector, emo_alpha=emo_alpha,
-        )
+        if (len(text.strip()) == 0):
+            ret = 1
+            msg = f'text:{text} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+            logger.warning(f'msg: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return gen_res_dict(ret, msg)
 
-        wav_output_path = wav_output_dir + '/' + today + '/user' + str(userid) 
-        # short_uri_prefix: sync success -> /outdt{prefix}/file; complete only after async sync
-        short_uri_prefix = f'/wavcl/{today}/user{userid}'
+        try:
+            emo_type = normalize_emo_type(emo_type)
+            emo_alpha = parse_emo_alpha(emo_alpha, logger=logger)
+            emo_vector = emo_type_to_vector(emo_type)
+            speed = parse_speed(speed)
+            volume_db = parse_volume_db(volume_db)
+            duration_factor = speed_to_duration_factor(speed)
+        except ValueError as e:
+            ret = 1
+            msg = f'{e}, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+            logger.warning(f'msg: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return gen_res_dict(ret, msg)
 
-        output_path, output_file = save_audio_file(
-            sample_rate, audio, output_format, wav_output_path, filename_prefix,
-            volume_db=volume_db,
-        )
+        localtime = time.localtime(time.time())
+        today = time.strftime(DAY_FORMAT, localtime)
+        datetime_str = time.strftime("%Y%m%d%H%M%S", localtime)
+        random_number = random.randint(1, 1000)
+        start_time = time.time()
+        textlen = len(text)
 
-        if email == VIDEO_SCRIPT_TTS:
-            remote_ttssave_dir = get_localnet_video_tts_dir()
-            proxies = []
-            delivery_transport = "http"
-        else:
-            remote_ttssave_dir = get_remote_ttssave_dir()
-            delivery_transport = resolve_delivery_transport(email)
-            proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
-        remote_target_dir = f'{remote_ttssave_dir}/{today}/user{userid}'
-        sync_job = SyncJob(
-            source_file=output_path,
-            target_dir=remote_target_dir,
-            task_id=task_id,
-            is_eapi=isEapi,
-            short_uri_prefix=short_uri_prefix,
-            output_file=output_file,
-            proxies=list(proxies),
-            transport=delivery_transport,
-        )
-        if not enqueue_delivery_job(logger, sync_job):
-            msg = f'enqueue sync failed, queue full or workers down, reqid:{reqid}, worker:{WORKER_HOSTNAME}'
-            logger.error(msg)
-            #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
+        # 任务开始时安全地管理GPU内存
+        try:
+            if torch.cuda.is_available():
+                # 检查并等待GPU内存
+                if not check_and_wait_for_gpu_memory(logger, device, min_free_gb=2.0, max_wait_seconds=30):
+                    logger.warning(f'GPU memory low at task start, attempting cleanup. task_id:{task_id}')
+                    manage_gpu_memory(logger, device)
+                    # 再次检查
+                    if not check_and_wait_for_gpu_memory(logger, device, min_free_gb=1.5, max_wait_seconds=10):
+                        logger.error(f'GPU memory insufficient for task, task_id:{task_id}')
+                        ret = 1
+                        msg = f'GPU memory insufficient, please try again later, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+                        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                        return gen_res_dict(ret, msg)
+        except Exception as e:
+            logger.warning(f'GPU memory check failed at task start: {e}')
 
-    except Exception as e:
-        logger.error(f'Error in gpu_gen_tts for reqid:{reqid}, worker:{WORKER_HOSTNAME}: {e}')
-        msg = f'Error in gpu_gen_tts for reqid:{reqid}, worker:{WORKER_HOSTNAME}: {e}'
-        #update_ip_use_record(task_id, msg, TaskStatus.FAILED)
+        try:
+            model_file_prefix = modelname
+            # 公用模型
+            model_path = f'models/service_model/common_models/{modelcat}/common_model_{modelname}'
+
+            if not os.path.exists(model_path) :
+                ret = 1
+                msg = f'modelname:{modelname} is invalid, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+                logger.warning(f'model_path:{model_path}, modelname:{modelname}, worker:{WORKER_HOSTNAME}')
+                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                return gen_res_dict(ret, msg)
+
+            # 在加载模型前检查 GPU 健康状态
+            if not check_gpu_health(logger, device, attempt_recovery=True):
+                logger.error(f'GPU health check failed, skipping task for task_id:{task_id}')
+                
+                # 记录详细错误信息
+                log_gpu_error_details(logger, device, "GPU health check failed")
+                
+                ret = 1
+                msg = f'GPU is in an unhealthy state, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+                logger.error(f'msg: {msg}')
+                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                return gen_res_dict(ret, msg)
+        
+            filename_prefix = f'idx_{modelname}_{datetime_str}_{random_number}'
+            speacker_pt_path = f"{model_path}/{model_file_prefix}_audio_prompt.pt"
+            if not os.path.exists(speacker_pt_path):
+                ret = 1
+                msg = f'speacker_pt_path {speacker_pt_path} not found, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+                logger.warning(f'msg: {msg}')
+                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                return gen_res_dict(ret, msg)
+
+            text_lang = resolve_text_lang(text, fallback_lang=modellang, logger=logger)
+            logger.debug(
+                f'task_id:{task_id}, resolve_text_lang text_lang:{text_lang}, modellang:{modellang}, '
+                f'emo_type:{emo_type}, emo_alpha:{emo_alpha}, emo_vector:{emo_vector}, '
+                f'speed:{speed}, duration_factor:{duration_factor}, volume_db:{volume_db}'
+            )
+            sample_rate, audio = indextts_infer(
+                logger, indextts_model, speacker_pt_path, text, text_lang=text_lang, reqid=task_id,
+                duration_factor=duration_factor,
+                emo_vector=emo_vector, emo_alpha=emo_alpha,
+            )
+
+            wav_output_path = wav_output_dir + '/' + today + '/user' + str(userid) 
+            # short_uri_prefix: sync success -> /outdt{prefix}/file; complete only after async sync
+            short_uri_prefix = f'/wavcl/{today}/user{userid}'
+
+            output_path, output_file = save_audio_file(
+                sample_rate, audio, output_format, wav_output_path, filename_prefix,
+                volume_db=volume_db,
+            )
+
+            if email == VIDEO_SCRIPT_TTS:
+                remote_ttssave_dir = get_localnet_video_tts_dir()
+                proxies = []
+                delivery_transport = "http"
+            else:
+                remote_ttssave_dir = get_remote_ttssave_dir()
+                delivery_transport = resolve_delivery_transport(email)
+                proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
+            remote_target_dir = f'{remote_ttssave_dir}/{today}/user{userid}'
+            sync_job = SyncJob(
+                source_file=output_path,
+                target_dir=remote_target_dir,
+                task_id=task_id,
+                short_uri_prefix=short_uri_prefix,
+                output_file=output_file,
+                proxies=list(proxies),
+                transport=delivery_transport,
+                domain=domain,
+            )
+            if not enqueue_delivery_job(logger, sync_job):
+                msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}, worker:{WORKER_HOSTNAME}'
+                logger.error(msg)
+                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+
+        except Exception as e:
+            logger.error(f'Error in gpu_gen_tts for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}')
+            msg = f'Error in gpu_gen_tts for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}'
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                    gc.collect()
+            except Exception as cleanup_error:
+                logger.warning(f'GPU cleanup failed in exception handler: {cleanup_error}')
+            return gen_res_dict(1, msg)
+
+        # 任务结束时安全地清理GPU内存（不等待跨境 sync）
         try:
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
                 gc.collect()
-        except Exception as cleanup_error:
-            logger.warning(f'GPU cleanup failed in exception handler: {cleanup_error}')
-        return gen_res_dict(1, msg)
+        except Exception as e:
+            logger.warning(f'GPU cleanup failed at task end: {e}')
 
-    # 任务结束时安全地清理GPU内存（不等待跨境 sync）
-    try:
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-            gc.collect()
-    except Exception as e:
-        logger.warning(f'GPU cleanup failed at task end: {e}')
+        tts_time = time.time()
+        cost_tts = tts_time - start_time
+        logger.info(
+            f'task_id:{task_id}, inference finish, sync enqueued, transport:{delivery_transport} time[tts:{cost_tts}] '
+            f'sample_rate:{sample_rate}, audio_file:{output_path}, '
+            f'speed:{speed}, duration_factor:{duration_factor}, volume_db:{volume_db}'
+        )
 
-    tts_time = time.time()
-    cost_tts = tts_time - start_time
-    logger.info(
-        f'reqid:{reqid}, inference finish, sync enqueued, transport:{delivery_transport} time[tts:{cost_tts}] '
-        f'sample_rate:{sample_rate}, audio_file:{output_path}, '
-        f'speed:{speed}, duration_factor:{duration_factor}, volume_db:{volume_db}'
-    )
-
-    result = f"Processed: {task_id}"
-    return result
+        result = f"Processed: {task_id}"
+        return result
+    finally:
+        clear_reqid()
 
 def warmup_indextts():
     """预热index-tts模型，避免第一次调用时的延迟；覆盖默认路径与情绪向量路径。"""

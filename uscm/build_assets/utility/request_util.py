@@ -1,16 +1,15 @@
-import json
 import logging
 import time
 import hmac
 import datetime
 import os
 import random
-import urllib.error
-import urllib.request
 
 from fastapi import Request
-from config.comm_config import get_white_list, get_limit_config
-from utility.module_enum import ModuleType, get_generate_action
+from config.comm_config import get_white_list, get_limit_config, ALLOWED_DOMAINS
+from utility.auth_session import authenticate_request
+from utility.module_enum import ModuleType
+from utility.userserver_client import fetch_action_counts
 from utility.util import aiflow_hmac_signature
 
 # 常量定义
@@ -21,51 +20,6 @@ ALLOWED_AUDIO_TYPES = ['audio/webm', 'audio/mpeg', 'audio/wav', 'audio/x-wav', '
     'video/webm', 'video/mp4', 'video/mov', 'video/avi', 'video/wmv', 'video/flv', 'video/x-flv', 'video/mkv', 'video/webm', 'video/quicktime']
 ALLOWED_FILE_EXTENSIONS = ['.mp3', '.wav',  '.m4a', '.flac', '.aac', '.ogg', '.mp4', '.mov', '.avi', '.wmv', '.flv', '.webm', '.mkv', '.quicktime']
 
-_ACTIONCOUNTS_TIMEOUT_SEC = 5
-
-def _fetch_action_counts(logger: logging.Logger, reqid: str, first_ip: str, email: str, userid, domain: str, module: ModuleType) -> tuple[int, int]:
-    """向 UserServer 查询当日/近30天行为次数。domain 为空、无对应 action、或请求失败时返回 (0, 0)。"""
-    action = get_generate_action(module)
-    domain = domain.strip() if isinstance(domain, str) else str(domain or "").strip()
-    if not domain or action is None:
-        logger.warning(f'reqid:{reqid} skip actioncounts, domain:{domain!r} action:{action} module:{module}')
-        return 0, 0
-
-    host = os.environ.get("US_COMMON_USERSERVER_HOST", "").strip()
-    port = os.environ.get("US_COMMON_USERSERVER_PORT", "").strip()
-    if not host or not port:
-        logger.error(f'reqid:{reqid} actioncounts missing US_COMMON_USERSERVER_HOST or US_COMMON_USERSERVER_PORT')
-        return 0, 0
-
-    url = f"http://{host}:{port}/inapi/actioncounts"
-    uid = "" if userid in (None, "", 0) else str(userid)
-    payload = {
-        "reqid": reqid,
-        "firstip": first_ip or "",
-        "email": email or "",
-        "uid": uid,
-        "domain": domain,
-        "action": action,
-    }
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=_ACTIONCOUNTS_TIMEOUT_SEC) as response:
-            raw = response.read().decode("utf-8")
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict) or "day_count" not in parsed or "month_count" not in parsed:
-                logger.error(f'reqid:{reqid} actioncounts bad response:{raw[:500]}')
-                return 0, 0
-            return int(parsed["day_count"]), int(parsed["month_count"])
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        logger.error(f'reqid:{reqid} actioncounts failed url:{url} err:{exc}')
-        return 0, 0
-
 def get_real_ip(request: Request):
     real_ip = ""
     if 'x-forwarded-for' in request.headers :
@@ -74,12 +28,12 @@ def get_real_ip(request: Request):
         real_ip = request.headers['x-real-ip']
     return real_ip
 
-def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: str, email: str, subscript: int, today: str, userid: int, module: ModuleType = ModuleType.TTS, domain: str = "") -> tuple[int, str]:
+def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: str, email: str, subscript: int, today: str, userid: int, module: ModuleType = ModuleType.TTS, domain: str = "", request: Request = None) -> tuple[int, str]:
     """
     验证请求的合法性
 
     Args:
-        request: FastAPI请求对象
+        request: FastAPI请求对象（caluma.ai 登录态校验需要读 cookie）
         reqid: 请求ID
         email: 用户邮箱
         subscript: 订阅状态
@@ -93,34 +47,46 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
     msg = "ok"
     first_ip = real_ip.split(',')[0].strip() if real_ip else ""
     domain = domain.strip() if isinstance(domain, str) else str(domain or "").strip()
-    if not domain:
+    if domain not in ALLOWED_DOMAINS:
         ret = 1
         msg = f'domain is invalid, reqid:{reqid}!'
-        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} subscript:{subscript} refer:{referer}, msg: {msg}')
+        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} subscript:{subscript} refer:{referer}, msg: {msg}')
         return ret, msg
 
+    # 用户如果登录，校验登录状态
+    if email and domain == "caluma.ai":
+        session, reason = authenticate_request(request, domain, logger=logger)
+        if session is None or session.email != email:
+            ret = 3
+            msg = 'Auth failed, please contact us!'
+            mismatch = session is not None and session.email != email
+            logger.warning(
+                f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} '
+                f'subscript:{subscript} refer:{referer}, '
+                f'reason:{"email_mismatch" if mismatch else reason}, msg: {msg}'
+            )
+            return ret, msg
+
+    day_count = 0
+    month_count = 0
     if real_ip != "":
         white_list = get_white_list()
         if first_ip not in white_list:
-            day_count, month_count = _fetch_action_counts(logger, reqid, first_ip, email, userid, domain, module)
+            day_count, month_count = fetch_action_counts(logger, reqid, first_ip, email, userid, domain, module)
             logger.debug(f'11 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count}')
-            if subscript != 1:
-                month_limit = get_limit_config().get('month_count', 15)
-                logger.debug(f'22 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count} month_limit:{month_limit}')
-                if day_count > MAX_FREE_TRIES or month_count > month_limit:
-                    ret = 2
-                    msg = 'You have exceeded the free usage limit for today or last month.'
-                    logger.info(f'33 reqid:{reqid} ip:{real_ip} email:{email} subscript:{subscript} referer:{referer}, day_count:{day_count} month_count:{month_count} exceeded.')
-                    return ret, msg
-
-    if referer == "Not provided":
-        ret = 4
-        msg = "Need api? Please mail us!"
-        logger.info(f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, email:{email}, subscript:{subscript}, refer:{referer}')
+            # todo: 订阅状态校验， 以及相应的校验策略。
+            #if subscript != 1:
+            #    month_limit = get_limit_config().get('month_count', 15)
+            #    logger.debug(f'22 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count} month_limit:{month_limit}')
+            #    if day_count > MAX_FREE_TRIES or month_count > month_limit:
+            #        ret = 2
+            #        msg = 'You have exceeded the free usage limit for today or last month.'
+            #        logger.info(f'33 reqid:{reqid} ip:{real_ip} email:{email} subscript:{subscript} referer:{referer}, day_count:{day_count} month_count:{month_count} exceeded.')
+            #        return ret, msg
 
     return ret, msg
 
-def validate_signature(logger: logging.Logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, subscript, referer, module: ModuleType = ModuleType.TTS):
+def validate_signature(logger: logging.Logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, module: ModuleType = ModuleType.TTS):
     """
     验证请求签名的有效性
     
@@ -155,17 +121,17 @@ def validate_signature(logger: logging.Logger, timestamp, signature, text, datet
         ret = 3 # 权限认证失败
         msg = f'Auth failed, please contact us!'
         logger.info(f'validate_signature22 diff time:{abs(current_time - timestamp)}, {datetime} reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, text:{text}' \
-            f'email:{email}, subscript:{subscript}, refer:{referer}, Signature expired,current time:{current_time}, tstamp({timestamp})')
+            f'email:{email}, Signature expired,current time:{current_time}, tstamp({timestamp})')
         return ret, msg
 
     server_sign = aiflow_hmac_signature(text, timestamp, module)
     logger.info(f'validate_signature33, {datetime} reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, text:{text},' \
-        f'email:{email}, subscript:{subscript}, refer:{referer}, server_sign:{server_sign}, signature:{signature}')
+        f'email:{email}, server_sign:{server_sign}, signature:{signature}')
     if not server_sign or not signature or not hmac.compare_digest(signature, server_sign):
         ret = 3 # 权限认证失败
         msg = f'Auth failed, please contact us!'
         logger.info(f'validate_signature44, {datetime} reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, text:{text}' \
-            f'email:{email}, subscript:{subscript}, refer:{referer}, Invalid signature, timestamp:{timestamp},'  \
+            f'email:{email}, Invalid signature, timestamp:{timestamp},'  \
             f'client signature:{signature}, server signature:{server_sign}')
         return ret, msg
     

@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+
+DEFAULT_USER_FIRST_IP = "100.100.100.100"
+
+ALLOWED_DOMAINS = frozenset({"caluma.ai", "mogofun.com", "aivoicelab.net"})
+
+def get_allowed_domains():
+    return ALLOWED_DOMAINS
+
 def get_white_list() :
     white_list = []
     return white_list
