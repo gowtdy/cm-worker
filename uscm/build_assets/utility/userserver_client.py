@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
 """UserServer HTTP 客户端：actioncounts / generateadd 等内部接口。"""
 
-import json
 import logging
 import os
-import urllib.error
-import urllib.request
+
+import httpx
 
 from utility.module_enum import ModuleType, get_generate_action
 
-_ACTIONCOUNTS_TIMEOUT_SEC = 5
-_GENERATEADD_TIMEOUT_SEC = 5
+_ACTIONCOUNTS_TIMEOUT_SEC = 3.0
+_GENERATEADD_TIMEOUT_SEC = 3.0
 
 
 def _userserver_base_url(logger: logging.Logger, reqid: str, caller: str) -> str | None:
@@ -34,7 +33,10 @@ def fetch_action_counts(
 
     base = _userserver_base_url(logger, reqid, "actioncounts")
     if not base:
-        return 0, 0
+        ret = 1
+        msg = f'actioncounts failed'
+        logger.error(f'reqid:{reqid} actioncounts failed, missing US_COMMON_USERSERVER_HOST or US_COMMON_USERSERVER_PORT')
+        return ret, msg
 
     url = f"{base}/inapi/actioncounts"
     uid = "" if userid in (None, "", 0) else str(userid)
@@ -46,22 +48,15 @@ def fetch_action_counts(
         "domain": domain,
         "action": action,
     }
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=_ACTIONCOUNTS_TIMEOUT_SEC) as response:
-            raw = response.read().decode("utf-8")
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict) or "day_count" not in parsed or "month_count" not in parsed:
-                logger.error(f'reqid:{reqid} actioncounts bad response:{raw[:500]}')
-                return 0, 0
-            return int(parsed["day_count"]), int(parsed["month_count"])
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        response = httpx.post(url, json=payload, timeout=_ACTIONCOUNTS_TIMEOUT_SEC)
+        response.raise_for_status()
+        parsed = response.json()
+        if not isinstance(parsed, dict) or "day_count" not in parsed or "month_count" not in parsed:
+            logger.error(f'reqid:{reqid} actioncounts bad response:{response.text[:500]}')
+            return 0, 0
+        return int(parsed["day_count"]), int(parsed["month_count"])
+    except (httpx.HTTPError, TypeError, ValueError) as exc:
         logger.error(f'reqid:{reqid} actioncounts failed url:{url} err:{exc}')
         return 0, 0
 
@@ -76,26 +71,33 @@ def post_generate_add(
     generate_content: str,
     allip_address: str,
     module: ModuleType = ModuleType.TTS,
-) -> None:
+) -> tuple[int, str]:
     """向 UserServer /inapi/generateadd 写入一条生成记录；失败只记日志，不抛异常。"""
-    generate_type = get_generate_action(module)
-    domain = domain.strip() if isinstance(domain, str) else str(domain or "").strip()
+    ret = 0
+    msg = "ok"
+    generate_type = module.value
     if not domain or not first_ip or generate_type is None:
+        ret = 1
+        msg = f'firstip:{first_ip!r} or domain:{domain!r} is empty'
         logger.warning(
-            f'reqid:{reqid} skip generateadd, firstip:{first_ip!r} domain:{domain!r} '
-            f'generate_type:{generate_type} module:{module}'
+            f'reqid:{reqid} generateadd failed, {msg}, generate_type:{generate_type} module:{module}'
         )
-        return
+        return ret, msg
 
     base = _userserver_base_url(logger, reqid, "generateadd")
     if not base:
-        return
+        ret = 1
+        msg = "generateadd failed"
+        logger.error(
+            f'reqid:{reqid} generateadd failed, msg:{msg}, '
+            f'missing US_COMMON_USERSERVER_HOST or US_COMMON_USERSERVER_PORT'
+        )
+        return ret, msg
 
     url = f"{base}/inapi/generateadd"
     uid = "" if userid in (None, "", 0) else str(userid)
     payload = {
         "reqid": reqid,
-        "task_id": reqid,
         "firstip": first_ip or "",
         "email": email or "",
         "uid": uid,
@@ -103,21 +105,21 @@ def post_generate_add(
         "generate_content": generate_content or "",
         "allip_address": allip_address or "",
         "generate_type": generate_type,
+        "task_id": reqid,
     }
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=_GENERATEADD_TIMEOUT_SEC) as response:
-            raw = response.read().decode("utf-8")
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict) or parsed.get("ret") != 0:
-                logger.error(f'reqid:{reqid} generateadd bad response:{raw[:500]}')
-                return
-            logger.debug(f'reqid:{reqid} generateadd ok id:{parsed.get("id")}')
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        logger.error(f'reqid:{reqid} generateadd failed url:{url} err:{exc}')
+        response = httpx.post(url, json=payload, timeout=_GENERATEADD_TIMEOUT_SEC)
+        response.raise_for_status()
+        parsed = response.json()
+        ret = parsed.get("ret")
+        if ret != 0:
+            msg = f'generateadd failed'
+            logger.error(f'reqid:{reqid}, {msg}, bad response:{response.text[:500]')
+            return ret, msg
+    except (httpx.HTTPError, TypeError, ValueError) as exc:
+        ret = 1
+        msg = f'generateadd failed, url:{url} err:{exc}'
+        logger.error(f'reqid:{reqid} {msg}')
+        return ret, msg
+
+    return ret, msg
