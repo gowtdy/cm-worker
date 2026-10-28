@@ -30,13 +30,13 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import torch.multiprocessing as mp
 
-from utility.log import setup_logger
+from utility.log import setup_logger, set_reqid, clear_reqid
 from utility.vocal_extract_util import model_extract_vocals
 from utility.model_util import load_hubert, load_convert_model, unload_convert_model, load_bsroformer_model, load_deecho_model,  \
      load_hpkaroke_model, load_mdxnetdereverb_model, load_rmvpe_model
-from utility.encrypt_util import encrypt_url, decrypt_url
-from utility.util import gen_reqid, gen_res_dict
+from utility.util import gen_res_dict
 from utility.module_enum import TaskStatus
+from utility.userserver_client import update_task_status
 from utility.socat_rsyc_util import (
     get_socat_proxy_configs,
     initialize_ssh_connections_for_proxies,
@@ -57,8 +57,6 @@ from infer.lib.audio import load_audio, analyze_audio_complexity
 from infer.modules.uvr5.bsroformer import BsRoformer_Loader
 from infer.modules.uvr5.mdxnet import MDXNetDereverb
 from celery_worker import celery_app
-
-from sql.mysql_db import update_ip_tool_record
 
 load_dotenv()
 
@@ -1098,7 +1096,6 @@ def process_voice_cover(
         logger.error(f'reqid:{reqid} msg: {msg}')
         # 记录详细的错误信息
         logger.error(f'reqid:{reqid} Full traceback: {traceback.format_exc()}')
-        update_ip_tool_record(reqid, '', TaskStatus.FAILED)
         # 修复：返回格式应该与正常情况一致，而不是返回字符串
         return ret, msg, (tgt_sr, None)
     finally:
@@ -1122,359 +1119,376 @@ def process_voice_cover(
 
     return ret, msg, (tgt_sr, audio_opt)
 
-@celery_app.task(name='gpu_cover_tasks.gpu_cover')
-def gpu_cover(modelcat, modelname, modelgender, upfileinfo, upgender, task_id='0',  first_ip='', email='', lang='english'):                        
-    ret = 0
-    msg = 'ok'
-    start_time = time.time()
-    timing_stats = {}  # 用于记录各阶段耗时
-    localtime = time.localtime(start_time)
-    today =  time.strftime(DAY_FORMAT, localtime)
-    datetime = time.strftime('%Y%m%d_%H%M%S', localtime)
-    random_number = random.randint(1, 1000)
-    
-    reqid = gen_reqid(task_id, start_time)
-    
-    # 检查CUDA健康状态
-    if not check_cuda_health(reqid):
-        logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email} CUDA health check failed')
-        update_ip_tool_record(task_id, '', TaskStatus.FAILED)
-        return f'cover process failed, task_id:{task_id}, msg:CUDA health check failed'
-    
-    model_validation_start = time.time()
-    model_path = f'{model_dir}/{lang}/{modelcat}/{modelname}'
-    model_index_path = f'{model_path}/{modelname}_v2.index'
-    model_file_path = f'{model_path}/{modelname}_weights.pth'
-    timing_stats['model_validation'] = time.time() - model_validation_start
+@celery_app.task(name='task_cover.cover')
+def gpu_cover(modelcat, modelname, modelgender, upfileinfo, upgender, task_id='0', email='', domain='', lang='english'):                        
+    set_reqid(task_id)
+    try:
+        ret = 0
+        msg = 'ok'
+        start_time = time.time()
+        timing_stats = {}  # 用于记录各阶段耗时
+        localtime = time.localtime(start_time)
+        today =  time.strftime(DAY_FORMAT, localtime)
+        datetime = time.strftime('%Y%m%d_%H%M%S', localtime)
+        random_number = random.randint(1, 1000)
 
-    relative_path = upfileinfo["relative_path"]
-    update_str = upfileinfo['update_str']
-    file_ext = upfileinfo['file_ext']
-    uploadtime = upfileinfo['uploadtime']
-    userip = upfileinfo["userip"]
-    randomnum = f'{upfileinfo["randomnum"]}{random_number}'
+        reqid = task_id
 
-    # extract vocals
-    vocals_extraction_start = time.time()
-    logger.info(f'*********** reqid:{reqid} extract_vocals start ***********')
-    ret, msg, extractinfo = extract_vocals(upfileinfo, reqid)
-    if ret != 0:
-        logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email} extract_vocals failed: {msg}')
-        update_ip_tool_record(task_id, '', TaskStatus.FAILED)
-        return f'cover process failed, task_id:{task_id}, msg:{msg}'
-    timing_stats['vocals_extraction'] = time.time() - vocals_extraction_start
-    logger.info(f'*********** reqid:{reqid} extract_vocals end ***********')
+        # 检查CUDA健康状态
+        if not check_cuda_health(reqid):
+            msg = 'CUDA health check failed'
+            logger.error(f'task_id:{task_id} email:{email} {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return f'cover process failed, task_id:{task_id}, msg:CUDA health check failed'
 
-    # 验证 extractinfo 是否包含必需的键
-    required_keys = ['deecho_vocals', 'bsroformer_instrument']
-    is_valid, validation_msg = validate_extractinfo(extractinfo, required_keys, reqid)
-    if not is_valid:
-        logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email} extractinfo validation failed: {validation_msg}')
-        update_ip_tool_record(task_id, '', TaskStatus.FAILED)
-        return f'cover process failed, task_id:{task_id}, msg:{validation_msg}'
+        model_validation_start = time.time()
+        model_path = f'{model_dir}/{lang}/{modelcat}/{modelname}'
+        model_index_path = f'{model_path}/{modelname}_v2.index'
+        model_file_path = f'{model_path}/{modelname}_weights.pth'
+        if not (os.path.exists(model_index_path) and os.path.exists(model_file_path)):
+            msg = f'model {modelcat}-{modelname} is not exists, task_id:{task_id}'
+            logger.warning(f'{model_index_path} or {model_file_path} is not exists, {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return f'cover process failed, task_id:{task_id}, msg:{msg}'
+        timing_stats['model_validation'] = time.time() - model_validation_start
 
-    # 最终提取出来的人声
-    final_vocals_path = extractinfo['deecho_vocals']
-    # 各个阶段分理出的伴奏音
-    bsroformer_instrument = extractinfo['bsroformer_instrument']
+        relative_path = upfileinfo["relative_path"]
+        update_str = upfileinfo['update_str']
+        file_ext = upfileinfo['file_ext']
+        uploadtime = upfileinfo['uploadtime']
+        userip = upfileinfo["userip"]
+        randomnum = f'{upfileinfo["randomnum"]}{random_number}'
 
-    input_audio_path  = final_vocals_path # 对应input_audio，输入待处理音频文件路径
-    try :
-        # 处理音频转换
-        voice_conversion_start = time.time()
-        logger.info(f'reqid:{reqid} process_voice_cover start, input_audio_path:{input_audio_path}, model_file_path:{model_file_path}, model_index_path:{model_index_path}')
-        ret, msg, (tgt_sr, audio_opt) = process_voice_cover(
-            hubert_model=hubert_model,
-            input_audio_path=input_audio_path,
-            model_file_path=model_file_path,
-            model_index_path=model_index_path,
-            modelgender=modelgender,
-            upgender=upgender,
-            device=device,
-            is_half=is_half,
-            rmvpe_model=rmvpe_model,
-            reqid=reqid
-        )
-        timing_stats['voice_conversion'] = time.time() - voice_conversion_start
-
+        # extract vocals
+        vocals_extraction_start = time.time()
+        logger.info(f'*********** reqid:{reqid} extract_vocals start ***********')
+        ret, msg, extractinfo = extract_vocals(upfileinfo, reqid)
         if ret != 0:
-            logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email} process_voice_cover failed: {msg}')
-            update_ip_tool_record(task_id, '', TaskStatus.FAILED)
-            return f'cover process failed, task_id:{task_id}, msg:{msg}';
+            logger.error(f'task_id:{task_id} email:{email} extract_vocals failed: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return f'cover process failed, task_id:{task_id}, msg:{msg}'
+        timing_stats['vocals_extraction'] = time.time() - vocals_extraction_start
+        logger.info(f'*********** reqid:{reqid} extract_vocals end ***********')
 
-        # 保存转换后的人声
-        converted_vocals_dir = f'data/middle/{update_str}/{userip}'
-        converted_vocals_filename = f'{uploadtime}_{userip}_{randomnum}_converted_vocals.wav'
-        if not os.path.exists(converted_vocals_dir):
-            os.makedirs(converted_vocals_dir, exist_ok=True)
-        converted_vocals_path = f'{converted_vocals_dir}/{converted_vocals_filename}'
+        # 验证 extractinfo 是否包含必需的键
+        required_keys = ['deecho_vocals', 'bsroformer_instrument']
+        is_valid, validation_msg = validate_extractinfo(extractinfo, required_keys, reqid)
+        if not is_valid:
+            logger.error(f'task_id:{task_id} email:{email} extractinfo validation failed: {validation_msg}')
+            update_task_status(logger, task_id, domain, validation_msg, TaskStatus.FAILED)
+            return f'cover process failed, task_id:{task_id}, msg:{validation_msg}'
 
-        wavfile.write(converted_vocals_path, int(tgt_sr), audio_opt)
+        # 最终提取出来的人声
+        final_vocals_path = extractinfo['deecho_vocals']
+        # 各个阶段分理出的伴奏音
+        bsroformer_instrument = extractinfo['bsroformer_instrument']
 
-        # 混合转换后的人声和原始伴奏
-        output_audio_dir = f'{finaldata_dir}/{update_str}'
-        if not os.path.exists(output_audio_dir):
-            os.makedirs(output_audio_dir, exist_ok=True)
+        input_audio_path  = final_vocals_path # 对应input_audio，输入待处理音频文件路径
+        try :
+            # 处理音频转换
+            voice_conversion_start = time.time()
+            logger.info(f'reqid:{reqid} process_voice_cover start, input_audio_path:{input_audio_path}, model_file_path:{model_file_path}, model_index_path:{model_index_path}')
+            ret, msg, (tgt_sr, audio_opt) = process_voice_cover(
+                hubert_model=hubert_model,
+                input_audio_path=input_audio_path,
+                model_file_path=model_file_path,
+                model_index_path=model_index_path,
+                modelgender=modelgender,
+                upgender=upgender,
+                device=device,
+                is_half=is_half,
+                rmvpe_model=rmvpe_model,
+                reqid=reqid
+            )
+            timing_stats['voice_conversion'] = time.time() - voice_conversion_start
 
-        output_audio_filename = f'{uploadtime}_{userip}_{randomnum}_cover.mp3'
-        output_audio_path = f'{output_audio_dir}/{output_audio_filename}'
+            if ret != 0:
+                logger.error(f'task_id:{task_id} email:{email} process_voice_cover failed: {msg}')
+                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                return f'cover process failed, task_id:{task_id}, msg:{msg}';
 
-        # 混音处理
-        mixing_start = time.time()
-        mix_cmd = (f'ffmpeg -y '
-                  f'-i {converted_vocals_path} '
-                  f'-i {bsroformer_instrument} '
-                  f'-filter_complex "[0:a]volume=1.0[v0];'
-                  f'[1:a]volume=0.95[v1];'
-                  f'[v0][v1]amix=inputs=2:duration=longest,aresample=44100[aout]" '
-                  f'-map "[aout]" '
-                  f'-codec:a libmp3lame -b:a 128k '
-                  f'-ar 44100 -ac 2 '
-                  f'{output_audio_path}')
+            # 保存转换后的人声
+            converted_vocals_dir = f'data/middle/{update_str}/{userip}'
+            converted_vocals_filename = f'{uploadtime}_{userip}_{randomnum}_converted_vocals.wav'
+            if not os.path.exists(converted_vocals_dir):
+                os.makedirs(converted_vocals_dir, exist_ok=True)
+            converted_vocals_path = f'{converted_vocals_dir}/{converted_vocals_filename}'
 
-        mix_result = subprocess.run(
-            mix_cmd, 
-            shell=True, 
-            capture_output=True, 
-            text=True,
-            encoding='utf-8',
-            errors='ignore'
-        )
-        timing_stats['audio_mixing'] = time.time() - mixing_start
-        
-        if mix_result.returncode != 0:
+            wavfile.write(converted_vocals_path, int(tgt_sr), audio_opt)
+
+            # 混合转换后的人声和原始伴奏
+            output_audio_dir = f'{finaldata_dir}/{update_str}'
+            if not os.path.exists(output_audio_dir):
+                os.makedirs(output_audio_dir, exist_ok=True)
+
+            output_audio_filename = f'{uploadtime}_{userip}_{randomnum}_cover.mp3'
+            output_audio_path = f'{output_audio_dir}/{output_audio_filename}'
+
+            # 混音处理
+            mixing_start = time.time()
+            mix_cmd = (f'ffmpeg -y '
+                      f'-i {converted_vocals_path} '
+                      f'-i {bsroformer_instrument} '
+                      f'-filter_complex "[0:a]volume=1.0[v0];'
+                      f'[1:a]volume=0.95[v1];'
+                      f'[v0][v1]amix=inputs=2:duration=longest,aresample=44100[aout]" '
+                      f'-map "[aout]" '
+                      f'-codec:a libmp3lame -b:a 128k '
+                      f'-ar 44100 -ac 2 '
+                      f'{output_audio_path}')
+
+            mix_result = subprocess.run(
+                mix_cmd, 
+                shell=True, 
+                capture_output=True, 
+                text=True,
+                encoding='utf-8',
+                errors='ignore'
+            )
+            timing_stats['audio_mixing'] = time.time() - mixing_start
+
+            if mix_result.returncode != 0:
+                ret = 1
+                msg = f'Error mixing and encoding audio: {mix_result.stderr}'
+                logger.error(f'task_id:{task_id} email:{email} msg: {msg}')
+                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                return f'cover process failed, task_id:{task_id}, msg:{msg}';
+
+            logger.info(f'reqid:{reqid} Successfully created mp3 file: {output_audio_path}')
+        except Exception as e:
             ret = 1
-            msg = f'Error mixing and encoding audio: {mix_result.stderr}'
-            logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email} msg: {msg}')
-            update_ip_tool_record(task_id, '', TaskStatus.FAILED)
+            msg = f'Error processing audio: {str(e)}'
+            logger.error(f'task_id:{task_id} email:{email} msg: {msg}, error:{e}')
+            # 记录详细的错误信息
+            logger.error(f'task_id:{task_id} Full traceback: {traceback.format_exc()}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
             return f'cover process failed, task_id:{task_id}, msg:{msg}';
+        finally:
+            # 安全地清理CUDA资源
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()  # 确保所有CUDA操作完成
+                    torch.cuda.empty_cache()
+            except Exception as cuda_cleanup_error:
+                logger.warning(f'task_id:{task_id} CUDA cleanup failed: {cuda_cleanup_error}')
 
-        logger.info(f'reqid:{reqid} Successfully created mp3 file: {output_audio_path}')
-    except Exception as e:
-        ret = 1
-        msg = f'Error processing audio: {str(e)}'
-        logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email} msg: {msg}, error:{e}')
-        # 记录详细的错误信息
-        logger.error(f'task_id:{task_id} Full traceback: {traceback.format_exc()}')
-        update_ip_tool_record(task_id, '', TaskStatus.FAILED)
-        return f'cover process failed, task_id:{task_id}, msg:{msg}';
+            # 强制垃圾回收
+            gc.collect()
+
+        remote_cover_dir = get_remote_cover_dir()
+        target_dir = f'{remote_cover_dir}/{update_str}'
+        delivery_transport = get_file_sync_transport()
+        proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
+        sync_job = SyncJob(
+            source_file=output_audio_path,
+            target_dir=target_dir,
+            task_id=task_id,
+            short_uri_prefix=f'/final/{update_str}',
+            output_file=output_audio_filename,
+            proxies=list(proxies),
+            transport=delivery_transport,
+            biz_type="cover",
+            domain=domain,
+        )
+        enqueue_start = time.time()
+        if not enqueue_delivery_job(logger, sync_job):
+            sync_msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
+            logger.error(f'task_id:{task_id} email:{email} {sync_msg}')
+            update_task_status(logger, task_id, domain, sync_msg, TaskStatus.FAILED)
+            return f'file sync failed, task_id:{task_id}, msg:{sync_msg}'
+        timing_stats['file_sync_enqueue'] = time.time() - enqueue_start
+
+        end_time = time.time()
+        total_time = end_time - start_time
+        timing_stats['total'] = total_time
+        logger.info(
+            f"/coverapi/cover worker completed (awaiting delivery), reqid:{reqid}, timings: "
+            f"[total:{timing_stats['total']:.2f}s, "
+            f"request_validation:{timing_stats.get('request_validation', 0):.2f}s, "
+            f"model_validation:{timing_stats.get('model_validation', 0):.2f}s, "
+            f"url_validation:{timing_stats.get('url_validation', 0):.2f}s, "
+            f"vocals_extraction:{timing_stats.get('vocals_extraction', 0):.2f}s, "
+            f"voice_conversion:{timing_stats.get('voice_conversion', 0):.2f}s, "
+            f"audio_mixing:{timing_stats.get('audio_mixing', 0):.2f}s], "
+            f"email:{email} ret:{ret} transport:{delivery_transport}"
+        )
+
+        result = f"CoverProcessed: {task_id}"
+        return result
     finally:
-        # 安全地清理CUDA资源
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()  # 确保所有CUDA操作完成
-                torch.cuda.empty_cache()
-        except Exception as cuda_cleanup_error:
-            logger.warning(f'task_id:{task_id} CUDA cleanup failed: {cuda_cleanup_error}')
-        
-        # 强制垃圾回收
-        gc.collect()
-    
-    remote_cover_dir = get_remote_cover_dir()
-    target_dir = f'{remote_cover_dir}/{update_str}'
-    delivery_transport = get_file_sync_transport()
-    proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
-    sync_job = SyncJob(
-        source_file=output_audio_path,
-        target_dir=target_dir,
-        task_id=task_id,
-        short_uri_prefix=f'/final/{update_str}',
-        output_file=output_audio_filename,
-        proxies=list(proxies),
-        transport=delivery_transport,
-        biz_type="cover",
-    )
-    enqueue_start = time.time()
-    if not enqueue_delivery_job(logger, sync_job):
-        sync_msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
-        logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email} {sync_msg}')
-        update_ip_tool_record(task_id, sync_msg, TaskStatus.FAILED)
-        return f'file sync failed, task_id:{task_id}, msg:{sync_msg}'
-    timing_stats['file_sync_enqueue'] = time.time() - enqueue_start
-
-    end_time = time.time()
-    total_time = end_time - start_time
-    timing_stats['total'] = total_time
-    logger.info(
-        f"/coverapi/cover worker completed (awaiting delivery), reqid:{reqid}, timings: "
-        f"[total:{timing_stats['total']:.2f}s, "
-        f"request_validation:{timing_stats.get('request_validation', 0):.2f}s, "
-        f"model_validation:{timing_stats.get('model_validation', 0):.2f}s, "
-        f"url_validation:{timing_stats.get('url_validation', 0):.2f}s, "
-        f"vocals_extraction:{timing_stats.get('vocals_extraction', 0):.2f}s, "
-        f"voice_conversion:{timing_stats.get('voice_conversion', 0):.2f}s, "
-        f"audio_mixing:{timing_stats.get('audio_mixing', 0):.2f}s], "
-        f"ip:{first_ip} email:{email} ret:{ret} transport:{delivery_transport}"
-    )
-
-    result = f"CoverProcessed: {task_id}, ip:{first_ip}, email:{email}"
-    return result
-
-@celery_app.task(name='gpu_cover_tasks.gpu_vocal')
-def gpu_vocal(upfileinfo, task_id='0', first_ip='', email=''):                        
-    ret = 0
-    msg = 'ok'
-    start_time = time.time()
-    timing_stats = {}  # 用于记录各阶段耗时
-    localtime = time.localtime(start_time)
-    today =  time.strftime(DAY_FORMAT, localtime)
-    datetime = time.strftime('%Y%m%d_%H%M%S', localtime)
-    random_number = random.randint(1, 1000)
-
-    reqid = gen_reqid(task_id, start_time)
-    relative_path = upfileinfo["relative_path"]
-    update_str = upfileinfo['update_str']
-    file_ext = upfileinfo['file_ext']
-    uploadtime = upfileinfo['uploadtime']
-    userip = upfileinfo["userip"]
-    randomnum = f'{upfileinfo["randomnum"]}{random_number}'
-
-    # extract vocals
-    vocals_extraction_start = time.time()
-    logger.info(f'*********** reqid:{reqid} extract_vocals start ***********')
-    ret, msg, extractinfo = extract_vocals(upfileinfo, reqid)
-    if ret != 0:
-        logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email} extract_vocals failed: {msg}')
-        update_ip_tool_record(task_id, '', TaskStatus.FAILED)
-        return f'vocal process failed, task_id:{task_id}, msg:{msg}';
-    timing_stats['vocals_extraction'] = time.time() - vocals_extraction_start
-    logger.info(f'*********** reqid:{reqid} extract_vocals end ***********')
-
-    # 最终提取出来的人声
-    wav_vocal_path = extractinfo['deecho_vocals']
-
-     # 创建保存MP3文件的目录
-    sepvocal_dir = f'data/sepvocal/{update_str}'
-    os.makedirs(sepvocal_dir, exist_ok=True)
-    
-    # 转换WAV到MP3
-    final_vocal_path = f'{sepvocal_dir}/{uploadtime}_{userip}_{randomnum}_vocal.mp3'
-    
+        clear_reqid()
+@celery_app.task(name='task_cover.vocal')
+def gpu_vocal(upfileinfo, task_id='0', email='', domain=''):                        
+    set_reqid(task_id)
     try:
-        ret, msg = convert_wav_to_mp3(wav_vocal_path, final_vocal_path, reqid, prefer_vbr=False)
+        ret = 0
+        msg = 'ok'
+        start_time = time.time()
+        timing_stats = {}  # 用于记录各阶段耗时
+        localtime = time.localtime(start_time)
+        today =  time.strftime(DAY_FORMAT, localtime)
+        datetime = time.strftime('%Y%m%d_%H%M%S', localtime)
+        random_number = random.randint(1, 1000)
+
+        reqid = task_id
+        relative_path = upfileinfo["relative_path"]
+        update_str = upfileinfo['update_str']
+        file_ext = upfileinfo['file_ext']
+        uploadtime = upfileinfo['uploadtime']
+        userip = upfileinfo["userip"]
+        randomnum = f'{upfileinfo["randomnum"]}{random_number}'
+
+        # extract vocals
+        vocals_extraction_start = time.time()
+        logger.info(f'*********** reqid:{reqid} extract_vocals start ***********')
+        ret, msg, extractinfo = extract_vocals(upfileinfo, reqid)
         if ret != 0:
-            logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email}, msg: {msg}')
-            update_ip_tool_record(task_id, '', TaskStatus.FAILED)
+            logger.error(f'task_id:{task_id} email:{email} extract_vocals failed: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
             return f'vocal process failed, task_id:{task_id}, msg:{msg}';
-            
-        logger.info(f'task_id:{task_id} first_ip:{first_ip} email:{email} Successfully converted WAV to MP3: {final_vocal_path}')
-    except Exception as e:
-        ret = 1
-        msg = f'Error converting WAV to MP3: {str(e)}'
-        logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email}, msg: {msg}')
-        update_ip_tool_record(task_id, '', TaskStatus.FAILED)
-        return f'vocal process failed, task_id:{task_id}, msg:{msg}';
-    
-    remote_vocal_dir = get_remote_vocal_dir()
-    target_dir = f'{remote_vocal_dir}/{update_str}'
-    vocal_filename = f'{uploadtime}_{userip}_{randomnum}_vocal.mp3'
-    delivery_transport = get_file_sync_transport()
-    proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
-    sync_job = SyncJob(
-        source_file=final_vocal_path,
-        target_dir=target_dir,
-        task_id=task_id,
-        short_uri_prefix=f'/sepvocal/{update_str}',
-        output_file=vocal_filename,
-        proxies=list(proxies),
-        transport=delivery_transport,
-        biz_type="extract_vocal",
-    )
-    if not enqueue_delivery_job(logger, sync_job):
-        sync_msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
-        logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email} {sync_msg}')
-        update_ip_tool_record(task_id, sync_msg, TaskStatus.FAILED)
-        return f'file sync failed, task_id:{task_id}, msg:{sync_msg}'
-    logger.info(
-        f'task_id:{task_id} vocal sync enqueued transport={delivery_transport}'
-    )
+        timing_stats['vocals_extraction'] = time.time() - vocals_extraction_start
+        logger.info(f'*********** reqid:{reqid} extract_vocals end ***********')
 
-    result = f"Vocal Processed: {task_id}, ip:{first_ip}, email:{email}"
-    return result
+        # 最终提取出来的人声
+        wav_vocal_path = extractinfo['deecho_vocals']
 
-@celery_app.task(name='gpu_cover_tasks.gpu_instrument')
-def gpu_instrument(upfileinfo, task_id='0', first_ip='', email=''):                        
-    ret = 0
-    msg = 'ok'
-    start_time = time.time()
-    timing_stats = {}  # 用于记录各阶段耗时
-    localtime = time.localtime(start_time)
-    today =  time.strftime(DAY_FORMAT, localtime)
-    datetime = time.strftime('%Y%m%d_%H%M%S', localtime)
-    random_number = random.randint(1, 1000)    
+         # 创建保存MP3文件的目录
+        sepvocal_dir = f'data/sepvocal/{update_str}'
+        os.makedirs(sepvocal_dir, exist_ok=True)
 
-    reqid = gen_reqid(task_id, start_time)
-    relative_path = upfileinfo["relative_path"]
-    update_str = upfileinfo['update_str']
-    file_ext = upfileinfo['file_ext']
-    uploadtime = upfileinfo['uploadtime']
-    userip = upfileinfo["userip"]
-    randomnum = f'{upfileinfo["randomnum"]}{random_number}'
+        # 转换WAV到MP3
+        final_vocal_path = f'{sepvocal_dir}/{uploadtime}_{userip}_{randomnum}_vocal.mp3'
 
-     # extract vocals
-    instruments_extraction_start = time.time()
-    logger.info(f'*********** task_id:{task_id} first_ip:{first_ip} email:{email} extract_instruments, upfileinfo:{upfileinfo} ***********')
-    ret, msg, extractinfo = extract_instruments(upfileinfo, reqid)
-    timing_stats['instruments_extraction'] = time.time() - instruments_extraction_start
-    logger.info(f'*********** task_id:{task_id} first_ip:{first_ip} email:{email} extract_instruments end ***********')
-    # 示例：data/uploads/2025-02-22/202502221755042_83.229.17.48_lastnight-morgan-male.mp3
-    if ret != 0:
-        logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email}, extract_instruments failed: {msg}')
-        update_ip_tool_record(task_id, '', TaskStatus.FAILED)
-        return f'instrument process failed, task_id:{task_id}, msg:{msg}';
+        try:
+            ret, msg = convert_wav_to_mp3(wav_vocal_path, final_vocal_path, reqid, prefer_vbr=False)
+            if ret != 0:
+                logger.error(f'task_id:{task_id} email:{email}, msg: {msg}')
+                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                return f'vocal process failed, task_id:{task_id}, msg:{msg}';
 
-    wav_vocal_path = extractinfo['bsroformer_instrument']
-    
-    # 创建保存MP3文件的目录
-    sepinstrum_dir = f'data/sepinstrum/{update_str}'
-    os.makedirs(sepinstrum_dir, exist_ok=True)
-    
-    # 转换WAV到MP3
-    final_instrum_path = f'{sepinstrum_dir}/{uploadtime}_{userip}_{randomnum}_instrum.mp3'
-    
+            logger.info(f'task_id:{task_id} email:{email} Successfully converted WAV to MP3: {final_vocal_path}')
+        except Exception as e:
+            ret = 1
+            msg = f'Error converting WAV to MP3: {str(e)}'
+            logger.error(f'task_id:{task_id} email:{email}, msg: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return f'vocal process failed, task_id:{task_id}, msg:{msg}';
+
+        remote_vocal_dir = get_remote_vocal_dir()
+        target_dir = f'{remote_vocal_dir}/{update_str}'
+        vocal_filename = f'{uploadtime}_{userip}_{randomnum}_vocal.mp3'
+        delivery_transport = get_file_sync_transport()
+        proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
+        sync_job = SyncJob(
+            source_file=final_vocal_path,
+            target_dir=target_dir,
+            task_id=task_id,
+            short_uri_prefix=f'/sepvocal/{update_str}',
+            output_file=vocal_filename,
+            proxies=list(proxies),
+            transport=delivery_transport,
+            biz_type="extract_vocal",
+            domain=domain,
+        )
+        if not enqueue_delivery_job(logger, sync_job):
+            sync_msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
+            logger.error(f'task_id:{task_id} email:{email} {sync_msg}')
+            update_task_status(logger, task_id, domain, sync_msg, TaskStatus.FAILED)
+            return f'file sync failed, task_id:{task_id}, msg:{sync_msg}'
+        logger.info(
+            f'task_id:{task_id} vocal sync enqueued transport={delivery_transport}'
+        )
+
+        result = f"Vocal Processed: {task_id}"
+        return result
+    finally:
+        clear_reqid()
+@celery_app.task(name='task_cover.instrument')
+def gpu_instrument(upfileinfo, task_id='0', email='', domain=''):                        
+    set_reqid(task_id)
     try:
-        ret, msg = convert_wav_to_mp3(wav_vocal_path, final_instrum_path, reqid, prefer_vbr=False)
+        ret = 0
+        msg = 'ok'
+        start_time = time.time()
+        timing_stats = {}  # 用于记录各阶段耗时
+        localtime = time.localtime(start_time)
+        today =  time.strftime(DAY_FORMAT, localtime)
+        datetime = time.strftime('%Y%m%d_%H%M%S', localtime)
+        random_number = random.randint(1, 1000)    
+
+        reqid = task_id
+        relative_path = upfileinfo["relative_path"]
+        update_str = upfileinfo['update_str']
+        file_ext = upfileinfo['file_ext']
+        uploadtime = upfileinfo['uploadtime']
+        userip = upfileinfo["userip"]
+        randomnum = f'{upfileinfo["randomnum"]}{random_number}'
+
+         # extract vocals
+        instruments_extraction_start = time.time()
+        logger.info(f'*********** task_id:{task_id} email:{email} extract_instruments, upfileinfo:{upfileinfo} ***********')
+        ret, msg, extractinfo = extract_instruments(upfileinfo, reqid)
+        timing_stats['instruments_extraction'] = time.time() - instruments_extraction_start
+        logger.info(f'*********** task_id:{task_id} email:{email} extract_instruments end ***********')
+        # 示例：data/uploads/2025-02-22/202502221755042_83.229.17.48_lastnight-morgan-male.mp3
         if ret != 0:
-            logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email}, msg: {msg}')
-            update_ip_tool_record(task_id, '', TaskStatus.FAILED)
+            logger.error(f'task_id:{task_id} email:{email}, extract_instruments failed: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
             return f'instrument process failed, task_id:{task_id}, msg:{msg}';
-            
-        logger.info(f'task_id:{task_id} first_ip:{first_ip} email:{email} Successfully converted WAV to MP3: {final_instrum_path}')
-    except Exception as e:
-        ret = 1
-        msg = f'Error converting WAV to MP3: {str(e)}'
-        logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email}, msg: {msg}')
-        update_ip_tool_record(task_id, '', TaskStatus.FAILED)
-        return f'instrument process failed, task_id:{task_id}, msg:{msg}';
 
-    remote_instrument_dir = get_remote_instrument_dir()
-    target_dir = f'{remote_instrument_dir}/{update_str}'
-    instrum_filename = f'{uploadtime}_{userip}_{randomnum}_instrum.mp3'
-    delivery_transport = get_file_sync_transport()
-    proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
-    sync_job = SyncJob(
-        source_file=final_instrum_path,
-        target_dir=target_dir,
-        task_id=task_id,
-        short_uri_prefix=f'/sepinstrum/{update_str}',
-        output_file=instrum_filename,
-        proxies=list(proxies),
-        transport=delivery_transport,
-        biz_type="extract_instrument",
-    )
-    if not enqueue_delivery_job(logger, sync_job):
-        sync_msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
-        logger.error(f'task_id:{task_id} first_ip:{first_ip} email:{email} {sync_msg}')
-        update_ip_tool_record(task_id, sync_msg, TaskStatus.FAILED)
-        return f'file sync failed, task_id:{task_id}, msg:{sync_msg}'
-    logger.info(
-        f'task_id:{task_id} instrument sync enqueued transport={delivery_transport}'
-    )
+        wav_vocal_path = extractinfo['bsroformer_instrument']
 
-    result = f"Instrument Processed: {task_id}, ip:{first_ip}, email:{email}"
-    return result
+        # 创建保存MP3文件的目录
+        sepinstrum_dir = f'data/sepinstrum/{update_str}'
+        os.makedirs(sepinstrum_dir, exist_ok=True)
 
+        # 转换WAV到MP3
+        final_instrum_path = f'{sepinstrum_dir}/{uploadtime}_{userip}_{randomnum}_instrum.mp3'
 
+        try:
+            ret, msg = convert_wav_to_mp3(wav_vocal_path, final_instrum_path, reqid, prefer_vbr=False)
+            if ret != 0:
+                logger.error(f'task_id:{task_id} email:{email}, msg: {msg}')
+                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                return f'instrument process failed, task_id:{task_id}, msg:{msg}';
+
+            logger.info(f'task_id:{task_id} email:{email} Successfully converted WAV to MP3: {final_instrum_path}')
+        except Exception as e:
+            ret = 1
+            msg = f'Error converting WAV to MP3: {str(e)}'
+            logger.error(f'task_id:{task_id} email:{email}, msg: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return f'instrument process failed, task_id:{task_id}, msg:{msg}';
+
+        remote_instrument_dir = get_remote_instrument_dir()
+        target_dir = f'{remote_instrument_dir}/{update_str}'
+        instrum_filename = f'{uploadtime}_{userip}_{randomnum}_instrum.mp3'
+        delivery_transport = get_file_sync_transport()
+        proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
+        sync_job = SyncJob(
+            source_file=final_instrum_path,
+            target_dir=target_dir,
+            task_id=task_id,
+            short_uri_prefix=f'/sepinstrum/{update_str}',
+            output_file=instrum_filename,
+            proxies=list(proxies),
+            transport=delivery_transport,
+            biz_type="extract_instrument",
+            domain=domain,
+        )
+        if not enqueue_delivery_job(logger, sync_job):
+            sync_msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
+            logger.error(f'task_id:{task_id} email:{email} {sync_msg}')
+            update_task_status(logger, task_id, domain, sync_msg, TaskStatus.FAILED)
+            return f'file sync failed, task_id:{task_id}, msg:{sync_msg}'
+        logger.info(
+            f'task_id:{task_id} instrument sync enqueued transport={delivery_transport}'
+        )
+
+        result = f"Instrument Processed: {task_id}"
+        return result
+    finally:
+        clear_reqid()
 def initialize_file_delivery():
     """Always warm socat for cross-region (rsync or quic fallback); start delivery queue."""
     cross_transport = get_file_sync_transport()
