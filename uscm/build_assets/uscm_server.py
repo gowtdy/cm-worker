@@ -653,6 +653,95 @@ async def instrument_endpoint(request: Request):
     )
     return res
 
+ALLOWED_TRANSCRIBE_FORMATS = ['json', 'txt', 'srt', 'vtt', 'ass']
+VIDEO_TTS_TRANSCRIBE = "video_tts_transcribe"
+
+@app.post("/api/transcribe")
+async def transcribe_endpoint(request: Request):
+    ret = 0
+    msg = 'ok'
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else ""
+    referer = request.headers.get("Referer", "Not provided")
+
+    json_post_raw = await request.json()
+    timestamp = json_post_raw.get('tstamp', 0)
+    signature = json_post_raw.get('snature', '')
+
+    tm = time.time()
+    userid = json_post_raw.get("userid", 0)
+    if isinstance(userid, int):
+        userid_hash = userid & 0xFFFFFFFF
+    else:
+        userid_hash = hash(str(userid)) & 0xFFFFFFFF
+    reqid = genid(userid_hash, tm)
+    today = time.strftime(DAY_FORMAT, time.localtime(tm))
+    datetime = time.strftime("%Y%m%d_%H%M%S", time.localtime(tm))
+    subscript = json_post_raw.get("subscript", 0)
+    email = json_post_raw.get("email", '')
+
+    upurl = json_post_raw.get("upurl", '')
+    language = json_post_raw.get("language", 'en')
+    output_format = (json_post_raw.get("format", 'json') or 'json').strip().lower()
+
+    ret, msg = validate_request(logger_tts, real_ip, referer, reqid, email, subscript, today, userid, ModuleType.TRANSCRIBE)
+    if ret != 0:
+        logger_tts.warning(f'reqid:{reqid} real_ip:{real_ip} userid:{userid} email:{email} validate_request failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    if output_format not in ALLOWED_TRANSCRIBE_FORMATS:
+        logger_tts.warning(f'reqid:{reqid} real_ip:{real_ip} userid:{userid} email:{email} Invalid format: {output_format}')
+        return gen_res_dict(1, f'Invalid format: {output_format}')
+
+    if email == VIDEO_TTS_TRANSCRIBE:
+        ret, msg, upfileinfo = validate_internal_tts_url(upurl, reqid, first_ip, email, today, datetime, logger_tts)
+        validate_fn_name = 'validate_internal_tts_url'
+    else:
+        ret, msg, upfileinfo = validate_audio_url(upurl, reqid, first_ip, email, today, datetime, logger_tts)
+        validate_fn_name = 'validate_audio_url'
+    if ret != 0:
+        logger_tts.warning(f'reqid:{reqid} real_ip:{real_ip} userid:{userid} email:{email} {validate_fn_name} failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_signature(logger_tts, timestamp, signature, upurl, datetime, reqid, first_ip, real_ip, userid, email, subscript, referer, ModuleType.TRANSCRIBE)
+    if ret != 0:
+        logger_tts.warning(f'reqid:{reqid} real_ip:{real_ip} userid:{userid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret = add_ip_tool_record(first_ip, today, ToolType.TRANSCRIBE, task_id=reqid, uid=userid,
+                             user_email=email, allip_address=real_ip, task_cmd='/api/transcribe')
+    if ret != 0:
+        logger_tts.error(f'reqid:{reqid} real_ip:{real_ip} userid:{userid} email:{email} add_ip_tool_record failed')
+        return gen_res_dict(ret, 'add_ip_tool_record failed')
+
+    logger_tts.info(f'reqid:{reqid} real_ip:{real_ip} userid:{userid} email:{email} '
+                    f'language:{language} format:{output_format} add_ip_tool_record done, dispatch transcribe task')
+    resolve_transcribe_task(language).delay(
+        upfileinfo, language, output_format,
+        task_id=reqid, userid=userid, first_ip=first_ip, email=email,
+    )
+
+    timeout: int = 300
+    interval: float = 1.0
+    dbret, uri = get_tool_out_path_by_task_id(reqid, timeout, interval)
+    if dbret != 0 or uri is None:
+        logger_tts.warning(f'reqid:{reqid} real_ip:{real_ip} userid:{userid} email:{email} transcribe timeout or failed, dbret:{dbret}, uri:{uri}')
+        return gen_res_dict(6, "System is busy now, please try again later!")
+
+    encrypted_uri = encrypt_url(uri)
+    logmsg = (f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, '
+              f'email:{email}, subscript:{subscript}, language:{language}, format:{output_format}, '
+              f'refer:{referer}, uri:{uri}')
+    logger_tts.info(logmsg)
+
+    return {
+        "ret": 0,
+        "msg": 'ok',
+        "uri": uri,
+        "enurl": encrypted_uri,
+        "reqid": str(reqid),
+    }
 
 #if __name__ == "__main__":
 #    import uvicorn
