@@ -130,8 +130,6 @@ async def tts_endpoint(request: Request):
         logger.warning(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} modelcat:{modelcat}, modelname:{modelname}, msg:{msg}')
         return gen_res_dict(ret, msg)
 
-    #add_ip_use_record(first_ip, today, text, reqid, '/api/genaudio', modelcat, modelname, textlen, email, real_ip)
-
     # 判断调用哪一个任务（来自 allused_voicemodels 字典）
     modellang = model_entry.get("modellang") or modellang
     tts_modeltype = model_entry.get("model_type") or "gsv"  # 默认 sovits；gsv 与 fish-speed 共用 task
