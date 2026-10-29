@@ -17,4 +17,4 @@ if [ -d "$HOME/.ssh" ]; then
     fi
 fi
 
-PYTHONPATH=/app celery -A gpu_transcribe_tasks worker -Q gpu_transcribe_whisper_tasks --pool=solo --pool=threads --concurrency=${CELERY_CONCURRENCY:-1} --loglevel=info
+PYTHONPATH=/app celery -A gpu_transcribe_tasks worker -Q us_transcribe_whisper_queue --pool=threads --concurrency=${CELERY_CONCURRENCY:-1} --loglevel=info
