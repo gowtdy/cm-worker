@@ -34,7 +34,7 @@ def post_update_task(
     task_req: str | None = None,
     reqid: str | None = None,
 ) -> tuple[int, str]:
-    """POST /inapi/update_task。失败只记日志，返回 (1, msg)，不抛异常。"""
+    """POST /inapi/updatetask。失败只记日志，返回 (1, msg)，不抛异常。"""
     task_id = "" if task_id is None else str(task_id).strip()
     domain = "" if domain is None else str(domain).strip()
     try:
@@ -43,7 +43,7 @@ def post_update_task(
             logger.error(f'task_id:{task_id} update_task failed, {msg}')
             return 1, msg
 
-        base = _userserver_base_url(logger, task_id, "update_task")
+        base = _userserver_base_url(logger, task_id, "updatetask")
         if not base:
             msg = "update_task failed, missing US_COMMON_USERSERVER_HOST or US_COMMON_USERSERVER_PORT"
             return 1, msg
@@ -51,7 +51,7 @@ def post_update_task(
         import requests
         from utility.internal_auth import bearer_auth_header
 
-        url = f"{base}/inapi/update_task"
+        url = f"{base}/inapi/updatetask"
         payload = {
             "task_id": task_id,
             "domain": domain,
