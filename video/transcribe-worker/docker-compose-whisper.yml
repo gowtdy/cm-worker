@@ -25,7 +25,7 @@ services:
       - WHISPER_MODEL_NAME=large-v3-turbo
       - TZ=Asia/Shanghai
     env_file:
-      - /home/aigc/data/env/.env_mqdb
+      - /home/aigc/data/env/.env_usmqdb
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
