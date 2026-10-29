@@ -20,4 +20,4 @@ fi
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PATH="/home/aigc/.local/bin:$PATH"
 
-PYTHONPATH=/app celery -A gpu_tts_tasks worker -Q gpu_tts_tasks --pool=solo --pool=threads --concurrency=${CELERY_CONCURRENCY:-1} --loglevel=info
+PYTHONPATH=/app celery -A gpu_tts_tasks worker -Q us_tts_queue --pool=threads --concurrency=${CELERY_CONCURRENCY:-1} --loglevel=info
