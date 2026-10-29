@@ -21,7 +21,7 @@ from utility.allused_voicemodels import register_allused_voicemodels, get_common
 from utility.voice_settings import parse_emo_params, parse_speed_volume_params
 from config.comm_config import DEFAULT_USER_FIRST_IP
 
-from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract
+from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract, gpu_cover, gpu_vocal, gpu_instrument
 
 app = FastAPI()
 
@@ -29,8 +29,6 @@ DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 DAY_FORMAT = '%Y-%m-%d'
 DEFAULT_FORMAT = "mp3"
 sounds_output_dir = 'output'
-
-cover_model_dir = '/app/models/cover_service_models'
 
 logging.getLogger("multipart").setLevel(logging.INFO)
 logging.getLogger("multipart.multipart").setLevel(logging.INFO)
@@ -388,6 +386,273 @@ async def extractaudio_endpoint(request: Request):
         f'ret:{ret}'
     )
     return res
+
+@app.post("/api/cover")
+async def cover_endpoint(request: Request):
+    ret = 0
+    msg = 'ok'
+    task_cmd = '/api/cover'
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
+    # 获取HTTP请求的Referer
+    referer = request.headers.get("Referer", "Not provided")
+
+    json_post_raw = await request.json()
+
+    timestamp = json_post_raw.get('tstamp', 0)
+    signature = json_post_raw.get('snature', '')
+
+    tm = time.time()
+    uid = json_post_raw.get("uid", 0)
+    reqid = gen_reqid(uid, tm)
+    localtime = time.localtime(tm)
+    today = time.strftime(DAY_FORMAT, localtime)
+    datetime = time.strftime("%Y%m%d_%H%M%S", localtime)
+
+    email = json_post_raw.get("email", '')
+    domain = json_post_raw.get("domain", '')
+    subscript = json_post_raw.get("subscript", 0)
+
+    modelname = json_post_raw.get("modelname", '')
+    modelcat = json_post_raw.get("modelcat", '')
+    modelgender = json_post_raw.get("modelgender", '').lower()
+    lang = json_post_raw.get("lang", 'english')
+    converturl = json_post_raw.get("converturl", '')
+    upgender = json_post_raw.get("upgender", '').lower()
+
+    if not validate_gender(upgender) or not validate_gender(modelgender):
+        ret = 1
+        msg = f'upgender:{upgender} or modelgender:{modelgender} is invalid, reqid:{reqid}!'
+        logger.warning(f'cover, reqid:{reqid} ip:{real_ip} uid:{uid} email:{email}, msg: {msg}')
+        return gen_res_dict(ret, msg)
+
+    if (len(modelname.strip()) == 0 or len(modelcat.strip()) == 0 or len(lang.strip()) == 0 or len(converturl.strip()) == 0):
+        ret = 1
+        msg = f'modelname:{modelname} or modelcat:{modelcat} or lang:{lang} or converturl:{converturl} is invalid, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email}, msg: {msg}')
+        return gen_res_dict(ret, msg)
+
+    # 验证音频URL
+    ret, msg, upfileinfo = validate_audio_url(converturl, reqid, first_ip, email, today, datetime, logger)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_audio_url failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_signature(logger, timestamp, signature, converturl, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.COVER)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_request(logger, real_ip, referer, reqid, email, subscript, today, uid, ModuleType.COVER, domain, request)
+    if ret != 0:
+        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} subscript:{subscript} ret:{ret}, msg:{msg}')
+        return gen_res_dict(ret, msg)
+
+    generate_content = f'{modelcat}|{modelname}|{converturl}'
+    task_req = json.dumps({
+        "uid": uid,
+        "email": email,
+        "modelcat": modelcat,
+        "modelname": modelname,
+        "modelgender": modelgender,
+        "upgender": upgender,
+        "lang": lang,
+        "converturl": converturl,
+    }, ensure_ascii=False)
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.COVER,
+        task_cmd=task_cmd, task_req=task_req,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    try:
+        gpu_cover.delay(modelcat, modelname, modelgender, upfileinfo, upgender, task_id=reqid, email=email, domain=domain, lang=lang)
+    except Exception as e:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gpu_cover.delay failed: {e}')
+        return gen_res_dict(1, f'dispatch failed: {e}')
+
+    res = {
+        "ret": 0,
+        "msg": 'ok',
+        "reqid": reqid
+    }
+
+    logger.info(
+        f'cover, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, '
+        f'modelcat:{modelcat}, lang:{lang} email:{email}, subscript:{subscript}, '
+        f'modelname:{modelname}, refer:{referer}, ret:{ret}'
+    )
+    return res
+
+@app.post("/api/vocal")
+async def vocal_endpoint(request: Request):
+    ret = 0
+    msg = 'ok'
+    task_cmd = '/api/vocal'
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
+    # 获取HTTP请求的Referer
+    referer = request.headers.get("Referer", "Not provided")
+
+    json_post_raw = await request.json()
+
+    timestamp = json_post_raw.get('tstamp', 0)
+    signature = json_post_raw.get('snature', '')
+
+    tm = time.time()
+    uid = json_post_raw.get("uid", 0)
+    reqid = gen_reqid(uid, tm)
+    localtime = time.localtime(tm)
+    today = time.strftime(DAY_FORMAT, localtime)
+    datetime = time.strftime("%Y%m%d_%H%M%S", localtime)
+
+    email = json_post_raw.get("email", '')
+    domain = json_post_raw.get("domain", '')
+    subscript = json_post_raw.get("subscript", 0)
+
+    upurl = json_post_raw.get("upurl", '')
+
+    if len(upurl.strip()) == 0:
+        ret = 1
+        msg = f'upurl is invalid, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} subscript:{subscript} msg:{msg} upurl:{upurl} referer:{referer}')
+        return gen_res_dict(ret, msg)
+
+    # 验证音频URL
+    ret, msg, upfileinfo = validate_audio_url(upurl, reqid, first_ip, email, today, datetime, logger)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_audio_url failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_signature(logger, timestamp, signature, upurl, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.VOCAL_ISOLATOR)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_request(logger, real_ip, referer, reqid, email, subscript, today, uid, ModuleType.VOCAL_ISOLATOR, domain, request)
+    if ret != 0:
+        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} subscript:{subscript} ret:{ret}, msg:{msg}')
+        return gen_res_dict(ret, msg)
+
+    generate_content = upfileinfo['relative_path']
+    task_req = json.dumps({
+        "uid": uid,
+        "email": email,
+        "upurl": upurl,
+    }, ensure_ascii=False)
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.VOCAL_ISOLATOR,
+        task_cmd=task_cmd, task_req=task_req,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    try:
+        gpu_vocal.delay(upfileinfo, task_id=reqid, email=email, domain=domain)
+    except Exception as e:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gpu_vocal.delay failed: {e}')
+        return gen_res_dict(1, f'dispatch failed: {e}')
+
+    res = {
+        "ret": 0,
+        "msg": 'ok',
+        "reqid": reqid
+    }
+
+    logger.info(
+        f'vocal, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, '
+        f'email:{email}, subscript:{subscript}, refer:{referer}, ret:{ret}'
+    )
+    return res
+
+@app.post("/api/instrument")
+async def instrument_endpoint(request: Request):
+    ret = 0
+    msg = 'ok'
+    task_cmd = '/api/instrument'
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
+    # 获取HTTP请求的Referer
+    referer = request.headers.get("Referer", "Not provided")
+
+    json_post_raw = await request.json()
+
+    timestamp = json_post_raw.get('tstamp', 0)
+    signature = json_post_raw.get('snature', '')
+
+    tm = time.time()
+    uid = json_post_raw.get("uid", 0)
+    reqid = gen_reqid(uid, tm)
+    localtime = time.localtime(tm)
+    today = time.strftime(DAY_FORMAT, localtime)
+    datetime = time.strftime("%Y%m%d_%H%M%S", localtime)
+
+    email = json_post_raw.get("email", '')
+    domain = json_post_raw.get("domain", '')
+    subscript = json_post_raw.get("subscript", 0)
+
+    upurl = json_post_raw.get("upurl", '')
+
+    if len(upurl.strip()) == 0:
+        ret = 1
+        msg = f'upurl is invalid, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} subscript:{subscript} msg:{msg} upurl:{upurl} referer:{referer}')
+        return gen_res_dict(ret, msg)
+
+    # 验证音频URL
+    ret, msg, upfileinfo = validate_audio_url(upurl, reqid, first_ip, email, today, datetime, logger)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_audio_url failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_signature(logger, timestamp, signature, upurl, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.VOCAL_REMOVER)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_request(logger, real_ip, referer, reqid, email, subscript, today, uid, ModuleType.VOCAL_REMOVER, domain, request)
+    if ret != 0:
+        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} subscript:{subscript} ret:{ret}, msg:{msg}')
+        return gen_res_dict(ret, msg)
+
+    generate_content = upfileinfo['relative_path']
+    task_req = json.dumps({
+        "uid": uid,
+        "email": email,
+        "upurl": upurl,
+    }, ensure_ascii=False)
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.VOCAL_REMOVER,
+        task_cmd=task_cmd, task_req=task_req,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    try:
+        gpu_instrument.delay(upfileinfo, task_id=reqid, email=email, domain=domain)
+    except Exception as e:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gpu_instrument.delay failed: {e}')
+        return gen_res_dict(1, f'dispatch failed: {e}')
+
+    res = {
+        "ret": 0,
+        "msg": 'ok',
+        "reqid": reqid
+    }
+
+    logger.info(
+        f'instrument, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, '
+        f'email:{email}, subscript:{subscript}, refer:{referer}, ret:{ret}'
+    )
+    return res
+
 
 #if __name__ == "__main__":
 #    import uvicorn
