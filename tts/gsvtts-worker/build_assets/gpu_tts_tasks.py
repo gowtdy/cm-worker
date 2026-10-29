@@ -43,7 +43,7 @@ from langdetect import detect, DetectorFactory
 from langdetect.lang_detect_exception import LangDetectException
 
 from utility.load_model import load_bert_model, load_ssl_model, DictToAttrRecursive
-from utility.util import  (genid, gen_res_dict, get_first, is_whole_sentence,
+from utility.util import  (gen_res_dict, get_first, is_whole_sentence,
         split, get_phones_and_bert, merge_short_text_in_array, get_spepc, splits,
         cut5, cut_custom, split_long_sentence, verify_signature, process_text, get_pause_duration,
         get_all_pause_durations)
@@ -59,15 +59,12 @@ from voice_train.process_ckpt import load_sovits_new, get_sovits_version_from_pa
 
 from fish_speech.text.chn_text_norm.text import Text as ChnNormedText
 
-from sql.mysql_db import add_ip_use_record, get_ip_use_count, add_api_user_record, \
-        get_api_user_by_email, update_api_user_by_email, get_email_use_count, \
-            update_ip_use_record, update_api_user_record
-
 from utility.voice_config import (
     get_device, ishalf, get_dtype,
     get_file_sync_transport, get_quic_client_host, get_quic_client_port,
 )
 from utility.module_enum import TaskStatus
+from utility.userserver_client import update_task_status
 from utility.socat_rsyc_util import (
     RsyncTransport,
     get_socat_proxy_configs,
@@ -87,7 +84,7 @@ from celery_worker import celery_app
 from voice_train.sv import SV
 from config.model_conf import get_model_conf
 #from indextts_worker import load_indextts_model, indextts_infer
-from utility.log import logset, setup_logger
+from utility.log import logset, setup_logger, set_reqid, clear_reqid
 from utility.voice_config import get_localnet_video_tts_dir, get_remote_ttssave_dir
 
 # 设置CUDA环境变量以提高稳定性
@@ -1237,7 +1234,7 @@ def save_audio_file(sample_rate, audio, output_format, base_output_path, filenam
     return output_path, output_file
 
 
-def enqueue_tts_sync(output_path, output_file, short_uri_prefix, remote_target_dir, task_id, is_eapi, reqid, email=''):
+def enqueue_tts_sync(output_path, output_file, short_uri_prefix, remote_target_dir, task_id, domain, email=''):
     """Enqueue async file delivery; returns (ok, error_msg). Does not mark complete."""
     if email == VIDEO_SCRIPT_TTS:
         proxies = []
@@ -1249,270 +1246,252 @@ def enqueue_tts_sync(output_path, output_file, short_uri_prefix, remote_target_d
         source_file=output_path,
         target_dir=remote_target_dir,
         task_id=task_id,
-        is_eapi=is_eapi,
         short_uri_prefix=short_uri_prefix,
         output_file=output_file,
         proxies=list(proxies),
         transport=delivery_transport,
+        domain=domain,
     )
     if not enqueue_delivery_job(logger, sync_job):
-        msg = f'enqueue sync failed, queue full or workers down, reqid:{reqid}'
+        msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
         logger.error(msg)
-        if is_eapi:
-            update_api_user_record(task_id, msg, TaskStatus.FAILED)
-        else:
-            update_ip_use_record(task_id, msg, TaskStatus.FAILED)
+        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
         return False, msg
     return True, None
 
-@celery_app.task(name='gpu_tts_tasks.gpu_gen_tts')
+@celery_app.task(name='task_gen_tts')
 @cuda_error_handler
-def gpu_gen_tts(modelname, text, modelcat='', userid=0, t=1, reqid='0', output_format=DEFAULT_FORMAT, modellang='', email=''):
-    isEapi = str(reqid).endswith('.eapi')
-    task_id = reqid
-    if isEapi:
-        task_id = str(reqid).removesuffix('.eapi')
-
-    if (len(modelname.strip()) == 0):
-        ret = 1
-        msg = f'modelname:{modelname} is invalid, reqid:{reqid}!'
-        logger.warning(f'msg: {msg}')
-        update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-        return gen_res_dict(ret, msg)
-
-    if (len(text.strip()) == 0):
-        ret = 1
-        msg = f'text:{text} is empty, reqid:{reqid}!'
-        logger.warning(f'msg: {msg}')
-        update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-        return gen_res_dict(ret, msg)
-
-    lang = "NULL"
-    # 接口做过修改
-    # tiktokvoice.net 会把语言类型传递在modelcat参数中
-    # aivoicelab.net 为了兼容角色模型， 将语言参数参地在modellang中
-    if (len(modellang.strip()) != 0):
-        lang = modellang
-    else :
-        if modelcat == 'english_role':
-            lang = 'english'
-        else :
-            lang = modelcat
-
-    localtime = time.localtime(time.time())
-    today = time.strftime(DAY_FORMAT, localtime)
-    datetime_str = time.strftime("%Y%m%d%H%M%S", localtime)
-    random_number = random.randint(1, 1000)
-    start_time = time.time()
-    textlen = len(text)
-
-    # 任务开始时安全地管理GPU内存
+def gpu_gen_tts(modelname, text, modelcat='', userid=0, task_id='0', output_format=DEFAULT_FORMAT, modellang='', email='', domain=''):
+    set_reqid(task_id)
     try:
-        if torch.cuda.is_available():
-            # 检查并等待GPU内存
-            if not check_and_wait_for_gpu_memory(min_free_gb=2.0, max_wait_seconds=30):
-                logger.warning(f'GPU memory low at task start, attempting cleanup. reqid:{reqid}')
-                manage_gpu_memory()
-                # 再次检查
-                if not check_and_wait_for_gpu_memory(min_free_gb=1.5, max_wait_seconds=10):
-                    logger.error(f'GPU memory insufficient for task, reqid:{reqid}')
-                    ret = 1
-                    msg = f'GPU memory insufficient, please try again later, reqid:{reqid}!'
-                    update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-                    return gen_res_dict(ret, msg)
-    except Exception as e:
-        logger.warning(f'GPU memory check failed at task start: {e}')
+        if (len(modelname.strip()) == 0):
+            ret = 1
+            msg = f'modelname:{modelname} is invalid, task_id:{task_id}!'
+            logger.warning(f'msg: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return gen_res_dict(ret, msg)
 
-    try:
-        # modcat 变成了语言
-        if lang in fish_support_langs :
-            model_path = f'models/service_model/common_models/{modelcat}/common_model_{modelname}'
-            if not os.path.exists(model_path) :
-               ret = 1
-               msg = f'modelname:{modelname} is invalid, reqid:{reqid}!'
-               logger.warning(f'fish tts, model_path:{model_path}, modelname:{modelname}, msg:{msg}')
-               return gen_res_dict(ret, msg)
-            
-            # 使用带重试机制的fish_tts
-            sample_rate, audio = fish_tts_with_retry(text, modelcat, modelname, max_retries=2)
+        if (len(text.strip()) == 0):
+            ret = 1
+            msg = f'text:{text} is empty, task_id:{task_id}!'
+            logger.warning(f'msg: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return gen_res_dict(ret, msg)
 
-            wav_output_path = f'{wav_output_dir}/{today}/user{userid}'
-            filename_prefix = f'fis_{modelname}_{datetime_str}_{random_number}'
-            #uri_prefix = f'/outimage/wavcl/{today}/user{userid}'
-            # short_uri_prefix国内、国外兼容， 同步成功走国外，同步失败走国内, 同步是设置
-            # 国内为 f'/outimgage/{enuri_prefix}', 国外为 f'/outdt/{enuri_prefix}', 
-            short_uri_prefix = f'/wavcl/{today}/user{userid}'
-            if email == VIDEO_SCRIPT_TTS:
-                remote_ttssave_dir = get_localnet_video_tts_dir()
-            else:
-                remote_ttssave_dir = get_remote_ttssave_dir()
-            remote_target_dir = f'{remote_ttssave_dir}/{today}/user{userid}'
-            
-            output_path, output_file = save_audio_file(
-                sample_rate, audio, output_format, wav_output_path, filename_prefix
-            )
-            ok, sync_msg = enqueue_tts_sync(
-                output_path, output_file, short_uri_prefix, remote_target_dir, task_id, isEapi, reqid, email
-            )
-            if not ok:
-                return gen_res_dict(1, sync_msg)
+        lang = "NULL"
+        # 接口做过修改
+        # tiktokvoice.net 会把语言类型传递在modelcat参数中
+        # aivoicelab.net 为了兼容角色模型， 将语言参数参地在modellang中
+        if (len(modellang.strip()) != 0):
+            lang = modellang
         else :
-            # gpt-sovits 支持中,日,英, 粤
-            # modcat 为 china, china_yue, english, japan 的情况
-            model_file_prefix = modelname
-            if t == 1 :
+            if modelcat == 'english_role':
+                lang = 'english'
+            else :
+                lang = modelcat
+
+        localtime = time.localtime(time.time())
+        today = time.strftime(DAY_FORMAT, localtime)
+        datetime_str = time.strftime("%Y%m%d%H%M%S", localtime)
+        random_number = random.randint(1, 1000)
+        start_time = time.time()
+        textlen = len(text)
+
+        # 任务开始时安全地管理GPU内存
+        try:
+            if torch.cuda.is_available():
+                # 检查并等待GPU内存
+                if not check_and_wait_for_gpu_memory(min_free_gb=2.0, max_wait_seconds=30):
+                    logger.warning(f'GPU memory low at task start, attempting cleanup. task_id:{task_id}')
+                    manage_gpu_memory()
+                    # 再次检查
+                    if not check_and_wait_for_gpu_memory(min_free_gb=1.5, max_wait_seconds=10):
+                        logger.error(f'GPU memory insufficient for task, task_id:{task_id}')
+                        ret = 1
+                        msg = f'GPU memory insufficient, please try again later, task_id:{task_id}!'
+                        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                        return gen_res_dict(ret, msg)
+        except Exception as e:
+            logger.warning(f'GPU memory check failed at task start: {e}')
+
+        try:
+            # modcat 变成了语言
+            if lang in fish_support_langs :
+                model_path = f'models/service_model/common_models/{modelcat}/common_model_{modelname}'
+                if not os.path.exists(model_path) :
+                   ret = 1
+                   msg = f'modelname:{modelname} is invalid, task_id:{task_id}!'
+                   logger.warning(f'fish tts, model_path:{model_path}, modelname:{modelname}, msg:{msg}')
+                   return gen_res_dict(ret, msg)
+
+                # 使用带重试机制的fish_tts
+                sample_rate, audio = fish_tts_with_retry(text, modelcat, modelname, max_retries=2)
+
+                wav_output_path = f'{wav_output_dir}/{today}/user{userid}'
+                filename_prefix = f'fis_{modelname}_{datetime_str}_{random_number}'
+                #uri_prefix = f'/outimage/wavcl/{today}/user{userid}'
+                # short_uri_prefix国内、国外兼容， 同步成功走国外，同步失败走国内, 同步是设置
+                # 国内为 f'/outimgage/{enuri_prefix}', 国外为 f'/outdt/{enuri_prefix}', 
+                short_uri_prefix = f'/wavcl/{today}/user{userid}'
+                if email == VIDEO_SCRIPT_TTS:
+                    remote_ttssave_dir = get_localnet_video_tts_dir()
+                else:
+                    remote_ttssave_dir = get_remote_ttssave_dir()
+                remote_target_dir = f'{remote_ttssave_dir}/{today}/user{userid}'
+
+                output_path, output_file = save_audio_file(
+                    sample_rate, audio, output_format, wav_output_path, filename_prefix
+                )
+                ok, sync_msg = enqueue_tts_sync(
+                    output_path, output_file, short_uri_prefix, remote_target_dir, task_id, domain, email
+                )
+                if not ok:
+                    return gen_res_dict(1, sync_msg)
+            else :
+                # gpt-sovits 支持中,日,英, 粤
+                # modcat 为 china, china_yue, english, japan 的情况
+                model_file_prefix = modelname
                 # 公用模型
                 model_path = f'models/service_model/common_models/{modelcat}/common_model_{modelname}'
-            elif t == 2 :
-                # 用户私有模型
-                model_path = f'models/service_model/user_models/user{userid}/model_user{userid}_{modelname}'
-                model_file_prefix = f'user{userid}_{modelname}'
-            else :
-                ret = 1
-                msg = f't:{t} is invalid, reqid:{reqid}!'
-                logger.warning(f'msg: {msg}')
-                update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-                return gen_res_dict(ret, msg)
 
-            if not os.path.exists(model_path) :
-               ret = 1
-               msg = f'modelname:{modelname} is invalid, reqid:{reqid}!'
-               logger.warning(f'model_path:{model_path}, modelname:{modelname}')
-               update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-               return gen_res_dict(ret, msg)
+                if not os.path.exists(model_path) :
+                   ret = 1
+                   msg = f'modelname:{modelname} is invalid, task_id:{task_id}!'
+                   logger.warning(f'model_path:{model_path}, modelname:{modelname}')
+                   update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                   return gen_res_dict(ret, msg)
 
-            # 在加载模型前检查 GPU 健康状态
-            if not check_gpu_health(device, attempt_recovery=True):
-                logger.error(f'GPU health check failed, skipping task for reqid:{reqid}')
-                
-                # 记录详细错误信息
-                log_gpu_error_details(device, "GPU health check failed")
-                
-                ret = 1
-                msg = f'GPU is in an unhealthy state, reqid:{reqid}!'
-                logger.error(f'msg: {msg}')
-                update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-                return gen_res_dict(ret, msg)
+                # 在加载模型前检查 GPU 健康状态
+                if not check_gpu_health(device, attempt_recovery=True):
+                    logger.error(f'GPU health check failed, skipping task for task_id:{task_id}')
 
-            model_desc = f'{model_path}/{model_file_prefix}_desc.txt'
-            if not os.path.exists(model_desc):
-                ret = 1
-                msg = f'model_desc not found, reqid:{reqid}!'
-                logger.warning(f'msg: {msg}')
-                update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-                return gen_res_dict(ret, msg)
-            
-            load_model_type = "gsv" # 默认使用sovits模型
-            with open(model_desc, 'r', encoding='utf-8') as f :
-                model_desc_content = f.readline().strip('\n')
-                logger.debug(f'handle, model_desc_content:{model_desc_content}')
-                items = model_desc_content.split('|')
-                if len(items) >= 8:
-                    load_model_type = items[7]
-            if load_model_type == "index-tts" : # 使用index-tts模型
-                filename_prefix = f'idx_{modelname}_{datetime_str}_{random_number}'
-                speacker_pt_path = f"{model_path}/{model_file_prefix}_audio_prompt.pt"
-                if not os.path.exists(speacker_pt_path):
+                    # 记录详细错误信息
+                    log_gpu_error_details(device, "GPU health check failed")
+
                     ret = 1
-                    msg = f'speacker_pt_path {speacker_pt_path} not found, reqid:{reqid}!'
-                    logger.warning(f'msg: {msg}')
-                    update_ip_use_record(task_id, msg, TaskStatus.FAILED)
+                    msg = f'GPU is in an unhealthy state, task_id:{task_id}!'
+                    logger.error(f'msg: {msg}')
+                    update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
                     return gen_res_dict(ret, msg)
 
-                msg = f'index-tts is not supported, reqid:{reqid}!'
-                update_ip_use_record(task_id, msg, TaskStatus.FAILED)
-                return gen_res_dict(ret, msg)
-                #sample_rate, audio = indextts_infer(logger, indextts_model, speacker_pt_path, text)
-            else : # 使用gpt-sovits模型
-                refer_wav_path = f"{model_path}/{model_file_prefix}_audio_prompt.wav"
-                refer_text_path = f"{model_path}/{model_file_prefix}_text_prompt.txt"
-                gpt_weights_path = f"{model_path}/{model_file_prefix}_gpt_weights.ckpt"
-                sovits_weights_path = f"{model_path}/{model_file_prefix}_sovits_weights.pth"
-                prompt_text = ''
-                with open(refer_text_path, 'r', encoding='utf-8') as f :
-                    prompt_text = f.read()
+                model_desc = f'{model_path}/{model_file_prefix}_desc.txt'
+                if not os.path.exists(model_desc):
+                    ret = 1
+                    msg = f'model_desc not found, task_id:{task_id}!'
+                    logger.warning(f'msg: {msg}')
+                    update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                    return gen_res_dict(ret, msg)
 
-                prompt_language = 'en'
-                text_language = 'en'
-                how_to_cut = ''
-                top_k = 5
-                top_p = 0.4
-                temperature = 0.4
-                ref_free = False
-                speed = 0.95
-                version = "v2"
-                text_lang = detect_language(text)
-                logger.debug(f'handle, lang:{lang}, dectect text lang:{text_lang}')
-                if text_lang is None:
-                    text_lang = language_map[lang]
+                load_model_type = "gsv" # 默认使用sovits模型
+                with open(model_desc, 'r', encoding='utf-8') as f :
+                    model_desc_content = f.readline().strip('\n')
+                    logger.debug(f'handle, model_desc_content:{model_desc_content}')
+                    items = model_desc_content.split('|')
+                    if len(items) >= 8:
+                        load_model_type = items[7]
+                if load_model_type == "index-tts" : # 使用index-tts模型
+                    filename_prefix = f'idx_{modelname}_{datetime_str}_{random_number}'
+                    speacker_pt_path = f"{model_path}/{model_file_prefix}_audio_prompt.pt"
+                    if not os.path.exists(speacker_pt_path):
+                        ret = 1
+                        msg = f'speacker_pt_path {speacker_pt_path} not found, task_id:{task_id}!'
+                        logger.warning(f'msg: {msg}')
+                        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                        return gen_res_dict(ret, msg)
+
+                    msg = f'index-tts is not supported, task_id:{task_id}!'
+                    update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                    return gen_res_dict(ret, msg)
+                    #sample_rate, audio = indextts_infer(logger, indextts_model, speacker_pt_path, text)
+                else : # 使用gpt-sovits模型
+                    refer_wav_path = f"{model_path}/{model_file_prefix}_audio_prompt.wav"
+                    refer_text_path = f"{model_path}/{model_file_prefix}_text_prompt.txt"
+                    gpt_weights_path = f"{model_path}/{model_file_prefix}_gpt_weights.ckpt"
+                    sovits_weights_path = f"{model_path}/{model_file_prefix}_sovits_weights.pth"
+                    prompt_text = ''
+                    with open(refer_text_path, 'r', encoding='utf-8') as f :
+                        prompt_text = f.read()
+
+                    prompt_language = 'en'
+                    text_language = 'en'
+                    how_to_cut = ''
+                    top_k = 5
+                    top_p = 0.4
+                    temperature = 0.4
+                    ref_free = False
+                    speed = 0.95
+                    version = "v2"
+                    text_lang = detect_language(text)
+                    logger.debug(f'handle, lang:{lang}, dectect text lang:{text_lang}')
+                    if text_lang is None:
+                        text_lang = language_map[lang]
+                    else:
+                        text_lang = 'auto'
+                    logger.debug(f'handle, dectect lang is None, user default lang:{text_lang}')
+
+                    # version 已废弃，直接根据加载的模型确定版本
+                    prompt_language, text_language, version = determine_languages(lang, text_lang)
+
+                    #logger.info(f'hanle, sovits_weights_path: {sovits_weights_path}')
+                    #logger.info(f'hanle, gpt_weights_path: {gpt_weights_path}')
+                    model_version = load_sovits_weights(sovits_weights_path, device, is_half)
+                    load_gpt_weights(gpt_weights_path, device, is_half)
+                    init_sv(device, is_half)
+
+                    sample_rate, audio = get_tts_wav(refer_wav_path, prompt_text, prompt_language, text, text_language, how_to_cut, top_k, top_p, temperature, ref_free, speed, model_version)
+                    filename_prefix = f'gpt_{modelname}_{datetime_str}_{random_number}'
+
+                wav_output_path = wav_output_dir + '/' + today + '/user' + str(userid) 
+                #uri_prefix = f'/outimage/wavcl/{today}/user{userid}'
+                # short_uri_prefix 国内、国外兼容， 国内为 f'/outimgage/{enuri_prefix}', 国外为 f'/outdt/{enuri_prefix}', 同步成功走国外，同步失败走国内
+                short_uri_prefix = f'/wavcl/{today}/user{userid}'
+                if email == VIDEO_SCRIPT_TTS:
+                    remote_ttssave_dir = get_localnet_video_tts_dir()
                 else:
-                    text_lang = 'auto'
-                logger.debug(f'handle, dectect lang is None, user default lang:{text_lang}')
+                    remote_ttssave_dir = get_remote_ttssave_dir()
+                remote_target_dir = f'{remote_ttssave_dir}/{today}/user{userid}'
+                output_path, output_file = save_audio_file(
+                    sample_rate, audio, output_format, wav_output_path, filename_prefix
+                )
+                ok, sync_msg = enqueue_tts_sync(
+                    output_path, output_file, short_uri_prefix, remote_target_dir, task_id, domain, email
+                )
+                if not ok:
+                    return gen_res_dict(1, sync_msg)
 
-                # version 已废弃，直接根据加载的模型确定版本
-                prompt_language, text_language, version = determine_languages(lang, text_lang)
-            
-                #logger.info(f'hanle, sovits_weights_path: {sovits_weights_path}')
-                #logger.info(f'hanle, gpt_weights_path: {gpt_weights_path}')
-                model_version = load_sovits_weights(sovits_weights_path, device, is_half)
-                load_gpt_weights(gpt_weights_path, device, is_half)
-                init_sv(device, is_half)
+        except Exception as e:
+            logger.error(f'Error in gpu_gen_tts for task_id:{task_id}: {e}')
+            msg = f'Error in gpu_gen_tts for task_id:{task_id}: {e}'
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                    gc.collect()
+            except Exception as cleanup_error:
+                logger.warning(f'GPU cleanup failed in exception handler: {cleanup_error}')
+            return gen_res_dict(1, msg)
 
-                sample_rate, audio = get_tts_wav(refer_wav_path, prompt_text, prompt_language, text, text_language, how_to_cut, top_k, top_p, temperature, ref_free, speed, model_version)
-                filename_prefix = f'gpt_{modelname}_{datetime_str}_{random_number}'
-
-            wav_output_path = wav_output_dir + '/' + today + '/user' + str(userid) 
-            #uri_prefix = f'/outimage/wavcl/{today}/user{userid}'
-            # short_uri_prefix 国内、国外兼容， 国内为 f'/outimgage/{enuri_prefix}', 国外为 f'/outdt/{enuri_prefix}', 同步成功走国外，同步失败走国内
-            short_uri_prefix = f'/wavcl/{today}/user{userid}'
-            if email == VIDEO_SCRIPT_TTS:
-                remote_ttssave_dir = get_localnet_video_tts_dir()
-            else:
-                remote_ttssave_dir = get_remote_ttssave_dir()
-            remote_target_dir = f'{remote_ttssave_dir}/{today}/user{userid}'
-            output_path, output_file = save_audio_file(
-                sample_rate, audio, output_format, wav_output_path, filename_prefix
-            )
-            ok, sync_msg = enqueue_tts_sync(
-                output_path, output_file, short_uri_prefix, remote_target_dir, task_id, isEapi, reqid, email
-            )
-            if not ok:
-                return gen_res_dict(1, sync_msg)
-
-    except Exception as e:
-        logger.error(f'Error in gpu_gen_tts for reqid:{reqid}: {e}')
-        msg = f'Error in gpu_gen_tts for reqid:{reqid}: {e}'
-        if isEapi:
-            update_api_user_record(task_id, msg, TaskStatus.FAILED)
-        else:
-            update_ip_use_record(task_id, msg, TaskStatus.FAILED)
+        # 任务结束时安全地清理GPU内存（不等待跨境 sync）
         try:
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
                 gc.collect()
-        except Exception as cleanup_error:
-            logger.warning(f'GPU cleanup failed in exception handler: {cleanup_error}')
-        return gen_res_dict(1, msg)
+        except Exception as e:
+            logger.warning(f'GPU cleanup failed at task end: {e}')
 
-    # 任务结束时安全地清理GPU内存（不等待跨境 sync）
-    try:
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-            gc.collect()
-    except Exception as e:
-        logger.warning(f'GPU cleanup failed at task end: {e}')
+        tts_time = time.time()
+        cost_tts = tts_time - start_time
+        logger.info(
+            f'task_id:{task_id}, inference finish, sync enqueued, time[tts:{cost_tts}] '
+            f'sample_rate:{sample_rate}, audio_file:{output_path}'
+        )
 
-    tts_time = time.time()
-    cost_tts = tts_time - start_time
-    logger.info(
-        f'reqid:{reqid}, inference finish, sync enqueued, time[tts:{cost_tts}] '
-        f'sample_rate:{sample_rate}, audio_file:{output_path}'
-    )
-
-    result = f"Processed: {task_id}"
-    return result
+        result = f"Processed: {task_id}"
+        return result
+    finally:
+        clear_reqid()
 
 ## 以下主要提供api服务
 common_cloned_models = []
@@ -1543,8 +1522,8 @@ def load_common_cloned_models () :
             cat_models['modelcat_display'] = catname
             cat_models['modelcat_data'] = model_data
             common_cloned_models.append(cat_models)
-    #        logger.debug(f'reqid:{reqid}, userid:{userid}, cat:{cat} cat_models:{cat_models}')
-    #    logger.debug(f'reqid:{reqid}, userid:{userid}, common_models')
+    #        logger.debug(f'task_id:{task_id}, userid:{userid}, cat:{cat} cat_models:{cat_models}')
+    #    logger.debug(f'task_id:{task_id}, userid:{userid}, common_models')
 
 def validate_cloned_model(modelcat, modelname):
     """Validate if modelcat exists in common_clone_models"""
