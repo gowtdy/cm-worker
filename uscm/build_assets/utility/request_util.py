@@ -56,37 +56,43 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
     day_count, month_count = fetch_generate_counts(logger, reqid, first_ip, email, userid, domain, module)
     logger.debug(f'11 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count}')
     if domain == "caluma.ai":
-        
-    # 用户如果登录，校验登录状态
-    if email and domain == "caluma.ai":
-        session, reason = authenticate_request(request, domain, logger=logger)
-        if session is None or session.email != email:
-            ret = 3
-            msg = 'Auth failed, please contact us!'
-            mismatch = session is not None and session.email != email
-            logger.warning(
-                f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} '
-                f'subscript:{subscript} refer:{referer}, '
-                f'reason:{"email_mismatch" if mismatch else reason}, msg: {msg}'
-            )
+        # 先以未登录的情况验证是否可用
+        ret, msg = can_use_service(domain, module, False, day_count, month_count)
+        # 当用户在未登录时都可以使用服务时，不用检查用户是否登录，直接继续生成
+        if ret == 0:
             return ret, msg
+        # 当用户在未登录时不能使用服务时，检查用户是否登录
+        if email 
+            # 验证用户的登录信息
+            session, reason = authenticate_request(request, domain, logger=logger)
+            if (session is None or session.email != email):
+                # 验证用户是否可以在未登录的时候继续生成, 如果可以，则继续生成，否则返回错误
+                ret = 11
+                msg = 'Login expired, please login again!'
+                logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
+                return ret, msg
+            # todo 获取用户信息， 判断是否订阅
+            # 登录未订阅用户，在验证一次
+            ret, msg = can_use_service(domain, module, True, day_count, month_count)
+            if ret == 0:
+                return ret, msg
 
-    day_count = 0
-    month_count = 0
-    if real_ip != "":
-        white_list = get_white_list()
-        if first_ip not in white_list:
-            
-            # todo: 订阅状态校验， 以及相应的校验策略。
-            #if subscript != 1:
-            #    month_limit = get_limit_config().get('month_count', 15)
-            #    logger.debug(f'22 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count} month_limit:{month_limit}')
-            #    if day_count > MAX_FREE_TRIES or month_count > month_limit:
-            #        ret = 2
-            #        msg = 'You have exceeded the free usage limit for today or last month.'
-            #        logger.info(f'33 reqid:{reqid} ip:{real_ip} email:{email} subscript:{subscript} referer:{referer}, day_count:{day_count} month_count:{month_count} exceeded.')
-            #        return ret, msg
-
+        if ret == 1:
+            ret = 10
+            msg = 'Please login to continue!'
+            logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
+            return ret, msg
+        if ret == 2:
+            ret = 12
+            msg = 'Free usage limit exceeded, please upgrade to a paid plan!'
+            logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
+            return ret, msg
+    else :
+        ret = 1
+        msg = f'domain is unsupported, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} subscript:{subscript} refer:{referer}, msg: {msg}')
+        return ret, msg
+        
     return ret, msg
 
 def validate_signature(logger: logging.Logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, module: ModuleType = ModuleType.TTS):
@@ -120,7 +126,7 @@ def validate_signature(logger: logging.Logger, timestamp, signature, text, datet
         return ret, msg
         
     current_time = int(time.time())  # UTC timestamp
-    if abs(current_time - timestamp) > 600:  # 10分钟超时
+    if abs(current_time - timestamp) > 3600:  # 运行相差1小时
         ret = 3 # 权限认证失败
         msg = f'Auth failed, please contact us!'
         logger.info(f'validate_signature22 diff time:{abs(current_time - timestamp)}, {datetime} reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, text:{text}' \
@@ -132,7 +138,7 @@ def validate_signature(logger: logging.Logger, timestamp, signature, text, datet
         f'email:{email}, server_sign:{server_sign}, signature:{signature}')
     if not server_sign or not signature or not hmac.compare_digest(signature, server_sign):
         ret = 3 # 权限认证失败
-        msg = f'Auth failed, please contact us!'
+        msg = f'Please contact us, auth failed!'
         logger.info(f'validate_signature44, {datetime} reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, text:{text}' \
             f'email:{email}, Invalid signature, timestamp:{timestamp},'  \
             f'client signature:{signature}, server signature:{server_sign}')
