@@ -55,6 +55,8 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
 
     day_count, month_count = fetch_generate_counts(logger, reqid, first_ip, email, userid, domain, module)
     logger.debug(f'11 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count}')
+    if domain == "caluma.ai":
+        
     # 用户如果登录，校验登录状态
     if email and domain == "caluma.ai":
         session, reason = authenticate_request(request, domain, logger=logger)
@@ -138,43 +140,36 @@ def validate_signature(logger: logging.Logger, timestamp, signature, text, datet
     
     return ret, msg
 
-def validate_text_length(text: str, max_length: int = 500, reqid: str = "", logger: logging.Logger = None) -> dict:
+def validate_text_length(text: str, max_length: int = 700, reqid: str = "", logger: logging.Logger = None) -> tuple[int, str]:
     """
     验证文本长度是否超过限制
     
     Args:
         text: 要验证的文本
-        max_length: 最大允许长度，默认500
+        max_length: 最大允许长度，默认700
         reqid: 请求ID，用于日志记录
         logger: 日志记录器，可选
     
     Returns:
-        dict: 包含 ret(错误码), msg(错误信息), reqid(请求ID) 的字典
-              当 ret=0 时表示验证通过，ret=3 时表示文本长度超出限制
+        tuple[int, str]: (错误码, 错误信息)。错误码为0表示验证通过
     """
+    ret = 0
+    msg = 'ok'
     textlen = len(text)
     if textlen == 0:
         if logger:
             logger.info(f'reqid:{reqid}, textlen:{textlen} is empty, text:{text}!')
-        return {
-            'ret': 1,
-            'msg': f'Text is empty',
-            'reqid': reqid
-        }
+        ret = 1
+        msg = f'Text is empty'
+        return ret, msg
     if textlen > max_length:
         if logger:
             logger.info(f'reqid:{reqid}, textlen:{textlen} exceeds limit of {max_length}, text:{text}!')
-        return {
-            'ret': 1,
-            'msg': 'Text length exceeds characters limit',
-            'reqid': reqid
-        }
+        ret = 1
+        msg = 'Text length exceeds characters limit'
+        return ret, msg
     
-    return {
-        'ret': 0,
-        'msg': 'ok',
-        'reqid': reqid
-    }
+    return ret, msg
 
 ALLOWED_GENDER = ['male', 'female', 'duet']
 def validate_gender(gender: str) -> bool:
