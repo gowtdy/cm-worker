@@ -70,6 +70,14 @@ MAX_ENTTTS_TEXT_LENGTH = 400
 MAX_SOUND_TEXT_LENGTH = 100
 
 # for web api, 异步提交生成；结果由专门 check 接口查询
+# ret 取值及含义:
+#   0  - 成功，任务已提交（响应含 task_id）
+#   1  - 参数/业务错误：文本为空或超长、签名字段缺失、domain 非法/不支持、
+#        模型无效、index-tts 的 emo/speed/volume 参数非法、generateadd 失败等
+#   3  - 签名鉴权失败：时间戳过期（>1h）或签名不匹配
+#   10 - 需登录才能继续（caluma.ai 未登录且超出未登录免费额度）
+#   11 - 登录态失效，需重新登录（email 与 session 不匹配）
+#   12 - 免费额度用尽，需升级付费（已登录但超出免费次数）
 @app.post("/api/genaudio")
 async def tts_endpoint(request: Request):
     ret = 0
@@ -188,7 +196,7 @@ async def tts_endpoint(request: Request):
     res = {
         "ret": 0,
         "msg": 'ok',
-        "reqid": reqid
+        "task_id": reqid
     }
     
     logger.info(
