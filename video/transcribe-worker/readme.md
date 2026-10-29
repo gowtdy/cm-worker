@@ -1,0 +1,1 @@
+依赖底层的transcribe image 实现的transcribe

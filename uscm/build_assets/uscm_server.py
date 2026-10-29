@@ -14,14 +14,15 @@ from fastapi import FastAPI, Request, Query
 
 from utility.util import gen_reqid, gen_res_dict, map_lang_abbrev
 from utility.request_util import get_real_ip, validate_request, validate_signature, validate_text_length, \
-    validate_gender, validate_audio_url
+    validate_gender, validate_audio_url, validate_internal_tts_url
 from utility.module_enum import ModuleType
 from utility.userserver_client import post_generate_add
 from utility.allused_voicemodels import register_allused_voicemodels, get_common_model
 from utility.voice_settings import parse_emo_params, parse_speed_volume_params
 from config.comm_config import DEFAULT_USER_FIRST_IP
+from config.transcribe_routing import resolve_transcribe_engine
 
-from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract, gpu_cover, gpu_vocal, gpu_instrument
+from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract, gpu_cover, gpu_vocal, gpu_instrument, transcribe_whisper
 
 app = FastAPI()
 
@@ -653,6 +654,105 @@ async def instrument_endpoint(request: Request):
     )
     return res
 
+ALLOWED_TRANSCRIBE_FORMATS = ['json', 'txt', 'srt', 'vtt', 'ass']
+VIDEO_TTS_TRANSCRIBE = "video_tts_transcribe"
+
+@app.post("/api/transcribe")
+async def transcribe_endpoint(request: Request):
+    ret = 0
+    msg = 'ok'
+    task_cmd = '/api/transcribe'
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
+    referer = request.headers.get("Referer", "Not provided")
+
+    json_post_raw = await request.json()
+    timestamp = json_post_raw.get('tstamp', 0)
+    signature = json_post_raw.get('snature', '')
+
+    tm = time.time()
+    userid = json_post_raw.get("userid", 0)
+    reqid = gen_reqid(userid, tm)
+    today = time.strftime(DAY_FORMAT, time.localtime(tm))
+    datetime = time.strftime("%Y%m%d_%H%M%S", time.localtime(tm))
+
+    subscript = json_post_raw.get("subscript", 0)
+    email = json_post_raw.get("email", '')
+    domain = json_post_raw.get("domain", '')
+
+    upurl = json_post_raw.get("upurl", '')
+    language = json_post_raw.get("language", 'en')
+    output_format = (json_post_raw.get("format", 'json') or 'json').strip().lower()
+
+    if output_format not in ALLOWED_TRANSCRIBE_FORMATS:
+        logger.warning(f'reqid:{reqid} real_ip:{real_ip} userid:{userid} email:{email} Invalid format: {output_format}')
+        return gen_res_dict(1, f'Invalid format: {output_format}')
+
+    if email == VIDEO_TTS_TRANSCRIBE:
+        ret, msg, upfileinfo = validate_internal_tts_url(upurl, reqid, first_ip, email, today, datetime, logger)
+        validate_fn_name = 'validate_internal_tts_url'
+    else:
+        ret, msg, upfileinfo = validate_audio_url(upurl, reqid, first_ip, email, today, datetime, logger)
+        validate_fn_name = 'validate_audio_url'
+    if ret != 0:
+        logger.warning(f'reqid:{reqid} real_ip:{real_ip} userid:{userid} email:{email} {validate_fn_name} failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_signature(logger, timestamp, signature, upurl, datetime, reqid, first_ip, real_ip, userid, email, ModuleType.TRANSCRIBE)
+    if ret != 0:
+        logger.warning(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_request(logger, real_ip, referer, reqid, email, subscript, today, userid, ModuleType.TRANSCRIBE, domain, request)
+    if ret != 0:
+        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} subscript:{subscript} ret:{ret}, msg:{msg}')
+        return gen_res_dict(ret, msg)
+
+    generate_content = upfileinfo['relative_path']
+    task_req = json.dumps({
+        "userid": userid,
+        "email": email,
+        "language": language,
+        "format": output_format,
+        "upurl": upurl,
+    }, ensure_ascii=False)
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, userid, domain, generate_content, real_ip, ModuleType.TRANSCRIBE,
+        task_cmd=task_cmd, task_req=task_req,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    engine = resolve_transcribe_engine(language)
+    try:
+        if engine == 'whisper':
+            transcribe_whisper.delay(
+                upfileinfo, language, output_format,
+                task_id=reqid, userid=userid, email=email, domain=domain,
+            )
+        else:
+            return gen_res_dict(1, f'unsupported transcribe engine: {engine}')
+    except Exception as e:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} userid:{userid} email:{email} transcribe_whisper.delay failed: {e}')
+        return gen_res_dict(1, f'dispatch failed: {e}')
+
+    endtm = time.time()
+    cost = int(endtm - tm)
+
+    res = {
+        "ret": 0,
+        "msg": 'ok',
+        "reqid": reqid
+    }
+
+    logger.info(
+        f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, '
+        f'email:{email}, subscript:{subscript}, language:{language}, format:{output_format}, '
+        f'cost:{cost}, refer:{referer}, ret:{ret}'
+    )
+    return res
 
 #if __name__ == "__main__":
 #    import uvicorn
