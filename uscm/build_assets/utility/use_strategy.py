@@ -1,3 +1,5 @@
+from utility.module_enum import ModuleType
+
 def can_use_service(domain: str, generate_module: ModuleType, is_login: bool, day_count: int, month_count: int) -> tuple[int, str]:
     ret = 0
     msg = 'ok'
