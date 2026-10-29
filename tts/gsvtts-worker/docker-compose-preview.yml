@@ -1,0 +1,107 @@
+services:
+  tts-worker-preview:
+    image: tts-worker:5
+    hostname: tts-worker-preview
+    container_name: tts-worker-preview
+    restart: unless-stopped
+    network_mode: host
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 192.168.3.1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    environment:
+      - AIGC_UID=${AIGC_UID:-1001}
+      - AIGC_GID=${AIGC_GID:-1001}
+      - GPU_INDEX=0
+      - CELERY_CONCURRENCY=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - NLTK_DATA_PATH=/app/models/nltk_data
+      - OPEN_JTALK_DICT_DIR=/app/models/text/open_jtalk_dic_utf_8-1.11
+      - TZ=Asia/Shanghai
+      # quic or rsync, default is quic
+      - FILE_SYNC_TRANSPORT=quic
+    env_file:
+      - /home/aigc/data/env/.env_usmqdb
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      - /home/aigc/work/models/aivoice_models/gptsovits_model/GPT-SoVITS:/app/models/pretrained_models
+      - /home/aigc/work/models/aivoice_models/gptsovits_model/GPT-SoVITS/G2PWModel:/app/models/text/G2PWModel
+      - /home/aigc/work/models/aivoice_models/gptsovits_model/open_jtalk_dic_utf_8-1.11:/app/models/text/open_jtalk_dic_utf_8-1.11
+      - /home/aigc/work/models/aivoice_models/fish_models:/app/models/fish_models
+      #- /home/aigc/work/models/aivoice_models/indextts_models/IndexTTS-2:/app/models/indextts2-model
+      #- /home/aigc/work/models/aivoice_models/indextts_models/w2v-bert-2.0:/app/models/w2v-bert-2.0
+      #- /home/aigc/work/models/aivoice_models/indextts_models/MaskGCT:/app/models/MaskGCT
+      #- /home/aigc/work/models/aivoice_models/indextts_models/campplus:/app/models/campplus
+      #- /home/aigc/work/models/aivoice_models/indextts_models/bigvgan_v2_22khz_80band_256x:/app/models/bigvgan_v2_22khz_80band_256x
+      - /home/aigc/work/models/aivoice_models/cloned_models/common_models:/app/models/service_model/common_models
+      - /home/aigc/work/models/aivoice_models/nltk_data:/app/models/nltk_data
+      - /home/aigc/data/aioutput/worker-logs/tts-worker-preview-logs:/app/log
+      #- /home/aigc/data/remote_rsync_servers:/app/data/remote_rsync_servers
+      #- /home/aigc/data/remote_rsync_proxy:/app/data/remote_rsync_proxy
+      - /home/aigc/data/ssh_control/tts-worker-preview:/app/data/ssh_control
+      - /home/aigc/data/rsync/socat_rsync_proxies:/app/data/socat_rsync_proxies
+      - /home/aigc/data/rsync/local_rsync_proxies:/app/data/local_rsync_proxies
+      - /home/aigc/.ssh:/home/aigc/.ssh
+      - /home/aigc/data/aioutput/wavcl/:/app/output
+      #- /home/aigc/work/aiservice/aivoice_service/docker/pytorch-docker/v2/tts_worker/build_assets:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  #tts-worker-1:
+  #  image: tts-worker:5
+  #  hostname: tts-worker-1
+  #  container_name: tts-worker-1
+  #  restart: always
+  #  network_mode: host
+  #  deploy:
+  #    resources:
+  #      reservations:
+  #        devices:
+  #          - driver: nvidia
+  #            device_ids: ['2']
+  #            capabilities: [gpu]
+  #  environment:
+  #    - AIGC_UID=${AIGC_UID:-1001}
+  #    - AIGC_GID=${AIGC_GID:-1001}
+  #    - GPU_INDEX=0
+  #    - CELERY_CONCURRENCY=1
+  #    - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  #    - NLTK_DATA_PATH=/app/models/nltk_data
+  #    - OPEN_JTALK_DICT_DIR=/app/models/text/open_jtalk_dic_utf_8-1.11
+  #    - TZ=Asia/Shanghai
+  #    # quic or rsync, default is quic
+  #    - FILE_SYNC_TRANSPORT=quic
+  #  env_file:
+  #    - /home/aigc/data/env/.env_usmqdb
+  #  volumes:
+  #    - /etc/localtime:/etc/localtime:ro
+  #    - /etc/timezone:/etc/timezone:ro
+  #    - /home/aigc/work/models/aivoice_models/gptsovits_model/GPT-SoVITS:/app/models/pretrained_models
+  #    - /home/aigc/work/models/aivoice_models/gptsovits_model/GPT-SoVITS/G2PWModel:/app/models/text/G2PWModel
+  #    - /home/aigc/work/models/aivoice_models/gptsovits_model/open_jtalk_dic_utf_8-1.11:/app/models/text/open_jtalk_dic_utf_8-1.11
+  #    - /home/aigc/work/models/aivoice_models/fish_models:/app/models/fish_models
+  #    #- /home/aigc/work/models/aivoice_models/indextts_models/IndexTTS-2:/app/models/indextts2-model
+  #    #- /home/aigc/work/models/aivoice_models/indextts_models/w2v-bert-2.0:/app/models/w2v-bert-2.0
+  #    #- /home/aigc/work/models/aivoice_models/indextts_models/MaskGCT:/app/models/MaskGCT
+  #    #- /home/aigc/work/models/aivoice_models/indextts_models/campplus:/app/models/campplus
+  #    #- /home/aigc/work/models/aivoice_models/indextts_models/bigvgan_v2_22khz_80band_256x:/app/models/bigvgan_v2_22khz_80band_256x
+  #    - /home/aigc/work/models/aivoice_models/cloned_models/common_models:/app/models/service_model/common_models
+  #    - /home/aigc/work/models/aivoice_models/nltk_data:/app/models/nltk_data
+  #    #- /home/aigc/data/remote_rsync_servers:/app/data/remote_rsync_servers
+  #    #- /home/aigc/data/remote_rsync_proxy:/app/data/remote_rsync_proxy
+  #    - /home/aigc/data/ssh_control/tts-worker-1:/app/data/ssh_control
+  #    - /home/aigc/data/rsync/socat_rsync_proxies:/app/data/socat_rsync_proxies
+  #    - /home/aigc/data/rsync/local_rsync_proxies:/app/data/local_rsync_proxies
+  #    - /home/aigc/.ssh:/home/aigc/.ssh
+  #    - /home/aigc/data/aioutput/worker-logs/tts-worker1-logs:/app/log
+  #    - /home/aigc/data/aioutput/wavcl/:/app/output
+  #  extra_hosts:
+  #    - "host.docker.internal:host-gateway"
+  #  #tty: true
