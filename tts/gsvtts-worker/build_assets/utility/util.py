@@ -20,18 +20,13 @@ from voice_train.module.mel_processing import spectrogram_torch
 
 from utility.voice_config import get_device, ishalf, get_dtype, get_hmac_secret_key
 
-def genid(userid:int, timestamp:int):
-    seed = np.random.randint(low=1, high=100)
-    id = ((int(userid<<10) ^ int(timestamp)) << 2) | int(seed) 
-    print(f'id:{id}, userid:{userid}, timestamp:{timestamp}')
-    return id
-
-def gen_res_dict(ret: int, msg: str, dt={}):
+def gen_res_dict(ret: int, msg: str, dt=None):
     d = {}
-    d.update(dt)
-    dt['ret'] = ret
-    dt['msg'] = msg
-    return dt
+    if dt:
+        d.update(dt)
+    d['ret'] = ret
+    d['msg'] = msg
+    return d
 
 def verify_signature(text: str, timestamp: int) -> str:
     """验证 HMAC 签名
@@ -414,9 +409,3 @@ def get_spepc(hps, filename, dtype, device, is_v2pro=False):
     if is_v2pro == True:
         audio = resample(audio, sr1, 16000, device).to(dtype)
     return spec, audio
-
-if __name__ == "__main__":
-    userid = 1
-    timestamp = time.time()
-    id = genid(userid, timestamp)
-    print(f'id:{id}')

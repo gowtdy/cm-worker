@@ -26,7 +26,7 @@ def _job(**kwargs):
         source_file="/tmp/a.mp3",
         target_dir="/out",
         task_id="t1",
-        is_eapi=False,
+        domain="",
         short_uri_prefix="/wavcl/2026-09-13/user1",
         output_file="idx.mp3",
         proxies=[],

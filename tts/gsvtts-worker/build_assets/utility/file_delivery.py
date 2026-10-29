@@ -2,7 +2,7 @@
 
 Workers dispatch by SyncJob.transport to rsync or QUIC backends.
 On quic failure, one rsync fallback attempt is made (socat warmed at startup).
-Completion updates MySQL task records; GPU inference does not wait.
+Completion updates task records via UserServer /inapi/update_task; GPU inference does not wait.
 """
 
 import atexit
@@ -14,8 +14,10 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Protocol, Tuple
 
+from utility.log import clear_reqid, set_reqid
 from utility.module_enum import TaskStatus
 from utility.socat_rsyc_util import RsyncProxy, get_socat_proxy_configs
+from utility.userserver_client import update_task_status
 from utility.file_sync_config import get_file_sync_transport
 
 VIDEO_SCRIPT_TTS_EMAIL = "video_script_tts"
@@ -44,11 +46,11 @@ class SyncJob:
     source_file: str
     target_dir: str
     task_id: str
-    is_eapi: bool
     short_uri_prefix: str
     output_file: str
     proxies: List[RsyncProxy] = field(default_factory=list)
     transport: str = "quic"
+    domain: str = ""
 
 
 class FileTransport(Protocol):
@@ -144,25 +146,17 @@ def complete_sync_job(
     used_transport: Optional[str] = None,
     fallback: int = 0,
 ):
-    from sql.mysql_db import update_api_user_record, update_ip_use_record
-
     used = used_transport if used_transport is not None else job.transport
     if ok:
         uri = f"/outdt{job.short_uri_prefix}/{job.output_file}"
-        if job.is_eapi:
-            update_api_user_record(job.task_id, uri, TaskStatus.COMPLETE)
-        else:
-            update_ip_use_record(job.task_id, uri, TaskStatus.COMPLETE)
+        update_task_status(logger, job.task_id, job.domain, uri, TaskStatus.COMPLETE)
         logger.info(
             f"async_sync_complete task_id={job.task_id} uri={uri} "
             f"transport={job.transport} used_transport={used} fallback={fallback}"
         )
     else:
         msg = err_msg or "sync_files failed"
-        if job.is_eapi:
-            update_api_user_record(job.task_id, msg, TaskStatus.FAILED)
-        else:
-            update_ip_use_record(job.task_id, msg, TaskStatus.FAILED)
+        update_task_status(logger, job.task_id, job.domain, msg, TaskStatus.FAILED)
         logger.error(
             f"async_sync_failed task_id={job.task_id} msg={msg} "
             f"transport={job.transport} used_transport={used} fallback={fallback}"
@@ -178,6 +172,7 @@ def _worker_loop(logger, slot: int) -> None:
                 logger.info(f"async_sync_worker_stop slot={slot}")
                 return
 
+            set_reqid(job.task_id)
             queue_depth = _sync_queue.qsize()
             file_size = os.path.getsize(job.source_file) if os.path.exists(job.source_file) else 0
             size_str = _format_file_size(file_size)
@@ -219,6 +214,8 @@ def _worker_loop(logger, slot: int) -> None:
                 except Exception as update_err:
                     logger.error(f"async_sync_fail_update_error error={update_err}")
         finally:
+            if job is not _SYNC_SENTINEL:
+                clear_reqid()
             _sync_queue.task_done()
 
 
