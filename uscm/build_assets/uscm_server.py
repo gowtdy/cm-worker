@@ -180,7 +180,11 @@ async def tts_endpoint(request: Request):
             )
     else:
         modellang = map_lang_abbrev(modellang, modellang)
-        gpu_gen_tts.delay(modelname, text, modelcat, userid, reqid, output_format, modellang, email)
+        gpu_gen_tts.delay(
+            modelname, text, modelcat, userid,
+            task_id=reqid, output_format=output_format, modellang=modellang,
+            email=email, domain=domain,
+        )
 
     endtm = time.time()
     cost = int(endtm - tm)
