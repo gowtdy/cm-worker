@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """UserServer HTTP 客户端：按 task_id + domain 更新生成任务状态。"""
 
+from __future__ import annotations
+
 import logging
 import os
 
