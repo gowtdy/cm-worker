@@ -103,13 +103,11 @@ async def tts_endpoint(request: Request):
 
     text = json_post_raw.get("text", '')
     # 验证文本长度
-    text_validation = validate_text_length(text, MAX_TTS_TEXT_LENGTH, reqid, logger)
-    if text_validation['ret'] != 0:
+    ret, msg = validate_text_length(text, MAX_TTS_TEXT_LENGTH, reqid, logger)
+    if ret != 0:
         logger.info(f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},' \
-            f'email:{email}, subscript:{subscript}, refer:{referer}, textlen:{len(text)} exceeds limit!')
-        return text_validation
-    
-    textlen = len(text)  # 重新定义 textlen 用于后续逻辑
+            f'email:{email}, subscript:{subscript}, refer:{referer}, textlen:{len(text)} {msg}!')
+        return gen_res_dict(ret, msg)
     
     ret, msg = validate_signature(logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.TTS)
     if ret != 0 :
@@ -246,13 +244,11 @@ async def gensoundTask(request: Request):
         num = 1
 
     # 验证文本长度
-    text_validation = validate_text_length(text, MAX_SOUND_TEXT_LENGTH, reqid, logger)
-    if text_validation['ret'] != 0:
+    ret, msg = validate_text_length(text, MAX_SOUND_TEXT_LENGTH, reqid, logger)
+    if ret != 0:
         logger.info(f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},' \
-            f'email:{email}, subscript:{subscript}, refer:{referer}, textlen:{len(text)} exceeds limit!')
-        return text_validation
-
-    textlen = len(text)  # 重新定义 textlen 用于后续逻辑
+            f'email:{email}, subscript:{subscript}, refer:{referer}, length:{length}, num:{num} {msg}!')
+        return gen_res_dict(ret, msg)
 
     ret, msg = validate_signature(logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.SOUND)
     if ret != 0:
