@@ -62,7 +62,7 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
         if ret == 0:
             return ret, msg
         # 当用户在未登录时不能使用服务时，检查用户是否登录
-        if email 
+        if email:
             # 验证用户的登录信息
             session, reason = authenticate_request(request, domain, logger=logger)
             if (session is None or session.email != email):
