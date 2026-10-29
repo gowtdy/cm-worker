@@ -4,10 +4,10 @@ import time
 from celery_worker import celery_app
 from config.comm_config import get_remote_transcribe_dir, get_localnet_transcribe_dir
 from config.model_conf import get_whisper_model_name
-from sql.mysql_db import update_ip_tool_record
 from utility.module_enum import TaskStatus
-from utility.log import setup_logger
-from utility.util import gen_reqid
+from utility.log import setup_logger, set_reqid, clear_reqid
+from utility.userserver_client import update_task_status
+from utility.util import gen_res_dict
 from utility.file_sync_config import get_file_sync_transport
 from utility.file_delivery import (
     SyncJob, enqueue_delivery_job, start_file_delivery, resolve_delivery_transport,
@@ -37,14 +37,20 @@ logger = setup_logger(
 OUTPUT_EXT = {'json': 'json', 'txt': 'txt', 'srt': 'srt', 'vtt': 'vtt', 'ass': 'ass'}
 
 
-@celery_app.task(name='gpu_transcribe_tasks.transcribe_whisper')
+@celery_app.task(name='task_transcribe_whisper')
 def transcribe_whisper(upfileinfo, language=None, output_format='json', task_id='0',
-                       userid=0, first_ip='', email=''):
-    start_time = time.time()
-    time_str = time.strftime(DAY_FORMAT, time.localtime(start_time))
-    reqid = gen_reqid(task_id, start_time)
-
+                       userid=0, email='', domain=''):
+    set_reqid(task_id)
     try:
+        start_time = time.time()
+        time_str = time.strftime(DAY_FORMAT, time.localtime(start_time))
+
+        if not isinstance(upfileinfo, dict) or not upfileinfo.get('relative_path'):
+            msg = f'invalid upfileinfo, task_id:{task_id}'
+            logger.warning(f'msg: {msg}')
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return gen_res_dict(1, msg)
+
         input_path = upfileinfo['relative_path']
         filename_without_ext = upfileinfo['upfilename_without_ext']
         engine = get_engine('whisper')
@@ -52,8 +58,8 @@ def transcribe_whisper(upfileinfo, language=None, output_format='json', task_id=
         if not result.segments or not (result.text or '').strip():
             msg = f'empty transcription (no speech detected), task_id:{task_id}'
             logger.warning(msg)
-            update_ip_tool_record(task_id, msg, TaskStatus.FAILED)
-            return f'transcribe failed, task_id:{task_id}, msg:{msg}'
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return gen_res_dict(1, msg)
         content = format_result(result, output_format)
         ext = OUTPUT_EXT.get(output_format, 'json')
 
@@ -84,24 +90,28 @@ def transcribe_whisper(upfileinfo, language=None, output_format='json', task_id=
             output_file=output_file,
             proxies=list(proxies),
             transport=delivery_transport,
+            domain=domain,
         )
         if not enqueue_delivery_job(logger, sync_job):
             msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
             logger.error(msg)
-            update_ip_tool_record(task_id, msg, TaskStatus.FAILED)
-            return f'transcribe failed, task_id:{task_id}, msg:{msg}'
+            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            return gen_res_dict(1, msg)
 
         cost = time.time() - start_time
         logger.info(
-            f'reqid:{reqid} transcribe done task_id:{task_id} lang:{language} '
+            f'task_id:{task_id} transcribe done lang:{language} '
             f'format:{output_format} model:{get_whisper_model_name()} '
             f'cost:{cost:.2f}s output:{output_path} transport:{delivery_transport}'
         )
         return f'TranscribeCompleted: {task_id}'
     except Exception as e:
-        logger.error(f'reqid:{reqid} transcribe failed task_id:{task_id}: {e}')
-        update_ip_tool_record(task_id, f'transcribe error: {e}', TaskStatus.FAILED)
-        return f'transcribe failed, task_id:{task_id}'
+        msg = f'transcribe error: {e}'
+        logger.error(f'task_id:{task_id} transcribe failed: {e}')
+        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+        return gen_res_dict(1, msg)
+    finally:
+        clear_reqid()
 
 
 def initialize_file_delivery():
