@@ -1,0 +1,1 @@
+docker build -t tts-worker:5 -f Dockerfile .
