@@ -1322,6 +1322,7 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, task_id='0', output_form
                    ret = 1
                    msg = f'modelname:{modelname} is invalid, task_id:{task_id}!'
                    logger.warning(f'fish tts, model_path:{model_path}, modelname:{modelname}, msg:{msg}')
+                   update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
                    return gen_res_dict(ret, msg)
 
                 # 使用带重试机制的fish_tts
