@@ -9,6 +9,7 @@ from fastapi import Request
 from config.comm_config import get_white_list, get_limit_config, ALLOWED_DOMAINS
 from utility.auth_session import authenticate_request
 from utility.module_enum import ModuleType
+from utility.use_strategy import can_use_service
 from utility.userserver_client import fetch_generate_counts
 from utility.util import aiflow_hmac_signature
 
@@ -56,6 +57,8 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
     day_count, month_count = fetch_generate_counts(logger, reqid, first_ip, email, userid, domain, module)
     logger.debug(f'11 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count}')
     if domain == "caluma.ai":
+        session = None
+        reason = ""
         # 先以未登录的情况验证是否可用
         ret, msg = can_use_service(domain, module, False, day_count, month_count)
         # 当用户在未登录时都可以使用服务时，不用检查用户是否登录，直接继续生成
