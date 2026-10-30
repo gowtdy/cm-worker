@@ -29,7 +29,7 @@ def get_real_ip(request: Request):
         real_ip = request.headers['x-real-ip']
     return real_ip
 
-def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: str, email: str, subscript: int, today: str, userid: int, module: ModuleType = ModuleType.TTS, domain: str = "", request: Request = None) -> tuple[int, str]:
+def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: str, email: str, today: str, userid: int, module: ModuleType = ModuleType.TTS, domain: str = "", request: Request = None) -> tuple[int, str, int, int]:
     """
     验证请求的合法性
 
@@ -37,22 +37,24 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
         request: FastAPI请求对象（caluma.ai 登录态校验需要读 cookie）
         reqid: 请求ID
         email: 用户邮箱
-        subscript: 订阅状态
         today: 当前日期
         domain: 站点域名，传给 UserServer generatecounts
 
     Returns:
-        tuple[int, str]: (错误码, 错误信息)。错误码为0表示验证通过
+        tuple[int, str, int, int]: (ret, msg, login, subscript)
+        login/subscript 为 0|1；login==0 时 subscript 恒为 0
     """
     ret = 0
     msg = "ok"
+    login = 0
+    subscript = 0
     first_ip = real_ip.split(',')[0].strip() if real_ip else ""
     domain = domain.strip() if isinstance(domain, str) else str(domain or "").strip()
     if domain not in ALLOWED_DOMAINS:
         ret = 1
         msg = f'domain is invalid, reqid:{reqid}!'
-        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} subscript:{subscript} refer:{referer}, msg: {msg}')
-        return ret, msg
+        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} refer:{referer}, msg: {msg}')
+        return ret, msg, login, subscript
 
     day_count, month_count = fetch_generate_counts(logger, reqid, first_ip, email, userid, domain, module)
     logger.debug(f'11 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count}')
@@ -63,7 +65,7 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
         ret, msg = can_use_service(domain, module, False, day_count, month_count)
         # 当用户在未登录时都可以使用服务时，不用检查用户是否登录，直接继续生成
         if ret == 0:
-            return ret, msg
+            return ret, msg, login, subscript
         # 当用户在未登录时不能使用服务时，检查用户是否登录
         if email:
             # 验证用户的登录信息
@@ -73,30 +75,37 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
                 ret = 11
                 msg = 'Login expired, please login again!'
                 logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
-                return ret, msg
-            # todo 获取用户信息， 判断是否订阅
-            # 登录未订阅用户，在验证一次
+                login = 0
+                subscript = 0
+                return ret, msg, login, subscript
+            login = 1
+            # todo 获取用户信息，判断是否订阅
+            # 登录未订阅用户，再验证一次
+            if subscript == 1:
+                return 0, "ok", login, subscript
             ret, msg = can_use_service(domain, module, True, day_count, month_count)
             if ret == 0:
-                return ret, msg
+                return ret, msg, login, subscript
 
         if ret == 1:
             ret = 10
             msg = 'Please login to continue!'
             logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
-            return ret, msg
+            return ret, msg, login, subscript
         if ret == 2:
             ret = 12
             msg = 'Free usage limit exceeded, please upgrade to a paid plan!'
             logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
-            return ret, msg
+            return ret, msg, login, subscript
     else :
         ret = 1
         msg = f'domain is unsupported, reqid:{reqid}!'
-        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} subscript:{subscript} refer:{referer}, msg: {msg}')
-        return ret, msg
-        
-    return ret, msg
+        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} refer:{referer}, msg: {msg}')
+        return ret, msg, login, subscript
+
+    if login == 0:
+        subscript = 0
+    return ret, msg, login, subscript
 
 def validate_signature(logger: logging.Logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, module: ModuleType = ModuleType.TTS):
     """
@@ -112,7 +121,6 @@ def validate_signature(logger: logging.Logger, timestamp, signature, text, datet
         real_ip: 真实IP地址
         userid: 用户ID
         email: 用户邮箱
-        subscript: 订阅状态
         referer: 请求来源
         module: 模块类型
     Returns:
