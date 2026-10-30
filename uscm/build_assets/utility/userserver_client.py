@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""UserServer HTTP 客户端：generatecounts / generateadd 等内部接口。"""
+"""UserServer HTTP 客户端：generatecounts / generateadd / userinfo 等内部接口。"""
 
 import logging
 import os
@@ -11,6 +11,7 @@ from utility.module_enum import ModuleType
 
 _GENERATECOUNTS_TIMEOUT_SEC = 3.0
 _GENERATEADD_TIMEOUT_SEC = 3.0
+_USERINFO_TIMEOUT_SEC = 3.0
 
 
 def _userserver_base_url(logger: logging.Logger, reqid: str, caller: str) -> str | None:
@@ -129,3 +130,62 @@ def post_generate_add(
         return ret, msg
 
     return ret, msg
+
+
+def fetch_userinfo(
+    logger: logging.Logger, reqid: str, email: str, domain: str,
+) -> tuple[int, str, dict | None]:
+    """向 UserServer /inapi/userinfo 查询用户订阅信息。
+
+    ret 取值：
+      0 - 成功
+      1 - 参数错误 / 不支持的 domain / 查询异常
+      2 - 用户不存在
+
+    成功时 user_info 含 email / user_subscript / subscript_type /
+    usable_firstday / usable_lastday；失败时为 None。
+
+    user_subscript 取值：
+      0   - 未订阅（usable_lastday 为空）
+      1   - 订阅有效（usable_lastday >= 今天）
+      100 - 订阅已过期（usable_lastday 早于今天）
+      101 - 有效期内，额度已经用完
+    """
+    email = str(email or "").strip()
+    domain = str(domain or "").strip()
+    if not email or not domain:
+        msg = f'email:{email!r} or domain:{domain!r} is empty'
+        logger.warning(f'reqid:{reqid} userinfo failed, {msg}')
+        return 1, msg, None
+
+    base = _userserver_base_url(logger, reqid, "userinfo")
+    if not base:
+        return 1, "userinfo failed: missing userserver host/port", None
+
+    url = f"{base}/inapi/userinfo"
+    payload = {
+        "reqid": reqid or "",
+        "email": email,
+        "domain": domain,
+    }
+    try:
+        response = httpx.post(
+            url, json=payload, headers=bearer_auth_header(), timeout=_USERINFO_TIMEOUT_SEC,
+        )
+        response.raise_for_status()
+        parsed = response.json()
+        if not isinstance(parsed, dict) or "ret" not in parsed:
+            logger.error(f'reqid:{reqid} userinfo bad response:{response.text[:500]}')
+            return 1, "userinfo bad response", None
+        ret = int(parsed.get("ret", 1))
+        msg = str(parsed.get("msg") or "")
+        user_info = parsed.get("user_info") if ret == 0 else None
+        if ret == 0 and not isinstance(user_info, dict):
+            logger.error(f'reqid:{reqid} userinfo missing user_info:{response.text[:500]}')
+            return 1, "userinfo missing user_info", None
+        if ret != 0:
+            logger.warning(f'reqid:{reqid} userinfo ret:{ret} msg:{msg} email:{email} domain:{domain}')
+        return ret, msg or ("ok" if ret == 0 else "userinfo failed"), user_info
+    except (httpx.HTTPError, TypeError, ValueError) as exc:
+        logger.error(f'reqid:{reqid} userinfo failed url:{url} err:{exc}')
+        return 1, f'userinfo failed, url:{url} err:{exc}', None
