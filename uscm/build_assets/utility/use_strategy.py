@@ -35,6 +35,19 @@ def caluma_use_strategy(generate_module: ModuleType, is_login: bool, day_count: 
                 ret = 1
                 msg = 'Please login to continue!'
                 return ret, msg
+    elif generate_module == ModuleType.SOUND:
+        if is_login:
+            # 当用户登录时，当月最多免费生成10次，当天最多免费生成5次
+            if day_count >= 5 or month_count >= 12:
+                ret = 2
+                msg = 'Free usage limit exceeded, please upgrade to a paid plan!'
+                return ret, msg
+        else:
+            # 当未登录时，当月最多免费生成8次，当天最多免费生成4次  
+            if day_count >= 4 or month_count >= 8:
+                ret = 1
+                msg = 'Please login to continue!'
+                return ret, msg
     else:
         pass # todo 其他模块的限制
     return ret, msg
