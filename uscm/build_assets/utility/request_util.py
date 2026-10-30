@@ -10,7 +10,7 @@ from config.comm_config import get_white_list, get_limit_config, ALLOWED_DOMAINS
 from utility.auth_session import authenticate_request
 from utility.module_enum import ModuleType
 from utility.use_strategy import can_use_service
-from utility.userserver_client import fetch_generate_counts
+from utility.userserver_client import fetch_generate_counts, fetch_userinfo
 from utility.util import aiflow_hmac_signature
 
 # 常量定义
@@ -61,6 +61,8 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
     if domain == "caluma.ai":
         session = None
         reason = ""
+        useret = 0
+        msg = "ok"
         # 先以未登录的情况验证是否可用
         ret, msg = can_use_service(domain, module, False, day_count, month_count)
         # 当用户在未登录时都可以使用服务时，不用检查用户是否登录，直接继续生成
@@ -79,24 +81,48 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
                 subscript = 0
                 return ret, msg, login, subscript
             login = 1
-            # todo 获取用户信息，判断是否订阅
-            # 登录未订阅用户，再验证一次
+            # user_subscript==1 才算有效订阅；0/100/101/查询失败均按未订阅走免费额度
+            ret_ui, msg_ui, user_info = fetch_userinfo(logger, reqid, email, domain)
+            if ret_ui == 0 and isinstance(user_info, dict):
+                try:
+                    subscript = int(user_info.get("user_subscript", 0))
+                except (TypeError, ValueError):
+                    subscript = 0
+            else:
+                logger.warning(
+                    f'reqid:{reqid} email:{email} domain:{domain!r} '
+                    f'fetch_userinfo failed ret:{ret_ui} msg:{msg_ui}'
+                )
             if subscript == 1:
                 return 0, "ok", login, subscript
-            ret, msg = can_use_service(domain, module, True, day_count, month_count)
-            if ret == 0:
-                return ret, msg, login, subscript
+            useret, msg = can_use_service(domain, module, True, day_count, month_count)
+            if useret == 0:
+                return 0, msg, login, subscript
 
-        if ret == 1:
-            ret = 10
-            msg = 'Please login to continue!'
+        if subscript == 100:
+            # 订阅已过期
+            ret = 20
+            msg = 'subscription expired'
             logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
             return ret, msg, login, subscript
-        if ret == 2:
-            ret = 12
-            msg = 'Free usage limit exceeded, please upgrade to a paid plan!'
+        else if subscript == 101:
+            ret = 21
+            msg = 'subscription limit exceeded'
             logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
             return ret, msg, login, subscript
+        else:
+            if useret == 1:
+                ret = 10
+                msg = 'Please login to continue!'
+                logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
+                return ret, msg, login, subscript
+            else if useret == 2:
+                ret = 12
+                msg = 'Free usage limit exceeded, please upgrade to a paid plan!'
+                logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
+                return ret, msg, login, subscript
+        ret = useret
+        msg = msg
     else :
         ret = 1
         msg = f'domain is unsupported, reqid:{reqid}!'
