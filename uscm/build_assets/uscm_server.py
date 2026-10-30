@@ -122,7 +122,7 @@ async def tts_endpoint(request: Request):
         return gen_res_dict(ret, msg)
 
     ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.TTS, domain, request)
-    auth_info = {"login": login, "subscript": subscript}
+    auth_info = {"islogin": login, "subscript": subscript}
     if ret != 0 :
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} email:{email} uid:{uid} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
@@ -197,7 +197,7 @@ async def tts_endpoint(request: Request):
         "ret": 0,
         "msg": 'ok',
         "task_id": reqid,
-        "login": login,
+        "islogin": login,
         "subscript": subscript,
     }
     
@@ -261,7 +261,7 @@ async def gensoundTask(request: Request):
         return gen_res_dict(ret, msg)
 
     ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.SOUND, domain, request)
-    auth_info = {"login": login, "subscript": subscript}
+    auth_info = {"islogin": login, "subscript": subscript}
     if ret != 0:
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} email:{email} uid:{uid} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
@@ -296,7 +296,7 @@ async def gensoundTask(request: Request):
         "ret": 0,
         "msg": 'ok',
         "reqid": reqid,
-        "login": login,
+        "islogin": login,
         "subscript": subscript,
     }
 
@@ -353,7 +353,7 @@ async def extractaudio_endpoint(request: Request):
         return gen_res_dict(ret, msg)
 
     ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.AUDIO_EXTRACTOR, domain, request)
-    auth_info = {"login": login, "subscript": subscript}
+    auth_info = {"islogin": login, "subscript": subscript}
     if ret != 0:
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} email:{email} uid:{uid} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
@@ -386,7 +386,7 @@ async def extractaudio_endpoint(request: Request):
         "ret": 0,
         "msg": 'ok',
         "reqid": reqid,
-        "login": login,
+        "islogin": login,
         "subscript": subscript,
     }
 
@@ -453,7 +453,7 @@ async def cover_endpoint(request: Request):
         return gen_res_dict(ret, msg)
 
     ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.COVER, domain, request)
-    auth_info = {"login": login, "subscript": subscript}
+    auth_info = {"islogin": login, "subscript": subscript}
     if ret != 0:
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
@@ -487,7 +487,7 @@ async def cover_endpoint(request: Request):
         "ret": 0,
         "msg": 'ok',
         "reqid": reqid,
-        "login": login,
+        "islogin": login,
         "subscript": subscript,
     }
 
@@ -543,7 +543,7 @@ async def vocal_endpoint(request: Request):
         return gen_res_dict(ret, msg)
 
     ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.VOCAL_ISOLATOR, domain, request)
-    auth_info = {"login": login, "subscript": subscript}
+    auth_info = {"islogin": login, "subscript": subscript}
     if ret != 0:
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
@@ -572,7 +572,7 @@ async def vocal_endpoint(request: Request):
         "ret": 0,
         "msg": 'ok',
         "reqid": reqid,
-        "login": login,
+        "islogin": login,
         "subscript": subscript,
     }
 
@@ -627,7 +627,7 @@ async def instrument_endpoint(request: Request):
         return gen_res_dict(ret, msg)
 
     ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.VOCAL_REMOVER, domain, request)
-    auth_info = {"login": login, "subscript": subscript}
+    auth_info = {"islogin": login, "subscript": subscript}
     if ret != 0:
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
@@ -656,7 +656,7 @@ async def instrument_endpoint(request: Request):
         "ret": 0,
         "msg": 'ok',
         "reqid": reqid,
-        "login": login,
+        "islogin": login,
         "subscript": subscript,
     }
 
@@ -716,7 +716,7 @@ async def transcribe_endpoint(request: Request):
         return gen_res_dict(ret, msg)
 
     ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.TRANSCRIBE, domain, request)
-    auth_info = {"login": login, "subscript": subscript}
+    auth_info = {"islogin": login, "subscript": subscript}
     if ret != 0:
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
@@ -757,7 +757,7 @@ async def transcribe_endpoint(request: Request):
         "ret": 0,
         "msg": 'ok',
         "reqid": reqid,
-        "login": login,
+        "islogin": login,
         "subscript": subscript,
     }
 
