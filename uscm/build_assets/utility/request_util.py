@@ -105,7 +105,7 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
             msg = 'subscription expired'
             logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
             return ret, msg, login, subscript
-        else if subscript == 101:
+        elif subscript == 101:
             ret = 21
             msg = 'subscription limit exceeded'
             logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
@@ -116,7 +116,7 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
                 msg = 'Please login to continue!'
                 logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
                 return ret, msg, login, subscript
-            else if useret == 2:
+            elif useret == 2:
                 ret = 12
                 msg = 'Free usage limit exceeded, please upgrade to a paid plan!'
                 logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
