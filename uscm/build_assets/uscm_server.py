@@ -78,6 +78,8 @@ MAX_SOUND_TEXT_LENGTH = 100
 #   10 - 需登录才能继续（caluma.ai 未登录且超出未登录免费额度）
 #   11 - 登录态失效，需重新登录（email 与 session 不匹配）
 #   12 - 免费额度用尽，需升级付费（已登录但超出免费次数）
+#   20 - 订阅已过期
+#   21 - 订阅额度已用完
 @app.post("/api/genaudio")
 async def tts_endpoint(request: Request):
     ret = 0
