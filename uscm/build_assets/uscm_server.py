@@ -295,7 +295,7 @@ async def gensoundTask(request: Request):
     res = {
         "ret": 0,
         "msg": 'ok',
-        "reqid": reqid,
+        "task_id": reqid,
         "islogin": login,
         "subscript": subscript,
     }
@@ -385,7 +385,7 @@ async def extractaudio_endpoint(request: Request):
     res = {
         "ret": 0,
         "msg": 'ok',
-        "reqid": reqid,
+        "task_id": reqid,
         "islogin": login,
         "subscript": subscript,
     }
@@ -486,7 +486,7 @@ async def cover_endpoint(request: Request):
     res = {
         "ret": 0,
         "msg": 'ok',
-        "reqid": reqid,
+        "task_id": reqid,
         "islogin": login,
         "subscript": subscript,
     }
@@ -571,7 +571,7 @@ async def vocal_endpoint(request: Request):
     res = {
         "ret": 0,
         "msg": 'ok',
-        "reqid": reqid,
+        "task_id": reqid,
         "islogin": login,
         "subscript": subscript,
     }
@@ -655,7 +655,7 @@ async def instrument_endpoint(request: Request):
     res = {
         "ret": 0,
         "msg": 'ok',
-        "reqid": reqid,
+        "task_id": reqid,
         "islogin": login,
         "subscript": subscript,
     }
@@ -756,7 +756,7 @@ async def transcribe_endpoint(request: Request):
     res = {
         "ret": 0,
         "msg": 'ok',
-        "reqid": reqid,
+        "task_id": reqid,
         "islogin": login,
         "subscript": subscript,
     }
