@@ -9,7 +9,8 @@ from fastapi import Request
 from config.comm_config import get_white_list, get_limit_config, ALLOWED_DOMAINS
 from utility.auth_session import authenticate_request
 from utility.module_enum import ModuleType
-from utility.userserver_client import fetch_action_counts
+from utility.use_strategy import can_use_service
+from utility.userserver_client import fetch_generate_counts, fetch_userinfo
 from utility.util import aiflow_hmac_signature
 
 # 常量定义
@@ -28,7 +29,7 @@ def get_real_ip(request: Request):
         real_ip = request.headers['x-real-ip']
     return real_ip
 
-def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: str, email: str, subscript: int, today: str, userid: int, module: ModuleType = ModuleType.TTS, domain: str = "", request: Request = None) -> tuple[int, str]:
+def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: str, email: str, today: str, userid: int, module: ModuleType = ModuleType.TTS, domain: str = "", request: Request = None) -> tuple[int, str, int, int]:
     """
     验证请求的合法性
 
@@ -36,55 +37,101 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
         request: FastAPI请求对象（caluma.ai 登录态校验需要读 cookie）
         reqid: 请求ID
         email: 用户邮箱
-        subscript: 订阅状态
         today: 当前日期
-        domain: 站点域名，传给 UserServer actioncounts
+        domain: 站点域名，传给 UserServer generatecounts
 
     Returns:
-        tuple[int, str]: (错误码, 错误信息)。错误码为0表示验证通过
+        tuple[int, str, int, int]: (ret, msg, login, subscript)
+        login/subscript 为 0|1；login==0 时 subscript 恒为 0
     """
     ret = 0
     msg = "ok"
+    login = 0
+    subscript = 0
     first_ip = real_ip.split(',')[0].strip() if real_ip else ""
     domain = domain.strip() if isinstance(domain, str) else str(domain or "").strip()
     if domain not in ALLOWED_DOMAINS:
         ret = 1
         msg = f'domain is invalid, reqid:{reqid}!'
-        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} subscript:{subscript} refer:{referer}, msg: {msg}')
-        return ret, msg
+        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} refer:{referer}, msg: {msg}')
+        return ret, msg, login, subscript
 
-    # 用户如果登录，校验登录状态
-    if email and domain == "caluma.ai":
-        session, reason = authenticate_request(request, domain, logger=logger)
-        if session is None or session.email != email:
-            ret = 3
-            msg = 'Auth failed, please contact us!'
-            mismatch = session is not None and session.email != email
-            logger.warning(
-                f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} '
-                f'subscript:{subscript} refer:{referer}, '
-                f'reason:{"email_mismatch" if mismatch else reason}, msg: {msg}'
-            )
-            return ret, msg
+    day_count, month_count = fetch_generate_counts(logger, reqid, first_ip, email, userid, domain, module)
+    logger.debug(f'11 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count}')
+    if domain == "caluma.ai":
+        session = None
+        reason = ""
+        useret = 0
+        msg = "ok"
+        # 先以未登录的情况验证是否可用
+        ret, msg = can_use_service(domain, module, False, day_count, month_count)
+        # 当用户在未登录时都可以使用服务时，不用检查用户是否登录，直接继续生成
+        if ret == 0:
+            return ret, msg, login, subscript
+        # 当用户在未登录时不能使用服务时，检查用户是否登录
+        if email:
+            # 验证用户的登录信息
+            session, reason = authenticate_request(request, domain, logger=logger)
+            if (session is None or session.email != email):
+                # 验证用户是否可以在未登录的时候继续生成, 如果可以，则继续生成，否则返回错误
+                ret = 11
+                msg = 'Login expired, please login again!'
+                logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
+                login = 0
+                subscript = 0
+                return ret, msg, login, subscript
+            login = 1
+            # user_subscript==1 才算有效订阅；0/100/101/查询失败均按未订阅走免费额度
+            ret_ui, msg_ui, user_info = fetch_userinfo(logger, reqid, email, domain)
+            if ret_ui == 0 and isinstance(user_info, dict):
+                try:
+                    subscript = int(user_info.get("user_subscript", 0))
+                except (TypeError, ValueError):
+                    subscript = 0
+            else:
+                logger.warning(
+                    f'reqid:{reqid} email:{email} domain:{domain!r} '
+                    f'fetch_userinfo failed ret:{ret_ui} msg:{msg_ui}'
+                )
+            if subscript == 1:
+                return 0, "ok", login, subscript
+            useret, msg = can_use_service(domain, module, True, day_count, month_count)
+            if useret == 0:
+                return 0, msg, login, subscript
 
-    day_count = 0
-    month_count = 0
-    if real_ip != "":
-        white_list = get_white_list()
-        if first_ip not in white_list:
-            day_count, month_count = fetch_action_counts(logger, reqid, first_ip, email, userid, domain, module)
-            logger.debug(f'11 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count}')
-            # todo: 订阅状态校验， 以及相应的校验策略。
-            #if subscript != 1:
-            #    month_limit = get_limit_config().get('month_count', 15)
-            #    logger.debug(f'22 reqid:{reqid} ip:{real_ip} email:{email} domain:{domain} day_count:{day_count} month_count:{month_count} month_limit:{month_limit}')
-            #    if day_count > MAX_FREE_TRIES or month_count > month_limit:
-            #        ret = 2
-            #        msg = 'You have exceeded the free usage limit for today or last month.'
-            #        logger.info(f'33 reqid:{reqid} ip:{real_ip} email:{email} subscript:{subscript} referer:{referer}, day_count:{day_count} month_count:{month_count} exceeded.')
-            #        return ret, msg
+        if subscript == 100:
+            # 订阅已过期
+            ret = 20
+            msg = 'subscription expired'
+            logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
+            return ret, msg, login, subscript
+        elif subscript == 101:
+            ret = 21
+            msg = 'subscription limit exceeded'
+            logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
+            return ret, msg, login, subscript
+        else:
+            if useret == 1:
+                ret = 10
+                msg = 'Please login to continue!'
+                logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
+                return ret, msg, login, subscript
+            elif useret == 2:
+                ret = 12
+                msg = 'Free usage limit exceeded, please upgrade to a paid plan!'
+                logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
+                return ret, msg, login, subscript
+        ret = useret
+        msg = msg
+    else :
+        ret = 1
+        msg = f'domain is unsupported, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} refer:{referer}, msg: {msg}')
+        return ret, msg, login, subscript
 
-    return ret, msg
+    if login == 0:
+        subscript = 0
+    return ret, msg, login, subscript
 
 def validate_signature(logger: logging.Logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, userid, email, module: ModuleType = ModuleType.TTS):
     """
@@ -100,7 +147,6 @@ def validate_signature(logger: logging.Logger, timestamp, signature, text, datet
         real_ip: 真实IP地址
         userid: 用户ID
         email: 用户邮箱
-        subscript: 订阅状态
         referer: 请求来源
         module: 模块类型
     Returns:
@@ -117,7 +163,7 @@ def validate_signature(logger: logging.Logger, timestamp, signature, text, datet
         return ret, msg
         
     current_time = int(time.time())  # UTC timestamp
-    if abs(current_time - timestamp) > 600:  # 10分钟超时
+    if abs(current_time - timestamp) > 3600:  # 运行相差1小时
         ret = 3 # 权限认证失败
         msg = f'Auth failed, please contact us!'
         logger.info(f'validate_signature22 diff time:{abs(current_time - timestamp)}, {datetime} reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, text:{text}' \
@@ -129,7 +175,7 @@ def validate_signature(logger: logging.Logger, timestamp, signature, text, datet
         f'email:{email}, server_sign:{server_sign}, signature:{signature}')
     if not server_sign or not signature or not hmac.compare_digest(signature, server_sign):
         ret = 3 # 权限认证失败
-        msg = f'Auth failed, please contact us!'
+        msg = f'Please contact us, auth failed!'
         logger.info(f'validate_signature44, {datetime} reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, userid:{userid}, text:{text}' \
             f'email:{email}, Invalid signature, timestamp:{timestamp},'  \
             f'client signature:{signature}, server signature:{server_sign}')
@@ -137,43 +183,36 @@ def validate_signature(logger: logging.Logger, timestamp, signature, text, datet
     
     return ret, msg
 
-def validate_text_length(text: str, max_length: int = 500, reqid: str = "", logger: logging.Logger = None) -> dict:
+def validate_text_length(text: str, max_length: int = 700, reqid: str = "", logger: logging.Logger = None) -> tuple[int, str]:
     """
     验证文本长度是否超过限制
     
     Args:
         text: 要验证的文本
-        max_length: 最大允许长度，默认500
+        max_length: 最大允许长度，默认700
         reqid: 请求ID，用于日志记录
         logger: 日志记录器，可选
     
     Returns:
-        dict: 包含 ret(错误码), msg(错误信息), reqid(请求ID) 的字典
-              当 ret=0 时表示验证通过，ret=3 时表示文本长度超出限制
+        tuple[int, str]: (错误码, 错误信息)。错误码为0表示验证通过
     """
+    ret = 0
+    msg = 'ok'
     textlen = len(text)
     if textlen == 0:
         if logger:
             logger.info(f'reqid:{reqid}, textlen:{textlen} is empty, text:{text}!')
-        return {
-            'ret': 1,
-            'msg': f'Text is empty',
-            'reqid': reqid
-        }
+        ret = 1
+        msg = f'Text is empty'
+        return ret, msg
     if textlen > max_length:
         if logger:
             logger.info(f'reqid:{reqid}, textlen:{textlen} exceeds limit of {max_length}, text:{text}!')
-        return {
-            'ret': 1,
-            'msg': 'Text length exceeds characters limit',
-            'reqid': reqid
-        }
+        ret = 1
+        msg = 'Text length exceeds characters limit'
+        return ret, msg
     
-    return {
-        'ret': 0,
-        'msg': 'ok',
-        'reqid': reqid
-    }
+    return ret, msg
 
 ALLOWED_GENDER = ['male', 'female', 'duet']
 def validate_gender(gender: str) -> bool:

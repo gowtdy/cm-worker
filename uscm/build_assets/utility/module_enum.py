@@ -16,7 +16,10 @@ class TaskStatus(Enum):
     """
     定义任务状态
     """
+    QUEUED = "queued"  # 排队中
     PENDING = "pending"  # 待处理
+    PROCESSING = "processing"  # 处理中
+    CANCELLED = "cancelled"  # 已取消
     COMPLETE = "complete"  # 已完成
     FAILED = "failed"  # 失败
 

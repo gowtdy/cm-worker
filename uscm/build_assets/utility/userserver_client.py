@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""UserServer HTTP 客户端：actioncounts / generateadd 等内部接口。"""
+"""UserServer HTTP 客户端：generatecounts / generateadd / userinfo 等内部接口。"""
 
 import logging
 import os
@@ -7,10 +7,11 @@ import os
 import httpx
 
 from utility.internal_auth import bearer_auth_header
-from utility.module_enum import ModuleType, get_generate_action
+from utility.module_enum import ModuleType
 
-_ACTIONCOUNTS_TIMEOUT_SEC = 3.0
+_GENERATECOUNTS_TIMEOUT_SEC = 3.0
 _GENERATEADD_TIMEOUT_SEC = 3.0
+_USERINFO_TIMEOUT_SEC = 3.0
 
 
 def _userserver_base_url(logger: logging.Logger, reqid: str, caller: str) -> str | None:
@@ -22,24 +23,21 @@ def _userserver_base_url(logger: logging.Logger, reqid: str, caller: str) -> str
     return f"http://{host}:{port}"
 
 
-def fetch_action_counts(
+def fetch_generate_counts(
     logger: logging.Logger, reqid: str, first_ip: str, email: str, userid, domain: str, module: ModuleType,
 ) -> tuple[int, int]:
-    """向 UserServer 查询当日/近30天行为次数。domain 为空、无对应 action、或请求失败时返回 (0, 0)。"""
-    action = get_generate_action(module)
+    """向 UserServer 查询当日/近30天生成次数。domain 为空、无 generate_type、或请求失败时返回 (0, 0)。"""
+    generate_type = module.value if module is not None else None
     domain = domain.strip() if isinstance(domain, str) else str(domain or "").strip()
-    if not domain or action is None:
-        logger.warning(f'reqid:{reqid} skip actioncounts, domain:{domain!r} action:{action} module:{module}')
+    if not domain or not generate_type:
+        logger.warning(f'reqid:{reqid} skip generatecounts, domain:{domain!r} generate_type:{generate_type} module:{module}')
         return 0, 0
 
-    base = _userserver_base_url(logger, reqid, "actioncounts")
+    base = _userserver_base_url(logger, reqid, "generatecounts")
     if not base:
-        ret = 1
-        msg = f'actioncounts failed'
-        logger.error(f'reqid:{reqid} actioncounts failed, missing US_COMMON_USERSERVER_HOST or US_COMMON_USERSERVER_PORT')
-        return ret, msg
+        return 0, 0
 
-    url = f"{base}/inapi/actioncounts"
+    url = f"{base}/inapi/generatecounts"
     uid = "" if userid in (None, "", 0) else str(userid)
     payload = {
         "reqid": reqid,
@@ -47,20 +45,20 @@ def fetch_action_counts(
         "email": email or "",
         "uid": uid,
         "domain": domain,
-        "action": action,
+        "generate_type": generate_type,
     }
     try:
         response = httpx.post(
-            url, json=payload, headers=bearer_auth_header(), timeout=_ACTIONCOUNTS_TIMEOUT_SEC,
+            url, json=payload, headers=bearer_auth_header(), timeout=_GENERATECOUNTS_TIMEOUT_SEC,
         )
         response.raise_for_status()
         parsed = response.json()
         if not isinstance(parsed, dict) or "day_count" not in parsed or "month_count" not in parsed:
-            logger.error(f'reqid:{reqid} actioncounts bad response:{response.text[:500]}')
+            logger.error(f'reqid:{reqid} generatecounts bad response:{response.text[:500]}')
             return 0, 0
         return int(parsed["day_count"]), int(parsed["month_count"])
     except (httpx.HTTPError, TypeError, ValueError) as exc:
-        logger.error(f'reqid:{reqid} actioncounts failed url:{url} err:{exc}')
+        logger.error(f'reqid:{reqid} generatecounts failed url:{url} err:{exc}')
         return 0, 0
 
 
@@ -132,3 +130,62 @@ def post_generate_add(
         return ret, msg
 
     return ret, msg
+
+
+def fetch_userinfo(
+    logger: logging.Logger, reqid: str, email: str, domain: str,
+) -> tuple[int, str, dict | None]:
+    """向 UserServer /inapi/userinfo 查询用户订阅信息。
+
+    ret 取值：
+      0 - 成功
+      1 - 参数错误 / 不支持的 domain / 查询异常
+      2 - 用户不存在
+
+    成功时 user_info 含 email / user_subscript / subscript_type /
+    usable_firstday / usable_lastday；失败时为 None。
+
+    user_subscript 取值：
+      0   - 未订阅（usable_lastday 为空）
+      1   - 订阅有效（usable_lastday >= 今天）
+      100 - 订阅已过期（usable_lastday 早于今天）
+      101 - 有效期内，额度已经用完
+    """
+    email = str(email or "").strip()
+    domain = str(domain or "").strip()
+    if not email or not domain:
+        msg = f'email:{email!r} or domain:{domain!r} is empty'
+        logger.warning(f'reqid:{reqid} userinfo failed, {msg}')
+        return 1, msg, None
+
+    base = _userserver_base_url(logger, reqid, "userinfo")
+    if not base:
+        return 1, "userinfo failed: missing userserver host/port", None
+
+    url = f"{base}/inapi/userinfo"
+    payload = {
+        "reqid": reqid or "",
+        "email": email,
+        "domain": domain,
+    }
+    try:
+        response = httpx.post(
+            url, json=payload, headers=bearer_auth_header(), timeout=_USERINFO_TIMEOUT_SEC,
+        )
+        response.raise_for_status()
+        parsed = response.json()
+        if not isinstance(parsed, dict) or "ret" not in parsed:
+            logger.error(f'reqid:{reqid} userinfo bad response:{response.text[:500]}')
+            return 1, "userinfo bad response", None
+        ret = int(parsed.get("ret", 1))
+        msg = str(parsed.get("msg") or "")
+        user_info = parsed.get("user_info") if ret == 0 else None
+        if ret == 0 and not isinstance(user_info, dict):
+            logger.error(f'reqid:{reqid} userinfo missing user_info:{response.text[:500]}')
+            return 1, "userinfo missing user_info", None
+        if ret != 0:
+            logger.warning(f'reqid:{reqid} userinfo ret:{ret} msg:{msg} email:{email} domain:{domain}')
+        return ret, msg or ("ok" if ret == 0 else "userinfo failed"), user_info
+    except (httpx.HTTPError, TypeError, ValueError) as exc:
+        logger.error(f'reqid:{reqid} userinfo failed url:{url} err:{exc}')
+        return 1, f'userinfo failed, url:{url} err:{exc}', None
