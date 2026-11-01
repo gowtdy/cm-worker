@@ -34,6 +34,7 @@ from config.comm_config import get_logdir, get_modelconf, get_device, get_remote
 from celery_worker import celery_app
 
 from stable_audio_3 import StableAudioModel
+from stable_audio_3.mem_release import log_cuda_mem, log_host_rss, release_after_load
 
 sounds_output_dir = 'output'
 
@@ -69,6 +70,11 @@ def load_model():
     logger.debug(f'Loading fasttext model from {get_fasttext_modelpath()}')
     fasttext_model = fasttext.load_model(get_fasttext_modelpath())
     logger.debug(f'Done loading fasttext model')
+
+    # Drop load-time temporaries; do not unload the resident model.
+    release_after_load(empty_cuda=True)
+    log_host_rss(logger, "after_load_model")
+    log_cuda_mem(logger, "after_load_model")
     return model, fasttext_model
 
 
@@ -236,6 +242,7 @@ def gpu_gen_sound(text, length=15, num=1, userid=0, task_id='0', email='', domai
             logger.error(msg)
             update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
 
+        # 任务结束：仅回收本轮推理显存碎片，不负责释放常驻模型主机内存
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             gc.collect()
@@ -252,6 +259,7 @@ def gpu_gen_sound(text, length=15, num=1, userid=0, task_id='0', email='', domai
         msg = f'Error in gpu_gen_sound for task_id:{task_id}: {e}'
         update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
         try:
+            # 仅回收本轮推理显存碎片，不卸常驻模型
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 gc.collect()
