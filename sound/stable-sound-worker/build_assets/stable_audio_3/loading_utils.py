@@ -8,6 +8,7 @@ from stable_audio_3.factory import (
     create_autoencoder_from_config,
     create_diffusion_cond_from_config,
 )
+from stable_audio_3.mem_release import release_after_load
 
 DEFAULT_T5GEMMA_SUBFOLDER = "t5gemma-b-b-ul2"
 
@@ -83,6 +84,20 @@ def copy_state_dict(model, state_dict):
             )
 
     model.load_state_dict(model_state_dict, strict=False)
+    release_after_load(state_dict, model_state_dict)
+
+
+def _ensure_t5_conditioners_on_device(model, device, dtype=None):
+    conditioner = getattr(model, "conditioner", None)
+    if conditioner is None:
+        return
+    conditioners = getattr(conditioner, "conditioners", None)
+    if conditioners is None:
+        return
+    for _key, cond in conditioners.items():
+        ensure = getattr(cond, "ensure_on_device", None)
+        if callable(ensure):
+            ensure(device, dtype=dtype)
 
 
 def load_autoencoder(config_path: str, ckpt_path: str, device: str = "cpu"):
@@ -126,13 +141,19 @@ def load_diffusion_cond(
     print(f'load_diffusion_cond, Loading diffusion cond from model_config:{model_config} and ckpt_path:{ckpt_path}')
     model = create_diffusion_cond_from_config(model_config)
     print(f'load_diffusion_cond, Creating diffusion cond from model_config:{model_config}')
-    copy_state_dict(model, load_file(ckpt_path))
+    sd = load_file(ckpt_path)
+    copy_state_dict(model, sd)
     print(f'load_diffusion_cond, Done loading diffusion cond')
-    model.to(device).eval().requires_grad_(False)
-    print(f'load_diffusion_cond, Done loading diffusion cond to device:{device}')
-    if model_half:
-        model.to(torch.float16)
-        print(f'load_diffusion_cond, Done converting diffusion cond to float16')
+    half_dtype = torch.float16 if model_half else None
+    if half_dtype is not None:
+        model.to(device=device, dtype=half_dtype)
+        print(f'load_diffusion_cond, Done loading diffusion cond to device:{device} dtype:float16')
+    else:
+        model.to(device)
+        print(f'load_diffusion_cond, Done loading diffusion cond to device:{device}')
+    model.eval().requires_grad_(False)
+    _ensure_t5_conditioners_on_device(model, device, half_dtype)
+    release_after_load(empty_cuda=True)
     return model
 
 
