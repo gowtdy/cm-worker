@@ -46,6 +46,7 @@ from indextts_worker import (
     normalize_emo_type,
     parse_emo_alpha,
 )
+from indextts.utils.mem_release import log_cuda_mem, log_host_rss, release_after_load
 from utility.log import logset, setup_logger, set_reqid, clear_reqid
 from utility.voice_config import get_remote_ttssave_dir, get_localnet_video_tts_dir
 from utility.gpu_util import cuda_error_handler, check_and_wait_for_gpu_memory, manage_gpu_memory, \
@@ -332,7 +333,7 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, task_id='0', output_form
                 logger.warning(f'GPU cleanup failed in exception handler: {cleanup_error}')
             return gen_res_dict(1, msg)
 
-        # 任务结束时安全地清理GPU内存（不等待跨境 sync）
+        # 任务结束：仅回收本轮推理显存碎片，不负责释放常驻模型主机内存
         try:
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
@@ -400,6 +401,11 @@ def initialize_models():
     print("initialize_models, warmup index-tts start")
     warmup_indextts()
     print("initialize_models, warmup index-tts finish")
+
+    # 全量初始化结束后强制回收加载期临时对象（不卸载常驻模型）
+    release_after_load(empty_cuda=True)
+    log_host_rss(logger, "after_initialize_models")
+    log_cuda_mem(logger, "after_initialize_models")
 
 # 应用启动时初始化跨区 socat SSH（quic 保底也用）+ 局域网 HTTP + 异步投递队列
 def initialize_file_delivery():
