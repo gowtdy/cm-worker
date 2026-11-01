@@ -228,14 +228,23 @@ class T5GemmaConditioner(Conditioner):
 
         self._device_initialized = False
 
+    def ensure_on_device(self, device: tp.Union[torch.device, str], dtype=None) -> None:
+        """Move T5 + proj_out onto device once (eager path at model load)."""
+        if self._device_initialized:
+            return
+        self.model.to(device)
+        self.proj_out.to(device)
+        if dtype is not None:
+            self.model.to(dtype)
+            self.proj_out.to(dtype)
+        self.model.eval()
+        self._device_initialized = True
+
     def forward(self, inputs: tp.Union[tp.List[str], tp.List[tp.Dict[str, torch.Tensor]]], device: tp.Union[torch.device, str]) -> tp.Tuple[torch.Tensor, torch.Tensor]:
 
         # Only move to device once (avoid overhead on every forward call)
         if not self._device_initialized:
-            self.model.to(device)
-            self.proj_out.to(device)
-            self.model.eval()
-            self._device_initialized = True
+            self.ensure_on_device(device)
 
         # Handle pre-tokenized inputs (dicts with input_ids/attention_mask from DataLoader workers)
         # or raw strings (from demo generation / inference)
