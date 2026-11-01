@@ -23,6 +23,7 @@ from indextts.codec.models import EnhancedCodec
 from indextts.gpt.model_v2 import UnifiedVoice
 from indextts.utils.checkpoint import load_checkpoint
 from indextts.utils.front import TextNormalizer
+from indextts.utils.mem_release import release_after_load
 from indextts.utils.tokenizer import get_tokenizer, lang_to_token
 from indextts.utils.ja_g2p import JapaneseG2PProcessor
 from indextts.utils.nemo_tn import normalize_text as nemo_text_normalize
@@ -214,11 +215,16 @@ class IndexTTS2:
             self.semantic_model = Wav2Vec2BertModel.from_pretrained(w2v_bert_dir, local_files_only=True)
             self.semantic_model = self.semantic_model.to(self.device)
             self.semantic_model.eval()
-            stat_mean_var = torch.load(os.path.join(self.model_dir, self.cfg.w2v_stat))
+            stat_mean_var = torch.load(
+                os.path.join(self.model_dir, self.cfg.w2v_stat), map_location="cpu"
+            )
             self.semantic_mean = stat_mean_var["mean"].to(self.device)
             self.semantic_std = torch.sqrt(stat_mean_var["var"]).to(self.device)
+            release_after_load(stat_mean_var)
             campplus_model = CAMPPlus(feat_dim=80, embedding_size=192)
-            campplus_model.load_state_dict(torch.load(campplus_ckpt_path, map_location="cpu"))
+            campplus_sd = torch.load(campplus_ckpt_path, map_location="cpu")
+            campplus_model.load_state_dict(campplus_sd)
+            release_after_load(campplus_sd)
             self.campplus_model = campplus_model.to(self.device)
             self.campplus_model.eval()
             print(">> campplus_model weights restored from:", campplus_ckpt_path)
@@ -293,12 +299,15 @@ class IndexTTS2:
 
         self.emo_num = list(self.cfg.emo_num)
         if load_emotion_model:
-            emo_matrix = torch.load(os.path.join(self.model_dir, self.cfg.emo_matrix))
-            self.emo_matrix = emo_matrix.to(self.device)
-            spk_matrix = torch.load(os.path.join(self.model_dir, self.cfg.spk_matrix))
-            self.spk_matrix = spk_matrix.to(self.device)
-            self.emo_matrix = torch.split(self.emo_matrix, self.emo_num)
-            self.spk_matrix = torch.split(self.spk_matrix, self.emo_num)
+            emo_matrix = torch.load(
+                os.path.join(self.model_dir, self.cfg.emo_matrix), map_location="cpu"
+            )
+            spk_matrix = torch.load(
+                os.path.join(self.model_dir, self.cfg.spk_matrix), map_location="cpu"
+            )
+            self.emo_matrix = torch.split(emo_matrix.to(self.device), self.emo_num)
+            self.spk_matrix = torch.split(spk_matrix.to(self.device), self.emo_num)
+            release_after_load(emo_matrix, spk_matrix)
             print(">> emo_matrix / spk_matrix loaded")
         else:
             self.emo_matrix = None
@@ -338,6 +347,9 @@ class IndexTTS2:
         # 进度引用显示（可选）
         self.gr_progress = None
         self.model_version = self.cfg.version if hasattr(self.cfg, "version") else None
+
+        # Drop load-time temporaries and return unused CUDA blocks after full init.
+        release_after_load(empty_cuda=True)
 
     @staticmethod
     def _amp_device_type(device):
@@ -798,9 +810,10 @@ class IndexTTS2:
         if self.emo_matrix is not None and self.spk_matrix is not None:
             return
         emo_matrix = torch.load(os.path.join(self.model_dir, self.cfg.emo_matrix), map_location="cpu")
-        self.emo_matrix = torch.split(emo_matrix.to(self.device), self.emo_num)
         spk_matrix = torch.load(os.path.join(self.model_dir, self.cfg.spk_matrix), map_location="cpu")
+        self.emo_matrix = torch.split(emo_matrix.to(self.device), self.emo_num)
         self.spk_matrix = torch.split(spk_matrix.to(self.device), self.emo_num)
+        release_after_load(emo_matrix, spk_matrix)
         print(">> emo_matrix / spk_matrix loaded (lazy)")
 
     # 原始推理模式
@@ -931,6 +944,7 @@ class IndexTTS2:
                 ref_mel = data["ref_mel"].to(self.device)
                 style = data["style"].to(self.device)
                 prompt_condition = data["prompt_condition"].to(self.device)
+                release_after_load(data)
                 if verbose:
                     logger.debug(f">> Loaded precomputed speaker features from {spk_audio_prompt}")
             else:
