@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 from indextts.codec.amphion_codec.quantize import ResidualVQ
 from indextts.codec.kmeans.vocos import VocosBackbone
+from indextts.utils.mem_release import release_after_load
 
 
 def init_weights(m):
@@ -244,6 +245,7 @@ class EnhancedCodec(nn.Module):
                 logger.warning("%s is not in the checkpoint or shape mismatch", k)
                 new_state_dict[k] = v
         self.load_state_dict(new_state_dict)
+        release_after_load(checkpoint_dict, saved_state_dict, state_dict, new_state_dict)
         logger.info("Loaded codec checkpoint '%s'", checkpoint_path)
 
 if __name__ == "__main__":
