@@ -18,6 +18,7 @@ def my_save(fea, path):  #####fix issue: torch.save doesn't support chinese path
 
 
 from io import BytesIO
+import tempfile
 
 model_version2byte = {
     "v3": b"03",
@@ -127,12 +128,21 @@ def get_sovits_version_from_path_fast(sovits_path):
 
 
 def load_sovits_new(sovits_path):
-    f = open(sovits_path, "rb")
-    meta = f.read(2)
-    if meta != b"PK":
-        data = b"PK" + f.read()
-        bio = BytesIO()
-        bio.write(data)
-        bio.seek(0)
-        return torch.load(bio, map_location="cpu", weights_only=False)
+    with open(sovits_path, "rb") as f:
+        meta = f.read(2)
+        if meta != b"PK":
+            # Rewrite PK header via tempfile to avoid holding a full-file BytesIO.
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pth") as tmp:
+                    tmp_path = tmp.name
+                    tmp.write(b"PK")
+                    tmp.write(f.read())
+                return torch.load(tmp_path, map_location="cpu", weights_only=False)
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
     return torch.load(sovits_path, map_location="cpu", weights_only=False)
