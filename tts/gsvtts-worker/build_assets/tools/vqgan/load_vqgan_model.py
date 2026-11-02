@@ -12,6 +12,7 @@ from utility.log import setup_logger
 from omegaconf import OmegaConf
 
 from fish_speech.models.vqgan.modules.firefly import FireflyArchitecture
+from utility.mem_release import release_after_load
 
 logger = setup_logger("vqgan_server")
 
@@ -22,7 +23,7 @@ def load_vqgan_model(config_name, checkpoint_path, device="cuda"):
 
     model = instantiate(cfg)
     state_dict = torch.load(
-        checkpoint_path, map_location=device, mmap=True, weights_only=True
+        checkpoint_path, map_location="cpu", mmap=True, weights_only=True
     )
     if "state_dict" in state_dict:
         state_dict = state_dict["state_dict"]
@@ -35,6 +36,7 @@ def load_vqgan_model(config_name, checkpoint_path, device="cuda"):
         }
 
     result = model.load_state_dict(state_dict, strict=False, assign=True)
+    release_after_load(state_dict)
     model.eval()
     model.to(device)
 

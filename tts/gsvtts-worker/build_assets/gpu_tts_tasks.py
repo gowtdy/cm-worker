@@ -26,7 +26,6 @@ import datetime
 import queue
 import gc
 from time import time as ttime
-from io import BytesIO
 from transformers import BarkModel
 from transformers import AutoProcessor
 from transformers import set_seed
@@ -39,6 +38,7 @@ import hmac
 import argparse
 import librosa
 from pydub import AudioSegment
+from utility.mem_release import log_cuda_mem, log_host_rss, release_after_load
 from langdetect import detect, DetectorFactory
 from langdetect.lang_detect_exception import LangDetectException
 
@@ -274,6 +274,15 @@ device = get_device()
 dtype = get_dtype()
 version = 'v2'
 sv_model = None
+vq_model = None
+gpt_model = None
+hps = None
+hz = None
+max_sec = None
+config = None
+_loaded_sovits_path = None
+_loaded_sovits_model_version = None
+_loaded_gpt_path = None
 
 def check_and_wait_for_gpu_memory(min_free_gb=2.0, max_wait_seconds=30):
     """检查GPU内存，如果不足则等待并清理
@@ -594,8 +603,17 @@ bert_model, tokenizer = load_bert_model(bert_path, device, is_half)
 ssl_model = load_ssl_model(cnhubert_base_path, device, is_half)
 
 def load_sovits_weights(sovits_path, device, is_half=True):
-    global vq_model, hps
+    global vq_model, hps, _loaded_sovits_path, _loaded_sovits_model_version
+    if _loaded_sovits_path == sovits_path and vq_model is not None:
+        logger.info(f'Reusing loaded sovits weights from {sovits_path}')
+        return _loaded_sovits_model_version
     try:
+        # Drop previous SoVITS before loading a different path.
+        if vq_model is not None:
+            del vq_model
+            vq_model = None
+            release_after_load(empty_cuda=True)
+
         # 2. 在加载前清理 CUDA 错误状态
         if torch.cuda.is_available():
             try:
@@ -705,12 +723,17 @@ def load_sovits_weights(sovits_path, device, is_half=True):
             else:
                 raise
         
+        release_after_load(dict_s2)
         vq_model.eval()
+        _loaded_sovits_path = sovits_path
+        _loaded_sovits_model_version = model_version
         logger.info(f'Successfully loaded sovits weights from {sovits_path}')
         return model_version
         
     except Exception as e:
         logger.error(f'Error loading sovits weights from {sovits_path}: {e}')
+        _loaded_sovits_path = None
+        _loaded_sovits_model_version = None
         # 清理可能的错误状态
         try:
             if torch.cuda.is_available():
@@ -722,8 +745,16 @@ def load_sovits_weights(sovits_path, device, is_half=True):
         raise
 
 def load_gpt_weights(gpt_path, device, is_half=True):
-    global hz, max_sec, gpt_model, config
+    global hz, max_sec, gpt_model, config, _loaded_gpt_path
+    if _loaded_gpt_path == gpt_path and gpt_model is not None:
+        logger.info(f'Reusing loaded gpt weights from {gpt_path}')
+        return
     try:
+        if gpt_model is not None:
+            del gpt_model
+            gpt_model = None
+            release_after_load(empty_cuda=True)
+
         # 2. 在加载前清理 CUDA 错误状态
         if torch.cuda.is_available():
             try:
@@ -788,13 +819,16 @@ def load_gpt_weights(gpt_path, device, is_half=True):
             else:
                 raise
         
+        release_after_load(dict_s1)
         gpt_model.eval()
+        _loaded_gpt_path = gpt_path
         total = sum([param.nelement() for param in gpt_model.parameters()])
         logger.info(f'GPT model loaded: {total / 1e6:.2f}M parameters')
         #logger.info(f'gweight_path:{gpt_path}')
         
     except Exception as e:
         logger.error(f'Error loading gpt weights from {gpt_path}: {e}')
+        _loaded_gpt_path = None
         # 清理可能的错误状态
         try:
             if torch.cuda.is_available():
@@ -807,6 +841,8 @@ def load_gpt_weights(gpt_path, device, is_half=True):
 
 def init_sv(device, is_half=True):
     global sv_model
+    if sv_model is not None:
+        return
     sv_model = SV(device, is_half)
 
 # fish-speech
@@ -1201,6 +1237,34 @@ def determine_languages(lang, text_lang):
 
     return prompt_language, text_language, version
 
+def _audio_to_segment(sample_rate, audio):
+    """Build AudioSegment from PCM array without BytesIO WAV round-trip."""
+    samples = np.ascontiguousarray(audio)
+    if samples.ndim == 1:
+        channels = 1
+    elif samples.ndim == 2:
+        if samples.shape[0] <= 8 and samples.shape[0] < samples.shape[1]:
+            channels = int(samples.shape[0])
+            samples = samples.T
+        else:
+            channels = int(samples.shape[1])
+        samples = np.ascontiguousarray(samples)
+    else:
+        raise ValueError(f"unsupported audio shape: {samples.shape}")
+    if samples.dtype != np.int16:
+        if np.issubdtype(samples.dtype, np.floating):
+            samples = np.clip(samples, -1.0, 1.0)
+            samples = (samples * 32767.0).astype(np.int16)
+        else:
+            samples = samples.astype(np.int16)
+    return AudioSegment(
+        data=samples.tobytes(),
+        sample_width=2,
+        frame_rate=int(sample_rate),
+        channels=channels,
+    )
+
+
 def save_audio_file(sample_rate, audio, output_format, base_output_path, filename_prefix):
     """
     Write inferred audio to local disk only. Cross-region sync is enqueued separately.
@@ -1215,20 +1279,16 @@ def save_audio_file(sample_rate, audio, output_format, base_output_path, filenam
     output_file = f'{filename_prefix}.{file_extension}'
     output_path = os.path.join(base_output_path, output_file)
 
-    wav_data = BytesIO()
-    wavfile.write(wav_data, sample_rate, audio)
-    wav_data.seek(0)
-
     logger.info(f'save_audio_file before write, output_path:{output_path}')
     if output_format == "wav":
-        with open(output_path, "wb") as f:
-            f.write(wav_data.getvalue())
-    else:  # mp3
-        audio_segment = AudioSegment.from_wav(wav_data)
+        wavfile.write(output_path, sample_rate, audio)
+    else:
+        audio_segment = _audio_to_segment(sample_rate, audio)
         if "user" in filename_prefix:
             audio_segment.export(output_path, format="mp3", codec="libmp3lame", bitrate=DEFAULT_BITRATE)
         else:
             audio_segment.export(output_path, format="mp3", bitrate=DEFAULT_BITRATE)
+        del audio_segment
 
     logger.info(f'save_audio_file after write, output_path:{output_path}, output_file:{output_file}')
     return output_path, output_file
@@ -1465,6 +1525,7 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, task_id='0', output_form
             msg = f'Error in gpu_gen_tts for task_id:{task_id}: {e}'
             update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
             try:
+                # 仅回收本轮推理显存碎片，不卸常驻 Fish/BERT
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
                     torch.cuda.empty_cache()
@@ -1473,7 +1534,7 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, task_id='0', output_form
                 logger.warning(f'GPU cleanup failed in exception handler: {cleanup_error}')
             return gen_res_dict(1, msg)
 
-        # 任务结束时安全地清理GPU内存（不等待跨境 sync）
+        # 任务结束：仅回收本轮推理显存碎片，不负责释放常驻模型主机内存
         try:
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
@@ -1598,6 +1659,11 @@ def initialize_models():
     print("initialize_models, warmup fish_tts start")
     warmup_fish_tts()
     print("initialize_models, warmup fish_tts finish")
+
+    # Drop load-time temporaries; do not unload resident Fish/BERT/SSL.
+    release_after_load(empty_cuda=True)
+    log_host_rss(logger, "after_initialize_models")
+    log_cuda_mem(logger, "after_initialize_models")
 
 # 应用启动时初始化跨区 socat SSH（quic 保底也用）+ 局域网 HTTP + 异步投递队列
 def initialize_file_delivery():

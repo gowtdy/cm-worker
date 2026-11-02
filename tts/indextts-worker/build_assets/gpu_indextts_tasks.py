@@ -9,8 +9,8 @@ import random
 import torch
 
 import gc
-from io import BytesIO
 
+import numpy as np
 from pydub import AudioSegment
 
 from utility.util import  gen_res_dict
@@ -46,6 +46,7 @@ from indextts_worker import (
     normalize_emo_type,
     parse_emo_alpha,
 )
+from indextts.utils.mem_release import log_cuda_mem, log_host_rss, release_after_load
 from utility.log import logset, setup_logger, set_reqid, clear_reqid
 from utility.voice_config import get_remote_ttssave_dir, get_localnet_video_tts_dir
 from utility.gpu_util import cuda_error_handler, check_and_wait_for_gpu_memory, manage_gpu_memory, \
@@ -141,6 +142,49 @@ def speed_to_duration_factor(speed):
     return max(DURATION_FACTOR_MIN, min(DURATION_FACTOR_MAX, DEFAULT_DURATION_FACTOR / speed))
 
 
+def _apply_volume_db(audio, volume_db):
+    """Apply gain on numpy PCM; avoid pydub decode of a full in-memory WAV."""
+    if volume_db == 0.0:
+        return audio
+    samples = np.asarray(audio)
+    scale = 10.0 ** (float(volume_db) / 20.0)
+    if np.issubdtype(samples.dtype, np.integer):
+        info = np.iinfo(samples.dtype)
+        scaled = samples.astype(np.float64) * scale
+        return np.clip(scaled, info.min, info.max).astype(samples.dtype)
+    scaled = samples.astype(np.float64, copy=False) * scale
+    return np.clip(scaled, -1.0, 1.0).astype(samples.dtype, copy=False)
+
+
+def _audio_to_segment(sample_rate, audio):
+    """Build AudioSegment from PCM array without BytesIO WAV round-trip."""
+    samples = np.ascontiguousarray(audio)
+    if samples.ndim == 1:
+        channels = 1
+    elif samples.ndim == 2:
+        # (channels, samples) or (samples, channels) — prefer fewer channels dim
+        if samples.shape[0] <= 8 and samples.shape[0] < samples.shape[1]:
+            channels = int(samples.shape[0])
+            samples = samples.T
+        else:
+            channels = int(samples.shape[1])
+        samples = np.ascontiguousarray(samples)
+    else:
+        raise ValueError(f"unsupported audio shape: {samples.shape}")
+    if samples.dtype != np.int16:
+        if np.issubdtype(samples.dtype, np.floating):
+            samples = np.clip(samples, -1.0, 1.0)
+            samples = (samples * 32767.0).astype(np.int16)
+        else:
+            samples = samples.astype(np.int16)
+    return AudioSegment(
+        data=samples.tobytes(),
+        sample_width=2,
+        frame_rate=int(sample_rate),
+        channels=channels,
+    )
+
+
 def save_audio_file(sample_rate, audio, output_format, base_output_path, filename_prefix, volume_db=0.0):
     """
     Write inferred audio to local disk only. Cross-region sync is enqueued separately.
@@ -155,29 +199,18 @@ def save_audio_file(sample_rate, audio, output_format, base_output_path, filenam
     output_file = f'{filename_prefix}.{file_extension}'
     output_path = os.path.join(base_output_path, output_file)
 
-    wav_data = BytesIO()
-    wavfile.write(wav_data, sample_rate, audio)
-    wav_data.seek(0)
+    audio = _apply_volume_db(audio, volume_db)
 
     logger.info(f'save_audio_file before write, output_path:{output_path}, volume_db:{volume_db}')
-    if volume_db != 0.0:
-        audio_segment = AudioSegment.from_wav(wav_data)
-        audio_segment = audio_segment.apply_gain(volume_db)
-        if output_format == "wav":
-            audio_segment.export(output_path, format="wav")
-        elif "user" in filename_prefix:
-            audio_segment.export(output_path, format="mp3", codec="libmp3lame", bitrate=DEFAULT_BITRATE)
-        else:
-            audio_segment.export(output_path, format="mp3", bitrate=DEFAULT_BITRATE)
-    elif output_format == "wav":
-        with open(output_path, "wb") as f:
-            f.write(wav_data.getvalue())
-    else:  # mp3
-        audio_segment = AudioSegment.from_wav(wav_data)
+    if output_format == "wav":
+        wavfile.write(output_path, sample_rate, audio)
+    else:
+        audio_segment = _audio_to_segment(sample_rate, audio)
         if "user" in filename_prefix:
             audio_segment.export(output_path, format="mp3", codec="libmp3lame", bitrate=DEFAULT_BITRATE)
         else:
             audio_segment.export(output_path, format="mp3", bitrate=DEFAULT_BITRATE)
+        del audio_segment
 
     logger.info(f'save_audio_file after write, output_path:{output_path}, output_file:{output_file}')
     return output_path, output_file
@@ -332,7 +365,7 @@ def gpu_gen_tts(modelname, text, modelcat='', userid=0, task_id='0', output_form
                 logger.warning(f'GPU cleanup failed in exception handler: {cleanup_error}')
             return gen_res_dict(1, msg)
 
-        # 任务结束时安全地清理GPU内存（不等待跨境 sync）
+        # 任务结束：仅回收本轮推理显存碎片，不负责释放常驻模型主机内存
         try:
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
@@ -400,6 +433,11 @@ def initialize_models():
     print("initialize_models, warmup index-tts start")
     warmup_indextts()
     print("initialize_models, warmup index-tts finish")
+
+    # 全量初始化结束后强制回收加载期临时对象（不卸载常驻模型）
+    release_after_load(empty_cuda=True)
+    log_host_rss(logger, "after_initialize_models")
+    log_cuda_mem(logger, "after_initialize_models")
 
 # 应用启动时初始化跨区 socat SSH（quic 保底也用）+ 局域网 HTTP + 异步投递队列
 def initialize_file_delivery():

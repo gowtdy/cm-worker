@@ -18,6 +18,8 @@ from pathlib import Path
 import torch
 import yaml
 
+from indextts.utils.mem_release import release_after_load
+
 
 def load_checkpoint(model: torch.nn.Module, model_pth: str) -> dict:
     checkpoint = torch.load(model_pth, map_location='cpu')
@@ -27,6 +29,7 @@ def load_checkpoint(model: torch.nn.Module, model_pth: str) -> dict:
         print(f">> load_checkpoint: missing keys ({len(missing)}): {missing[:5]}{'...' if len(missing) > 5 else ''}")
     if unexpected:
         print(f">> load_checkpoint: skipping unexpected keys ({len(unexpected)}): {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+    release_after_load(checkpoint)
     info_path = str(Path(model_pth).with_suffix('.yaml'))
     configs = {}
     if os.path.exists(info_path):

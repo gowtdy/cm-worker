@@ -18,6 +18,7 @@ from transformers import AutoTokenizer
 
 from fish_speech.tokenizer import SEMANTIC_TOKENS, FishTokenizer
 from fish_speech.utils import RankedLogger
+from utility.mem_release import release_after_load
 
 from .lora import LoraConfig, setup_lora
 
@@ -468,6 +469,7 @@ class BaseTransformer(nn.Module):
                     )
 
             err = model.load_state_dict(weights, strict=False, assign=True)
+            release_after_load(weights)
             log.info(f"Loaded weights with error: {err}")
 
         return model

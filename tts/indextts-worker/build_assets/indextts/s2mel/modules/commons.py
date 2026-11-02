@@ -8,6 +8,8 @@ import json
 import argparse
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from indextts.utils.mem_release import release_after_load
+
 def str2bool(v):
     if isinstance(v, bool):
         return v
@@ -619,6 +621,7 @@ def load_checkpoint2(
                 )
             print("%s loaded" % key)
             model.models[key].load_state_dict(filtered_state_dict, strict=False)
+            del filtered_state_dict, model_state_dict
     model.eval()
 #     _ = [model[key].eval() for key in model]
 
@@ -632,6 +635,7 @@ def load_checkpoint2(
         epoch = 0
         iters = 0
 
+    release_after_load(state, params)
     return model, optimizer, epoch, iters
 
 def recursive_munch(d):

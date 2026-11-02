@@ -16,6 +16,7 @@ from transformers.utils.model_parallel_utils import (assert_device_map,
 from indextts.gpt.conformer_encoder import ConformerEncoder
 from indextts.gpt.perceiver import PerceiverResampler
 from indextts.utils.arch_util import AttentionBlock
+from indextts.utils.mem_release import release_after_load
 from indextts.utils.typical_sampling import TypicalLogitsWarper
 from indextts.utils.tokenizer import LANGUAGE_DICT
 
@@ -418,6 +419,37 @@ class UnifiedVoice(nn.Module):
 
         self.use_accel = use_accel
         self.accel_engine = None  # Will be initialized in post_init_gpt2_config
+        self._accel_only_generate = False
+
+    def _offload_hf_gpt_transformer_after_accel(self):
+        """Drop HF GPT2 transformer after accel owns generate (frees duplicate VRAM/RSS).
+
+        Important: mel_embedding may be aliased as gpt.wte. Moving the whole HF gpt
+        to CPU would also move that shared Embedding off CUDA, and accel CUDA-graph
+        capture then fails with index_select device mismatch (index on cuda, weight on cpu).
+        """
+        if self.accel_engine is None:
+            return
+        self._accel_only_generate = True
+        hf_gpt = self.gpt
+        if hf_gpt is not None:
+            # Unbind shared modules before .to("cpu") so accel embeddings stay on CUDA.
+            if getattr(hf_gpt, "wte", None) is self.mel_embedding:
+                hf_gpt.wte = None
+            try:
+                hf_gpt.to("cpu")
+            except Exception:
+                pass
+        self.gpt = None
+        if getattr(self, "inference_model", None) is not None:
+            self.inference_model.transformer = None
+        # Defense in depth: keep embeddings/heads used by accel on the accel device.
+        accel_device = next(self.accel_engine.model.parameters()).device
+        for mod in (self.mel_embedding, self.mel_pos_embedding, self.final_norm, self.mel_head):
+            if mod is not None:
+                mod.to(accel_device)
+        release_after_load(hf_gpt, empty_cuda=True)
+        print(">> HF GPT transformer discarded after accel init (accel-only generate)")
 
     def post_init_gpt2_config(self, use_deepspeed=False, kv_cache=False, half=False):
         seq_length = self.max_mel_tokens + self.max_text_tokens + 2
@@ -441,9 +473,11 @@ class UnifiedVoice(nn.Module):
 
             from indextts.accel import GPT2AccelModel, AccelInferenceEngine
 
-            # Create accel model
+            # Create accel model from HF gpt weights, then drop the HF transformer copy.
             accel_gpt = GPT2AccelModel(gpt_config)
-            accel_gpt.load_state_dict(self.gpt.state_dict(), strict=False)
+            hf_sd = self.gpt.state_dict()
+            accel_gpt.load_state_dict(hf_sd, strict=False)
+            release_after_load(hf_sd)
 
             if half:
                 accel_gpt = accel_gpt.half().cuda()
@@ -490,7 +524,12 @@ class UnifiedVoice(nn.Module):
             self.inference_model = self.inference_model.eval()
 
         # self.inference_model = PrunedGPT2InferenceModel(gpt_config, self.gpt, self.mel_pos_embedding, self.mel_embedding, self.final_norm, self.mel_head)
-        self.gpt.wte = self.mel_embedding
+        # HF generate path needs gpt.wte -> mel_embedding. Accel path discards HF gpt;
+        # do not alias wte first or hf_gpt.to("cpu") will drag mel_embedding onto CPU.
+        if self.accel_engine is not None:
+            self._offload_hf_gpt_transformer_after_accel()
+        elif self.gpt is not None:
+            self.gpt.wte = self.mel_embedding
 
     def build_aligned_inputs_and_targets(self, input, start_token, stop_token):
         inp = F.pad(input, (1, 0), value=start_token)
@@ -822,6 +861,12 @@ class UnifiedVoice(nn.Module):
                 tts_text_pos_embedding=self.inference_model.text_pos_embedding,  # text_pos_embedding layer
             )
         else:
+            if self._accel_only_generate or getattr(self.inference_model, "transformer", None) is None:
+                raise RuntimeError(
+                    "HF GPT transformer was discarded after accel init; "
+                    "only accel single-sequence generate is supported "
+                    f"(num_return_sequences={num_return_sequences})."
+                )
             print("gpt inference_speech, Using inference_model")
             output = self.inference_model.generate(inputs, 
                                                 bos_token_id=self.start_mel_token, pad_token_id=self.stop_mel_token,

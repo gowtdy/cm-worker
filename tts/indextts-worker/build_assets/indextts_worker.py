@@ -1,6 +1,7 @@
 import os
 import time
 from indextts.infer_v2_5 import IndexTTS2
+from indextts.utils.mem_release import log_cuda_mem, log_host_rss, release_after_load
 
 from utility.voice_config import get_device
 
@@ -95,6 +96,9 @@ def load_indextts_model(logger, model_dir="/app/models/indextts-model", load_spe
     )
     t_load_end = time.perf_counter()
     logger.debug(f">> Index-TTS model loaded in {t_load_end - t_load_start:.2f} seconds")
+    release_after_load(empty_cuda=True)
+    log_host_rss(logger, "after_IndexTTS2_ctor")
+    log_cuda_mem(logger, "after_IndexTTS2_ctor")
     return indextts_model
 
 def indextts_infer(logger, indextts_model, speaker_pt_path, text, text_lang='en', duration_factor=1.05, reqid='default',
