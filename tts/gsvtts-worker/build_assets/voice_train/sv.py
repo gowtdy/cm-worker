@@ -11,6 +11,7 @@ from ERes2NetV2 import ERes2NetV2
 import kaldi as Kaldi
 
 from config.model_conf import get_model_conf
+from utility.mem_release import release_after_load
 
 sv_path = get_model_conf('sv_model_path')
 
@@ -19,6 +20,7 @@ class SV:
         pretrained_state = torch.load(sv_path, map_location="cpu", weights_only=False)
         embedding_model = ERes2NetV2(baseWidth=24, scale=4, expansion=4)
         embedding_model.load_state_dict(pretrained_state)
+        release_after_load(pretrained_state)
         embedding_model.eval()
         self.embedding_model = embedding_model
         if is_half == False:
