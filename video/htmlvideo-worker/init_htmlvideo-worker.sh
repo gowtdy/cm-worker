@@ -11,6 +11,9 @@ sudo mkdir -p /home/aigc/data/aioutput/htmlvideos
 sudo chown -R aigc:aigc /home/aigc/data/aioutput/htmlvideos
 sudo chmod -R 755 /home/aigc/data/aioutput/htmlvideos
 
+sudo mkdir -p /home/aigc/data/ssh_control/htmlvideo-worker
+sudo chown -R aigc:aigc /home/aigc/data/ssh_control/htmlvideo-worker
+sudo chmod -R 755 /home/aigc/data/ssh_control/htmlvideo-worker
 
 echo "permission set completed!"
 echo "directory permission information:"
