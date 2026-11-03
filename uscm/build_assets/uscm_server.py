@@ -19,10 +19,10 @@ from utility.module_enum import ModuleType
 from utility.userserver_client import post_generate_add
 from utility.allused_voicemodels import register_allused_voicemodels, get_common_model
 from utility.voice_settings import parse_emo_params, parse_speed_volume_params
-from config.comm_config import DEFAULT_USER_FIRST_IP
+from config.comm_config import DEFAULT_USER_FIRST_IP, MIN_HTMLVIDEO_TEXT_LENGTH, MAX_HTMLVIDEO_TEXT_LENGTH
 from config.transcribe_routing import resolve_transcribe_engine
 
-from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract, gpu_cover, gpu_vocal, gpu_instrument, transcribe_whisper
+from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract, gpu_cover, gpu_vocal, gpu_instrument, transcribe_whisper, gen_htmlvideo
 
 app = FastAPI()
 
