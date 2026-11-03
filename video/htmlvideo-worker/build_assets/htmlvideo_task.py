@@ -16,7 +16,6 @@ from utility.voice_config import (
     get_file_sync_transport,
     get_quic_client_host,
     get_quic_client_port,
-    get_remote_ttssave_dir,
 )
 from utility.module_enum import TaskStatus
 from utility.userserver_client import update_task_status
@@ -96,10 +95,9 @@ def gen_htmlvideo(uid=0, email='', task_id='0', domain='', text=''):
 
         try:
 
-            remote_ttssave_dir = get_remote_ttssave_dir()
             delivery_transport = resolve_delivery_transport(email)
             proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
-            remote_target_dir = f'{remote_ttssave_dir}/{today}/user{userid}'
+            remote_target_dir = f'/home/aigc/data/aioutput/htmlvideos/{today}/user{userid}'
             sync_job = SyncJob(
                 source_file=output_path,
                 target_dir=remote_target_dir,
