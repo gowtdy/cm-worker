@@ -36,6 +36,7 @@ from utility.samearea_http_transport import SameAreaHttpTransport
 from celery_worker import celery_app
 
 from utility.log import setup_logger, set_reqid, clear_reqid
+from utility.gpu_util import cuda_error_handler
 
 # CUDA调试建议：
 # 如果遇到CUDA错误，可以设置以下环境变量来帮助调试：
