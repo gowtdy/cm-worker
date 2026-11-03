@@ -77,7 +77,7 @@ dtype = get_dtype()
 
 @celery_app.task(name='task_gen_htmlvideo')
 @cuda_error_handler(logger)
-def gen_htmlvideo(uid=0, email='', task_id='0', domain='', text=''):
+def gen_htmlvideo(uid='', email='', task_id='', domain='', text=''):
     set_reqid(task_id)
     try:
         if (len(text.strip()) == 0):
