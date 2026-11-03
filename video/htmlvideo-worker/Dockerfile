@@ -16,7 +16,7 @@ RUN chmod -R 755 /app
 RUN chmod -R 777 /app/log /app/output /app/data
 
 # 给脚本执行权限
-RUN chmod +x /app/start_htmlvideo-worker.sh
+RUN chmod +x /app/start_htmlvideo-task.sh
 
 # 设置Python用户安装路径到PATH
 ENV PATH="/home/aigc/.local/bin:$PATH"
