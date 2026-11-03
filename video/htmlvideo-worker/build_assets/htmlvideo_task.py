@@ -98,7 +98,20 @@ def gen_htmlvideo(uid='', email='', task_id='', domain='', content=''):
 
             delivery_transport = resolve_delivery_transport(email)
             proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
-            remote_target_dir = f'/home/aigc/data/aioutput/htmlvideos/{today}/user{userid}'
+            # short_uri_prefix: sync success -> /outdt{prefix}/file; complete only after async sync
+            short_uri_prefix = f'/htmlvideos/{today}/user{uid}'
+            remote_target_dir = f'/home/aigc/data/aioutput/htmlvideos/{today}/user{uid}'
+            # TODO: 在 enqueue 前完成 htmlvideo 生成，写入 output_path / output_file
+            output_path = ''
+            output_file = ''
+            if not output_path or not output_file:
+                msg = (
+                    f'htmlvideo output missing before sync, task_id:{task_id}, '
+                    f'worker:{WORKER_HOSTNAME}'
+                )
+                logger.error(msg)
+                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                return gen_res_dict(1, msg)
             sync_job = SyncJob(
                 source_file=output_path,
                 target_dir=remote_target_dir,
@@ -115,8 +128,8 @@ def gen_htmlvideo(uid='', email='', task_id='', domain='', content=''):
                 update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
 
         except Exception as e:
-            logger.error(f'Error in gpu_gen_tts for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}')
-            msg = f'Error in gpu_gen_tts for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}'
+            logger.error(f'Error in gen_htmlvideo for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}')
+            msg = f'Error in gen_htmlvideo for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}'
             update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
             try:
                 if torch.cuda.is_available():
