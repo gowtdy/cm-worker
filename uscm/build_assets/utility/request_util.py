@@ -73,7 +73,7 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
             # 验证用户的登录信息
             session, reason = authenticate_request(request, domain, logger=logger)
             if (session is None or session.email != email):
-                # 验证用户是否可以在未登录的时候继续生成, 如果可以，则继续生成，否则返回错误
+                # 登录已过期，请重新登录
                 ret = 11
                 msg = 'Login expired, please login again!'
                 logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
@@ -87,6 +87,8 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
                 try:
                     subscript = int(user_info.get("user_subscript", 0))
                 except (TypeError, ValueError):
+                    logger.warning(f'reqid:{reqid} email:{email} domain:{domain!r} '
+                        f'fetch_userinfo failed ret:{ret_ui} msg:{msg_ui}, user_info:{user_info}')
                     subscript = 0
             else:
                 logger.warning(
@@ -95,6 +97,7 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
                 )
             if subscript == 1:
                 return 0, "ok", login, subscript
+            # 登录未订阅的情况
             useret, msg = can_use_service(domain, module, True, day_count, month_count)
             if useret == 0:
                 return 0, msg, login, subscript
@@ -183,7 +186,7 @@ def validate_signature(logger: logging.Logger, timestamp, signature, text, datet
     
     return ret, msg
 
-def validate_text_length(text: str, max_length: int = 700, reqid: str = "", logger: logging.Logger = None) -> tuple[int, str]:
+def validate_text_length(text: str, max_length: int = 700, min_length: int = 0, reqid: str = "", logger: logging.Logger = None) -> tuple[int, str]:
     """
     验证文本长度是否超过限制
     
@@ -199,11 +202,14 @@ def validate_text_length(text: str, max_length: int = 700, reqid: str = "", logg
     ret = 0
     msg = 'ok'
     textlen = len(text)
-    if textlen == 0:
+    if textlen < min_length:
         if logger:
-            logger.info(f'reqid:{reqid}, textlen:{textlen} is empty, text:{text}!')
+            logger.info(f'reqid:{reqid}, textlen:{textlen} is less than {min_length}, text:{text}!')
         ret = 1
-        msg = f'Text is empty'
+        if min_length == 0:
+            msg = f'Text is empty'
+        else:
+            msg = f'Text length is less than {min_length}'
         return ret, msg
     if textlen > max_length:
         if logger:
