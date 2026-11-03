@@ -1,16 +1,16 @@
 from enum import Enum
 
-# Define record types enum with integer values - 方式1：手动指定数字
-class ToolType(Enum):
-    """
-    定义记录类型 - 整数值（手动指定）
-    """
-    COVER = 1     # 翻唱
-    VOCAL_ISOLATOR = 2  # 人声提取
-    VOCAL_REMOVER = 3  # 人声去除
-    AUDIO_EXTRACTOR = 4  # 音频提取
-    TRANSCRIBE = 5    # 转写
+class AuthEnum(Enum):
+    ECHOBAT_AUTH = "echobeat_auth"
+    AIVOICELAB_AUTH = "aivoice_auth"
+    TIKTOKVOICE_AUTH = "tiktokvoice_auth"
+    CALUMA_AUTH = "caluma_auth"
 
+class UserEnum(Enum):
+    ECHOBAT_USER = "echobeat_user"
+    AIVOICELAB_USER = "aivoice_user"
+    TIKTOKVOICE_USER = "tiktokvoice_user"
+    CALUMA_USER = "caluma_user"
 
 class TaskStatus(Enum):
     """
@@ -22,7 +22,6 @@ class TaskStatus(Enum):
     CANCELLED = "cancelled"  # 已取消
     COMPLETE = "complete"  # 已完成
     FAILED = "failed"  # 失败
-
 
 # Define module types enum
 class ModuleType(Enum):
@@ -36,7 +35,7 @@ class ModuleType(Enum):
     VOCAL_REMOVER = "vocal_remover" # 人声去除
     AUDIO_EXTRACTOR = "audio_extractor" # 音频提取
     TRANSCRIBE = "transcribe"  # 转写
-    EXPLAINER_VIDEO = "explainer_video" # 解释视频
+    HTMLVIDEO = "htmlvideo" # hmtl视频生成
     
     @classmethod
     def get_all_values(cls):
@@ -141,21 +140,3 @@ class ActionType(Enum):
 
     def __str__(self):
         return self.value
-
-
-_GENERATE_ACTION_BY_MODULE = {
-    ModuleType.TTS: ActionType.TTS_GENERATE,
-    ModuleType.SOUND: ActionType.SOUND_GENERATE,
-    ModuleType.COVER: ActionType.COVER_SONG_GENERATE,
-    ModuleType.VOCAL_ISOLATOR: ActionType.VOCAL_EXTRACT,
-    ModuleType.VOCAL_REMOVER: ActionType.VOCAL_REMOVE,
-    ModuleType.AUDIO_EXTRACTOR: ActionType.AUDIO_EXTRACT,
-}
-
-
-def get_generate_action(module: ModuleType) -> str | None:
-    """生成类行为对应的 ActionType；无对应项（如 TRANSCRIBE）返回 None。"""
-    action = _GENERATE_ACTION_BY_MODULE.get(module)
-    if action is None:
-        return None
-    return action.value
