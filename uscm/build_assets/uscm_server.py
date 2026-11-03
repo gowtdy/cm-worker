@@ -691,15 +691,15 @@ async def htmlvideo_endpoint(request: Request):
 
     email = json_post_raw.get("email", '')
     domain = json_post_raw.get("domain", '')
-    text = json_post_raw.get("text", '')
+    content = json_post_raw.get("content", '')
 
-    ret, msg = validate_text_length(text, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
+    ret, msg = validate_text_length(content, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
     if ret != 0:
         logger.info(f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},' \
-            f'email:{email}, refer:{referer}, textlen:{len(text)} {msg}!')
+            f'email:{email}, refer:{referer}, content length:{len(content)} {msg}!')
         return gen_res_dict(ret, msg)
 
-    ret, msg = validate_signature(logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.HTMLVIDEO)
+    ret, msg = validate_signature(logger, timestamp, signature, content, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.HTMLVIDEO)
     if ret != 0:
         logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_signature failed: {msg}')
         return gen_res_dict(ret, msg)
@@ -710,7 +710,7 @@ async def htmlvideo_endpoint(request: Request):
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
 
-    generate_content = text
+    generate_content = content
     task_req = json.dumps({
         "uid": uid,
         "email": email,
@@ -724,7 +724,7 @@ async def htmlvideo_endpoint(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     try:
-        gen_htmlvideo.delay(uid=uid, email=email, task_id=reqid, domain=domain, text=text)
+        gen_htmlvideo.delay(uid=uid, email=email, task_id=reqid, domain=domain, content=content)
     except Exception as e:
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gpu_instrument.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
