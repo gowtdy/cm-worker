@@ -4,6 +4,9 @@ DEFAULT_USER_FIRST_IP = "100.100.100.100"
 
 ALLOWED_DOMAINS = frozenset({"caluma.ai", "mogofun.com", "aivoicelab.net"})
 
+MIN_HTMLVIDEO_TEXT_LENGTH = 10
+MAX_HTMLVIDEO_TEXT_LENGTH = 6000
+
 def get_allowed_domains():
     return ALLOWED_DOMAINS
 
@@ -32,6 +35,9 @@ def get_sound_secret_key() :
 
 def get_cover_secret_key() :
     return "l4AnBbVDNIardm33PyFP0Ki29uLAn9a6xrzNL/6FPuQ="
+
+def get_htmlvideo_secret_key() :
+    return "-iH5m7YNocesSx54XPRW8o4ikqqPdmNFlzMC12pWudA"
 
 def get_transcribe_secret_key() :
     return "BU_DgJr-uTKs3LqcgcBOal0gpi_tLRdnuxBAly2Zss4"
