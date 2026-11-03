@@ -77,12 +77,12 @@ dtype = get_dtype()
 
 @celery_app.task(name='task_gen_htmlvideo')
 @cuda_error_handler(logger)
-def gen_htmlvideo(uid='', email='', task_id='', domain='', text=''):
+def gen_htmlvideo(uid='', email='', task_id='', domain='', content=''):
     set_reqid(task_id)
     try:
-        if (len(text.strip()) == 0):
+        if (len(content.strip()) == 0):
             ret = 1
-            msg = f'text:{text} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+            msg = f'content:{content} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
             logger.warning(f'msg: {msg}')
             update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
             return gen_res_dict(ret, msg)
@@ -92,7 +92,7 @@ def gen_htmlvideo(uid='', email='', task_id='', domain='', text=''):
         datetime_str = time.strftime("%Y%m%d%H%M%S", localtime)
         random_number = random.randint(1, 1000)
         start_time = time.time()
-        textlen = len(text)
+        content_length = len(content)
 
         try:
 
