@@ -24,4 +24,4 @@ ENV PATH="/home/aigc/.local/bin:$PATH"
 WORKDIR /app
 
 #ENTRYPOINT ["tail", "-f", "/dev/null"]
-CMD ["./start_htmlvideo-server.sh"]
+CMD ["./start_htmlvideo-task.sh"]
