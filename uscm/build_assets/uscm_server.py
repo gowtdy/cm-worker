@@ -110,7 +110,7 @@ async def tts_endpoint(request: Request):
 
     text = json_post_raw.get("text", '')
     # 验证文本长度
-    ret, msg = validate_text_length(text, MAX_TTS_TEXT_LENGTH, reqid, logger)
+    ret, msg = validate_text_length(text, MAX_TTS_TEXT_LENGTH, 0, reqid, logger)
     if ret != 0:
         logger.info(f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},' \
             f'email:{email}, refer:{referer}, textlen:{len(text)} {msg}!')
@@ -249,7 +249,7 @@ async def gensoundTask(request: Request):
         num = 1
 
     # 验证文本长度
-    ret, msg = validate_text_length(text, MAX_SOUND_TEXT_LENGTH, reqid, logger)
+    ret, msg = validate_text_length(text, MAX_SOUND_TEXT_LENGTH, 0, reqid, logger)
     if ret != 0:
         logger.info(f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},' \
             f'email:{email}, refer:{referer}, length:{length}, num:{num} {msg}!')
@@ -648,6 +648,83 @@ async def instrument_endpoint(request: Request):
 
     try:
         gpu_instrument.delay(upfileinfo, task_id=reqid, email=email, domain=domain)
+    except Exception as e:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gpu_instrument.delay failed: {e}')
+        return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
+
+    res = {
+        "ret": 0,
+        "msg": 'ok',
+        "task_id": reqid,
+        "islogin": login,
+        "subscript": subscript,
+    }
+
+    logger.info(
+        f'instrument, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, '
+        f'email:{email}, refer:{referer}, ret:{ret}'
+    )
+    return res
+
+@app.post("/api/htmlvideo")
+async def htmlvideo_endpoint(request: Request):
+    ret = 0
+    msg = 'ok'
+    task_cmd = '/api/htmlvideo'
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
+    # 获取HTTP请求的Referer
+    referer = request.headers.get("Referer", "Not provided")
+
+    json_post_raw = await request.json()
+
+    timestamp = json_post_raw.get('tstamp', 0)
+    signature = json_post_raw.get('snature', '')
+
+    tm = time.time()
+    uid = json_post_raw.get("uid", 0)
+    reqid = gen_reqid(uid, tm)
+    localtime = time.localtime(tm)
+    today = time.strftime(DAY_FORMAT, localtime)
+    datetime = time.strftime("%Y%m%d_%H%M%S", localtime)
+
+    email = json_post_raw.get("email", '')
+    domain = json_post_raw.get("domain", '')
+    text = json_post_raw.get("text", '')
+
+    ret, msg = validate_text_length(text, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
+    if ret != 0:
+        logger.info(f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},' \
+            f'email:{email}, refer:{referer}, textlen:{len(text)} {msg}!')
+        return gen_res_dict(ret, msg)
+
+    ret, msg = validate_signature(logger, timestamp, signature, text, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.HTMLVIDEO)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.HTMLVIDEO, domain, request)
+    auth_info = {"islogin": login, "subscript": subscript}
+    if ret != 0:
+        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
+        return gen_res_dict(ret, msg, auth_info)
+
+    generate_content = text
+    task_req = json.dumps({
+        "uid": uid,
+        "email": email,
+    }, ensure_ascii=False)
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.HTMLVIDEO,
+        task_cmd=task_cmd, task_req=task_req,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg, auth_info)
+
+    try:
+        gen_htmlvideo.delay(uid=uid, email=email, task_id=reqid, domain=domain, text=text)
     except Exception as e:
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gpu_instrument.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
