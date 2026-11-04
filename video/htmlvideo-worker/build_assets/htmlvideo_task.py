@@ -77,12 +77,26 @@ dtype = get_dtype()
 
 @celery_app.task(name='task_gen_htmlvideo')
 @cuda_error_handler(logger)
-def gen_htmlvideo(uid='', email='', task_id='', domain='', content=''):
+def gen_htmlvideo(uid='', email='', task_id='', domain='', content='', source='article', uri=''):
     set_reqid(task_id)
     try:
-        if (len(content.strip()) == 0):
+        if source == 'article':
+            if (len(content.strip()) == 0):
+                ret = 1
+                msg = f'content:{content} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+                logger.warning(f'msg: {msg}')
+                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                return gen_res_dict(ret, msg)
+        elif source in ('upload', 'link'):
+            if (len(uri.strip()) == 0):
+                ret = 1
+                msg = f'uri:{uri} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+                logger.warning(f'msg: {msg}')
+                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                return gen_res_dict(ret, msg)
+        else:
             ret = 1
-            msg = f'content:{content} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+            msg = f'source:{source} is invalid, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
             logger.warning(f'msg: {msg}')
             update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
             return gen_res_dict(ret, msg)
@@ -152,7 +166,7 @@ def gen_htmlvideo(uid='', email='', task_id='', domain='', content=''):
         tts_time = time.time()
         cost_tts = tts_time - start_time
         logger.info(
-            f'task_id:{task_id}, htmlvideo finish, sync enqueued, transport:{delivery_transport} time[tts:{cost_tts}] '
+            f'task_id:{task_id}, htmlvideo finish, sync enqueued, source:{source}, transport:{delivery_transport} time[tts:{cost_tts}] '
         )
 
         result = f"Processed: {task_id}"
