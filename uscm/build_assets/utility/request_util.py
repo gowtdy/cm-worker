@@ -6,8 +6,24 @@ import os
 import random
 
 from fastapi import Request
-from config.comm_config import get_white_list, get_limit_config, ALLOWED_DOMAINS
+from config.comm_config import (
+    get_white_list,
+    get_limit_config,
+    ALLOWED_DOMAINS,
+    MIN_HTMLVIDEO_TEXT_LENGTH,
+    MAX_HTMLVIDEO_TEXT_LENGTH,
+)
+from config.video_config import (
+    VIDEO_ASPECTS,
+    DEFAULT_VIDEO_ASPECT,
+    VIDEO_ASPECT_RATIO_MAP,
+    VIDEO_DURATIONS,
+    DEFAULT_VIDEO_DURATION,
+    VIDEO_SOURCES,
+    DEFAULT_VIDEO_SOURCE,
+)
 from utility.auth_session import authenticate_request
+from utility.allused_voicemodels import get_common_model
 from utility.module_enum import ModuleType
 from utility.use_strategy import can_use_service
 from utility.userserver_client import fetch_generate_counts, fetch_userinfo
@@ -352,4 +368,114 @@ def validate_internal_tts_url(converturl: str, reqid: str, first_ip: str, email:
     upfileinfo['file_ext'] = file_ext  # 上传文件扩展名，mp3
     logger.debug(f'reqid:{reqid} validate_internal_tts_url, converturl:{converturl}, upfileinfo:{upfileinfo}')
 
-    return ret, msg, upfileinfo 
+    return ret, msg, upfileinfo
+
+
+def validate_video_create_params(
+    logger: logging.Logger,
+    json_post_raw: dict,
+    content: str,
+    uri: str,
+    reqid: str,
+    first_ip: str,
+    real_ip: str,
+    uid,
+    email: str,
+    referer: str,
+) -> tuple[int, str, dict]:
+    """
+    校验 /api/video/create 的业务参数（aspect / duration / model / source / content|uri）。
+
+    Returns:
+        tuple[int, str, dict]: (ret, msg, params)
+        params 在校验通过时包含：
+        aspect, aspect_ratio, duration, modelcat, modelname, model_entry,
+        source, sign_text, generate_content
+    """
+    params = {}
+
+    aspect = json_post_raw.get("aspect", DEFAULT_VIDEO_ASPECT)
+    if aspect not in VIDEO_ASPECTS:
+        ret = 1
+        msg = f'aspect is invalid, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} aspect:{aspect} referer:{referer}')
+        return ret, msg, params
+    aspect_ratio = VIDEO_ASPECT_RATIO_MAP[aspect]
+
+    style = json_post_raw.get("style", '')
+    #if style not in VIDEO_STYLES:
+    #    ret = 1
+    #    msg = f'style is invalid, reqid:{reqid}!'
+    #    logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} style:{style} referer:{referer}')
+    #    return ret, msg, params
+
+    duration = json_post_raw.get("duration", DEFAULT_VIDEO_DURATION)
+    try:
+        duration = int(duration)
+    except (TypeError, ValueError):
+        duration = None
+    if duration not in VIDEO_DURATIONS:
+        ret = 1
+        msg = f'duration is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'duration:{json_post_raw.get("duration")} referer:{referer}'
+        )
+        return ret, msg, params
+
+    modelcat = json_post_raw.get("modelcat", '')
+    modelname = json_post_raw.get("modelname", '')
+    model_entry = get_common_model(modelcat, modelname)
+    if not model_entry:
+        ret = 1
+        msg = f'modelname:{modelname} is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} '
+            f'modelcat:{modelcat}, modelname:{modelname}, msg:{msg}'
+        )
+        return ret, msg, params
+
+    # 对应前端 activeTab: 'article' | 'upload' | 'link'
+    source = json_post_raw.get("source", DEFAULT_VIDEO_SOURCE)
+    if source not in VIDEO_SOURCES:
+        ret = 1
+        msg = f'source is invalid, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} source:{source} referer:{referer}')
+        return ret, msg, params
+
+    if source == 'article':
+        ret, msg = validate_text_length(content, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
+        if ret != 0:
+            logger.info(
+                f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},'
+                f'email:{email}, refer:{referer}, source:{source}, content length:{len(content)} {msg}!'
+            )
+            return ret, msg, params
+        sign_text = content
+        generate_content = content
+    else:
+        # upload / link：签名与生成内容用 uri，不校验 content 长度
+        if len(uri.strip()) == 0:
+            ret = 1
+            msg = f'uri is invalid, reqid:{reqid}!'
+            logger.warning(
+                f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+                f'source:{source} uri:{uri} referer:{referer}'
+            )
+            return ret, msg, params
+        sign_text = uri
+        generate_content = uri
+
+    params = {
+        "aspect": aspect,
+        "aspect_ratio": aspect_ratio,
+        "style": style,
+        "duration": duration,
+        "modelcat": modelcat,
+        "modelname": modelname,
+        "model_entry": model_entry,
+        "source": source,
+        "sign_text": sign_text,
+        "generate_content": generate_content,
+    }
+    return 0, 'ok', params 
