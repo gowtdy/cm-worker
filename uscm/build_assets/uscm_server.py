@@ -666,11 +666,11 @@ async def instrument_endpoint(request: Request):
     )
     return res
 
-@app.post("/api/htmlvideo")
-async def htmlvideo_endpoint(request: Request):
+@app.post("/api/video/create")
+async def create_video(request: Request):
     ret = 0
     msg = 'ok'
-    task_cmd = '/api/htmlvideo'
+    task_cmd = '/api/video/create'
 
     real_ip = get_real_ip(request)
     first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
