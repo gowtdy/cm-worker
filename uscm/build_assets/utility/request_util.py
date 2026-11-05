@@ -380,11 +380,14 @@ def validate_video_intent_params(
     reqid: str,
     first_ip: str,
     real_ip: str,
+    uid,
+    email: str,
+    referer: str,
 ) -> tuple[int, str, dict]:
     """
         source 与前端 sourceFields 对齐：
-            - article：校验 content 长度，sign_text / generate_content = content
-            - upload：校验 uri 非空，sign_text / generate_content = uri（前端 uploadedUri）
+            - article：校验 content 长度，sign_text = content
+            - upload：校验 uri 非空，sign_text = uri（前端 uploadedUri）
     """
     ret = 0
     msg = 'ok'
@@ -408,7 +411,6 @@ def validate_video_intent_params(
             )
             return ret, msg, params
         sign_text = content
-        generate_content = content
     elif source == 'upload':
         # 前端：uri = uploadedUri，用 uploadedUri 签名；已上传才 ready
         if len(uri.strip()) == 0:
@@ -420,7 +422,6 @@ def validate_video_intent_params(
             )
             return ret, msg, params
         sign_text = uri
-        generate_content = uri
     else:
         ret = 1
         msg = f'source is invalid, reqid:{reqid}!'
@@ -430,7 +431,6 @@ def validate_video_intent_params(
     params = {
         "source": source,
         "sign_text": sign_text,
-        "generate_content": generate_content,
     }
     return ret, msg, params
 
@@ -450,14 +450,14 @@ def validate_video_create_params(
     校验 /api/video/create 的业务参数（aspect / duration / model / source / content|uri）。
 
     source 与前端 sourceFields 对齐：
-      - article：校验 content 长度，sign_text / generate_content = content
-      - upload：校验 uri 非空，sign_text / generate_content = uri（前端 uploadedUri）
+      - article：校验 content 长度，sign_text = content
+      - upload：校验 uri 非空，sign_text = uri（前端 uploadedUri）
 
     Returns:
         tuple[int, str, dict]: (ret, msg, params)
         params 在校验通过时包含：
         aspect, aspect_ratio, duration, modelcat, modelname, model_entry,
-        source, sign_text, generate_content
+        source, sign_text
     """
     params = {}
 
@@ -520,7 +520,6 @@ def validate_video_create_params(
             )
             return ret, msg, params
         sign_text = content
-        generate_content = content
     elif source == 'upload':
         # 前端：uri = uploadedUri，用 uploadedUri 签名；已上传才 ready
         if len(uri.strip()) == 0:
@@ -532,7 +531,6 @@ def validate_video_create_params(
             )
             return ret, msg, params
         sign_text = uri
-        generate_content = uri
     else:
         ret = 1
         msg = f'source is invalid, reqid:{reqid}!'
@@ -549,6 +547,5 @@ def validate_video_create_params(
         "model_entry": model_entry,
         "source": source,
         "sign_text": sign_text,
-        "generate_content": generate_content,
     }
     return 0, 'ok', params 
