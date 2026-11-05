@@ -80,6 +80,7 @@ dtype = get_dtype()
 def gen_htmlvideo(uid='', email='', task_id='', domain='', content='', source='article', uri=''):
     set_reqid(task_id)
     try:
+        # 与前端 sourceFields / uscm validate 一致：article → content；upload → uri
         if source == 'article':
             if (len(content.strip()) == 0):
                 ret = 1
@@ -87,7 +88,7 @@ def gen_htmlvideo(uid='', email='', task_id='', domain='', content='', source='a
                 logger.warning(f'msg: {msg}')
                 update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
                 return gen_res_dict(ret, msg)
-        elif source in ('upload', 'link'):
+        elif source == 'upload':
             if (len(uri.strip()) == 0):
                 ret = 1
                 msg = f'uri:{uri} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
