@@ -388,6 +388,10 @@ def validate_video_create_params(
     """
     校验 /api/video/create 的业务参数（aspect / duration / model / source / content|uri）。
 
+    source 与前端 sourceFields 对齐：
+      - article：校验 content 长度，sign_text / generate_content = content
+      - upload：校验 uri 非空，sign_text / generate_content = uri（前端 uploadedUri）
+
     Returns:
         tuple[int, str, dict]: (ret, msg, params)
         params 在校验通过时包含：
@@ -437,7 +441,7 @@ def validate_video_create_params(
         )
         return ret, msg, params
 
-    # 对应前端 activeTab: 'article' | 'upload' | 'link'
+    # 对应前端 sourceFields：article → content 签名；upload → uri(uploadedUri) 签名
     source = json_post_raw.get("source", DEFAULT_VIDEO_SOURCE)
     if source not in VIDEO_SOURCES:
         ret = 1
@@ -446,6 +450,7 @@ def validate_video_create_params(
         return ret, msg, params
 
     if source == 'article':
+        # 前端：content + 用正文签名，正文非空且长度合法才 ready
         ret, msg = validate_text_length(content, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
         if ret != 0:
             logger.info(
@@ -455,8 +460,8 @@ def validate_video_create_params(
             return ret, msg, params
         sign_text = content
         generate_content = content
-    else:
-        # upload / link：签名与生成内容用 uri，不校验 content 长度
+    elif source == 'upload':
+        # 前端：uri = uploadedUri，用 uploadedUri 签名；已上传才 ready
         if len(uri.strip()) == 0:
             ret = 1
             msg = f'uri is invalid, reqid:{reqid}!'
@@ -467,6 +472,11 @@ def validate_video_create_params(
             return ret, msg, params
         sign_text = uri
         generate_content = uri
+    else:
+        ret = 1
+        msg = f'source is invalid, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} source:{source} referer:{referer}')
+        return ret, msg, params
 
     params = {
         "aspect": aspect,
