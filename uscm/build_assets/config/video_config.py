@@ -11,8 +11,8 @@ DEFAULT_VIDEO_ASPECT = "landscape"
 VIDEO_DURATIONS = frozenset({30, 60, 120, 180, 300})
 DEFAULT_VIDEO_DURATION = 60
 
-# 与前端 activeTab 一致：'article' | 'upload' | 'link'
-VIDEO_SOURCES = frozenset({"article", "upload", "link"})
+# 与前端 activeTab / sourceFields 一致：'article' | 'upload'
+VIDEO_SOURCES = frozenset({"article", "upload"})
 DEFAULT_VIDEO_SOURCE = "article"
 
 # 与前端 FRAME_PRESET_IDS 一致
