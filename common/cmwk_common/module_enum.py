@@ -42,6 +42,7 @@ class ModuleType(Enum):
     VOCAL_REMOVER = "vocal_remover"
     AUDIO_EXTRACTOR = "audio_extractor"
     TRANSCRIBE = "transcribe"
+    VIDEO_INTENT = "video_intent"
     HTMLVIDEO = "htmlvideo"
 
     @classmethod
