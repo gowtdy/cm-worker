@@ -1,13 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Contract test for utility.util.gen_res_dict. Runs under pytest or plain python."""
+"""Contract test for cmwk_common.util.gen_res_dict. Runs under pytest or plain python."""
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utility.util import gen_res_dict
-
-
+from cmwk_common.util import gen_res_dict
 def test_gen_res_dict_basic():
     assert gen_res_dict(1, 'x') == {'ret': 1, 'msg': 'x'}
 
@@ -29,4 +27,4 @@ if __name__ == '__main__':
     test_gen_res_dict_basic()
     test_gen_res_dict_returns_new_dict_and_does_not_mutate_input()
     test_gen_res_dict_no_mutable_default_leak()
-    print('utility.util.gen_res_dict OK')
+    print('cmwk_common.util.gen_res_dict OK')

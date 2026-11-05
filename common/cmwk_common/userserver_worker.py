@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
 """UserServer HTTP 客户端：按 task_id + domain 更新生成任务状态。"""
 
-from __future__ import annotations
-
 import logging
 import os
 
-from utility.module_enum import TaskStatus
+from cmwk_common.module_enum import TaskStatus
 
 _UPDATE_TASK_TIMEOUT_SEC = 3.0
 
@@ -49,7 +47,7 @@ def post_update_task(
             return 1, msg
 
         import requests
-        from utility.internal_auth import bearer_auth_header
+        from cmwk_common.internal_auth import bearer_auth_header
 
         url = f"{base}/inapi/updatetask"
         payload = {

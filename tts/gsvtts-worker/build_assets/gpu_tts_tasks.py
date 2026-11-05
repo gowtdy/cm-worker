@@ -43,7 +43,8 @@ from langdetect import detect, DetectorFactory
 from langdetect.lang_detect_exception import LangDetectException
 
 from utility.load_model import load_bert_model, load_ssl_model, DictToAttrRecursive
-from utility.util import  (gen_res_dict, get_first, is_whole_sentence,
+from cmwk_common.util import gen_res_dict
+from utility.util import (get_first, is_whole_sentence,
         split, get_phones_and_bert, merge_short_text_in_array, get_spepc, splits,
         cut5, cut_custom, split_long_sentence, verify_signature, process_text, get_pause_duration,
         get_all_pause_durations)
@@ -63,8 +64,8 @@ from utility.voice_config import (
     get_device, ishalf, get_dtype,
     get_file_sync_transport, get_quic_client_host, get_quic_client_port,
 )
-from utility.module_enum import TaskStatus
-from utility.userserver_client import update_task_status
+from cmwk_common.module_enum import TaskStatus
+from cmwk_common.userserver_worker import update_task_status
 from utility.socat_rsyc_util import (
     RsyncTransport,
     get_socat_proxy_configs,
@@ -84,7 +85,7 @@ from celery_worker import celery_app
 from voice_train.sv import SV
 from config.model_conf import get_model_conf
 #from indextts_worker import load_indextts_model, indextts_infer
-from utility.log import logset, setup_logger, set_reqid, clear_reqid
+from cmwk_common.log import logset, setup_logger, set_reqid, clear_reqid
 from utility.voice_config import get_localnet_video_tts_dir, get_remote_ttssave_dir
 
 # 设置CUDA环境变量以提高稳定性
@@ -1321,7 +1322,16 @@ def enqueue_tts_sync(output_path, output_file, short_uri_prefix, remote_target_d
 
 @celery_app.task(name='task_gen_tts')
 @cuda_error_handler
-def gpu_gen_tts(modelname, text, modelcat='', userid=0, task_id='0', output_format=DEFAULT_FORMAT, modellang='', email='', domain=''):
+def gpu_gen_tts(payload):
+    modelname = payload.get('modelname', '') or ''
+    text = payload.get('text', '') or ''
+    modelcat = payload.get('modelcat', '') or ''
+    userid = payload.get('uid', 0)
+    task_id = payload.get('task_id', '') or '0'
+    output_format = payload.get('output_format', DEFAULT_FORMAT) or DEFAULT_FORMAT
+    modellang = payload.get('modellang', '') or ''
+    email = payload.get('email', '')
+    domain = payload.get('domain', '')
     set_reqid(task_id)
     try:
         if (len(modelname.strip()) == 0):

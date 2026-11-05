@@ -5,20 +5,13 @@ import secrets
 import time
 
 from config.comm_config import get_tts_secret_key, get_cover_secret_key, get_sound_secret_key, get_transcribe_secret_key, get_htmlvideo_secret_key
-from utility.module_enum import ModuleType
+from cmwk_common.module_enum import ModuleType
 
 def gen_reqid(uid=None, timestamp=None):
     """秒级时间戳 hex + 8 hex 随机（约 16 字符，字符集 [0-9a-f]）。"""
     ts = int(timestamp if timestamp is not None else time.time())
     return f"{ts:x}{secrets.token_hex(4)}"
 
-def gen_res_dict(ret: int, msg: str, dt=None):
-    d = {}
-    if dt:
-        d.update(dt)
-    d['ret'] = ret
-    d['msg'] = msg
-    return d
 
 def aiflow_hmac_signature(text: str, timestamp: int, module: ModuleType) -> str:
     """验证 HMAC 签名

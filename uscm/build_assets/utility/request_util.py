@@ -26,9 +26,9 @@ from config.video_config import (
 )
 from utility.auth_session import authenticate_request
 from utility.allused_voicemodels import get_common_model
-from utility.module_enum import ModuleType
+from cmwk_common.module_enum import ModuleType
 from utility.use_strategy import can_use_service
-from utility.userserver_client import fetch_generate_counts, fetch_userinfo
+from cmwk_common.userserver_producer import fetch_generate_counts, fetch_userinfo
 from utility.util import aiflow_hmac_signature
 
 # 常量定义

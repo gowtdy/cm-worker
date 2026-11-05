@@ -233,7 +233,7 @@ class TestDeliverJobFallback(unittest.TestCase):
 
 class TestCompleteSyncJob(unittest.TestCase):
     def test_success_writes_outdt_complete(self):
-        from utility.module_enum import TaskStatus
+        from cmwk_common.module_enum import TaskStatus
 
         logger = logging.getLogger("test_complete")
         job = _job()
@@ -243,7 +243,7 @@ class TestCompleteSyncJob(unittest.TestCase):
             logger, "t1", "", "/outdt/final/2026-09-13/song_cover.mp3", TaskStatus.COMPLETE)
 
     def test_vocal_success_uri(self):
-        from utility.module_enum import TaskStatus
+        from cmwk_common.module_enum import TaskStatus
 
         logger = logging.getLogger("test_complete")
         job = _job(
@@ -257,7 +257,7 @@ class TestCompleteSyncJob(unittest.TestCase):
             logger, "t1", "", "/outdt/sepvocal/2026-09-13/v.mp3", TaskStatus.COMPLETE)
 
     def test_failure_writes_failed_not_covered(self):
-        from utility.module_enum import TaskStatus
+        from cmwk_common.module_enum import TaskStatus
 
         logger = logging.getLogger("test_complete")
         job = _job()

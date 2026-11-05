@@ -12,11 +12,13 @@ import asyncio
 
 from fastapi import FastAPI, Request, Query
 
-from utility.util import gen_reqid, gen_res_dict, map_lang_abbrev
+from utility.util import gen_reqid, map_lang_abbrev
+from cmwk_common.util import gen_res_dict
 from utility.request_util import get_real_ip, validate_request, validate_signature, validate_text_length, \
     validate_gender, validate_audio_url, validate_internal_tts_url, validate_video_create_params
-from utility.module_enum import ModuleType
-from utility.userserver_client import post_generate_add
+from cmwk_common.module_enum import ModuleType
+from cmwk_common.userserver_producer import post_generate_add
+from cmwk_common.task_payload import build_payload, dispatch
 from utility.allused_voicemodels import register_allused_voicemodels, get_common_model
 from utility.voice_settings import parse_emo_params, parse_speed_volume_params
 from config.comm_config import DEFAULT_USER_FIRST_IP
@@ -159,16 +161,23 @@ async def tts_endpoint(request: Request):
             return gen_res_dict(1, sv_err, auth_info)
 
     task_cmd = '/api/genaudio'
-    task_req = json.dumps({
-        "first_ip": first_ip,
-        "uid": uid,
-        "email": email,
-        "emo_type": emo_type,
-        "emo_alpha": emo_alpha,
-        "speed": speed,
-        "volume_db": volume_db,
-        "output_format": output_format,
-    }, ensure_ascii=False)
+    if tts_modeltype == "index-tts":
+        payload = build_payload(
+            reqid, uid, email, domain,
+            modelname=modelname, text=text, modelcat=modelcat,
+            output_format=output_format, modellang=modellang,
+            emo_type=emo_type, emo_alpha=emo_alpha, speed=speed, volume_db=volume_db,
+        )
+        task_sig = gpu_gen_indextts
+    else:
+        modellang = map_lang_abbrev(modellang, modellang)
+        payload = build_payload(
+            reqid, uid, email, domain,
+            modelname=modelname, text=text, modelcat=modelcat,
+            output_format=output_format, modellang=modellang,
+        )
+        task_sig = gpu_gen_tts
+    task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
         logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.TTS,
         task_cmd=task_cmd, task_req=task_req,
@@ -177,18 +186,11 @@ async def tts_endpoint(request: Request):
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} post_generate_add failed: {msg}')
         return gen_res_dict(ret, msg, auth_info)
 
-    if tts_modeltype == "index-tts":
-        gpu_gen_indextts.delay(
-            modelname, text, modelcat, uid, reqid, output_format, modellang, email,
-            domain=domain, emo_type=emo_type, emo_alpha=emo_alpha, speed=speed, volume_db=volume_db,
-            )
-    else:
-        modellang = map_lang_abbrev(modellang, modellang)
-        gpu_gen_tts.delay(
-            modelname, text, modelcat, uid,
-            task_id=reqid, output_format=output_format, modellang=modellang,
-            email=email, domain=domain,
-        )
+    try:
+        dispatch(task_sig, payload)
+    except Exception as e:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} tts.delay failed: {e}')
+        return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
 
     endtm = time.time()
     cost = int(endtm - tm)
@@ -268,13 +270,8 @@ async def gensoundTask(request: Request):
 
     generate_content = text
     task_cmd = '/api/gensound'
-    task_req = json.dumps({
-        "first_ip": first_ip,
-        "uid": uid,
-        "email": email,
-        "length": length,
-        "num": num,
-    }, ensure_ascii=False)
+    payload = build_payload(reqid, uid, email, domain, text=text, length=length, num=num)
+    task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
         logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.SOUND,
         task_cmd=task_cmd, task_req=task_req,
@@ -284,7 +281,7 @@ async def gensoundTask(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     try:
-        gpu_gen_sound.delay(text, length, num, uid, reqid, email, domain=domain)
+        dispatch(gpu_gen_sound, payload)
     except Exception as e:
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gpu_gen_sound.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
@@ -359,12 +356,8 @@ async def extractaudio_endpoint(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     generate_content = upfileinfo['relative_path']
-    task_req = json.dumps({
-        "first_ip": first_ip,
-        "uid": uid,
-        "email": email,
-        "upurl": upurl,
-    }, ensure_ascii=False)
+    payload = build_payload(reqid, uid, email, domain, upfileinfo=upfileinfo)
+    task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
         logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.AUDIO_EXTRACTOR,
         task_cmd=task_cmd, task_req=task_req,
@@ -374,7 +367,7 @@ async def extractaudio_endpoint(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     try:
-        audio_extract.delay(upfileinfo, task_id=reqid, email=email, domain=domain)
+        dispatch(audio_extract, payload)
     except Exception as e:
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} audio_extract.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
@@ -459,16 +452,12 @@ async def cover_endpoint(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     generate_content = f'{modelcat}|{modelname}|{converturl}'
-    task_req = json.dumps({
-        "uid": uid,
-        "email": email,
-        "modelcat": modelcat,
-        "modelname": modelname,
-        "modelgender": modelgender,
-        "upgender": upgender,
-        "lang": lang,
-        "converturl": converturl,
-    }, ensure_ascii=False)
+    payload = build_payload(
+        reqid, uid, email, domain,
+        modelcat=modelcat, modelname=modelname, modelgender=modelgender,
+        upfileinfo=upfileinfo, upgender=upgender, lang=lang,
+    )
+    task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
         logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.COVER,
         task_cmd=task_cmd, task_req=task_req,
@@ -478,7 +467,7 @@ async def cover_endpoint(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     try:
-        gpu_cover.delay(modelcat, modelname, modelgender, upfileinfo, upgender, task_id=reqid, email=email, domain=domain, lang=lang)
+        dispatch(gpu_cover, payload)
     except Exception as e:
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gpu_cover.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
@@ -549,11 +538,8 @@ async def vocal_endpoint(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     generate_content = upfileinfo['relative_path']
-    task_req = json.dumps({
-        "uid": uid,
-        "email": email,
-        "upurl": upurl,
-    }, ensure_ascii=False)
+    payload = build_payload(reqid, uid, email, domain, upfileinfo=upfileinfo)
+    task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
         logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.VOCAL_ISOLATOR,
         task_cmd=task_cmd, task_req=task_req,
@@ -563,7 +549,7 @@ async def vocal_endpoint(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     try:
-        gpu_vocal.delay(upfileinfo, task_id=reqid, email=email, domain=domain)
+        dispatch(gpu_vocal, payload)
     except Exception as e:
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gpu_vocal.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
@@ -633,11 +619,8 @@ async def instrument_endpoint(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     generate_content = upfileinfo['relative_path']
-    task_req = json.dumps({
-        "uid": uid,
-        "email": email,
-        "upurl": upurl,
-    }, ensure_ascii=False)
+    payload = build_payload(reqid, uid, email, domain, upfileinfo=upfileinfo)
+    task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
         logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.VOCAL_REMOVER,
         task_cmd=task_cmd, task_req=task_req,
@@ -647,7 +630,7 @@ async def instrument_endpoint(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     try:
-        gpu_instrument.delay(upfileinfo, task_id=reqid, email=email, domain=domain)
+        dispatch(gpu_instrument, payload)
     except Exception as e:
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gpu_instrument.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
@@ -720,17 +703,13 @@ async def create_video(request: Request):
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
 
-    task_req = json.dumps({
-        "uid": uid,
-        "email": email,
-        "source": source,
-        "aspect": aspect,
-        "duration": duration,
-        "modelcat": modelcat,
-        "modelname": modelname,
-        "content": content,
-        "uri": uri,
-    }, ensure_ascii=False)
+    payload = build_payload(
+        reqid, uid, email, domain,
+        content=content, uri=uri, source=source,
+        aspect=aspect, style=style, duration=duration,
+        modelcat=modelcat, modelname=modelname,
+    )
+    task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
         logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.HTMLVIDEO,
         task_cmd=task_cmd, task_req=task_req,
@@ -740,9 +719,9 @@ async def create_video(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     try:
-        gen_htmlvideo.delay(uid=uid, email=email, task_id=reqid, domain=domain, content=content, source=source, uri=uri)
+        dispatch(gen_htmlvideo, payload)
     except Exception as e:
-        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gpu_instrument.delay failed: {e}')
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gen_htmlvideo.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
 
     res = {
@@ -815,13 +794,11 @@ async def transcribe_endpoint(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     generate_content = upfileinfo['relative_path']
-    task_req = json.dumps({
-        "uid": uid,
-        "email": email,
-        "language": language,
-        "format": output_format,
-        "upurl": upurl,
-    }, ensure_ascii=False)
+    payload = build_payload(
+        reqid, uid, email, domain,
+        upfileinfo=upfileinfo, language=language, output_format=output_format,
+    )
+    task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
         logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.TRANSCRIBE,
         task_cmd=task_cmd, task_req=task_req,
@@ -833,10 +810,7 @@ async def transcribe_endpoint(request: Request):
     engine = resolve_transcribe_engine(language)
     try:
         if engine == 'whisper':
-            transcribe_whisper.delay(
-                upfileinfo, language, output_format,
-                task_id=reqid, userid=uid, email=email, domain=domain,
-            )
+            dispatch(transcribe_whisper, payload)
         else:
             return gen_res_dict(1, f'unsupported transcribe engine: {engine}', auth_info)
     except Exception as e:

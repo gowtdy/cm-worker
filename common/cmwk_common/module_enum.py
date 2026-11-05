@@ -1,10 +1,12 @@
 from enum import Enum
 
+
 class AuthEnum(Enum):
     ECHOBAT_AUTH = "echobeat_auth"
     AIVOICELAB_AUTH = "aivoice_auth"
     TIKTOKVOICE_AUTH = "tiktokvoice_auth"
     CALUMA_AUTH = "caluma_auth"
+
 
 class UserEnum(Enum):
     ECHOBAT_USER = "echobeat_user"
@@ -12,50 +14,50 @@ class UserEnum(Enum):
     TIKTOKVOICE_USER = "tiktokvoice_user"
     CALUMA_USER = "caluma_user"
 
-class TaskStatus(Enum):
-    """
-    定义任务状态
-    """
-    QUEUED = "queued"  # 排队中
-    PENDING = "pending"  # 待处理
-    PROCESSING = "processing"  # 处理中
-    CANCELLED = "cancelled"  # 已取消
-    COMPLETE = "complete"  # 已完成
-    FAILED = "failed"  # 失败
 
-# Define module types enum
+class ToolType(Enum):
+    """定义记录类型 - 整数值（手动指定）"""
+    COVER = 1
+    VOCAL_ISOLATOR = 2
+    VOCAL_REMOVER = 3
+    AUDIO_EXTRACTOR = 4
+
+
+class TaskStatus(Enum):
+    """定义任务状态"""
+    QUEUED = "queued"
+    PENDING = "pending"
+    PROCESSING = "processing"
+    CANCELLED = "cancelled"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+
 class ModuleType(Enum):
-    """
-    定义系统支持的模块类型
-    """
-    TTS = "tts"           # 文本转语音模块
-    SOUND = "sound"       # 音频生成模块
-    COVER = "cover"       # 翻唱
-    VOCAL_ISOLATOR = "vocal_isolator" # 人声提取
-    VOCAL_REMOVER = "vocal_remover" # 人声去除
-    AUDIO_EXTRACTOR = "audio_extractor" # 音频提取
-    TRANSCRIBE = "transcribe"  # 转写
-    HTMLVIDEO = "htmlvideo" # hmtl视频生成
-    
+    """定义系统支持的模块类型"""
+    TTS = "tts"
+    SOUND = "sound"
+    COVER = "cover"
+    VOCAL_ISOLATOR = "vocal_isolator"
+    VOCAL_REMOVER = "vocal_remover"
+    AUDIO_EXTRACTOR = "audio_extractor"
+    TRANSCRIBE = "transcribe"
+    HTMLVIDEO = "htmlvideo"
+
     @classmethod
     def get_all_values(cls):
-        """获取所有模块类型的值"""
         return [member.value for member in cls]
-    
+
     @classmethod
     def is_valid_module(cls, module: str) -> bool:
-        """检查模块类型是否有效"""
         return module in cls.get_all_values()
-    
+
     def __str__(self):
         return self.value
 
 
-# Define user action types enum
 class ActionType(Enum):
-    """
-    定义用户行为类型
-    """
+    """定义用户行为类型"""
     UNKNOWN = "unknown"
     PAYMODAL_UPGRADE = "paymodal-upgrade"
     PRICING_POP_LOGIN = "pricing-pop-login"
@@ -95,7 +97,6 @@ class ActionType(Enum):
     SOUND_DOWNPOP_SUBSCRIPT = "sound-downpop-subscript"
     SOUND_EXHAUSTED_SUBSCRIPT = "sound-exhausted-subscript"
 
-    # Vocal Isolator
     VOCAL_EXTRACT = "vocal-extract"
     VOCAL_EXTRACT_LOGIN = "vocal-extract-login"
     VOCAL_EXTRACT_SUBSCRIPT = "vocal-extract-subscript"
@@ -108,7 +109,6 @@ class ActionType(Enum):
     VOCAL_EXTRACT_UPLOAD = "vocal-extract-upload"
     VOCAL_EXTRACT_EXHAUSTED_SUBSCRIPT = "vocal-extract-exhausted-subscript"
 
-    # Vocal Remover
     VOCAL_REMOVE = "vocal-remove"
     VOCAL_REMOVE_LOGIN = "vocal-remove-login"
     VOCAL_REMOVE_SUBSCRIPT = "vocal-remove-subscript"
@@ -118,7 +118,6 @@ class ActionType(Enum):
     VOCAL_REMOVE_UPLOAD = "vocal-remove-upload"
     VOCAL_REMOVE_EXHAUSTED_SUBSCRIPT = "vocal-remove-exhausted-subscript"
 
-    # Audio Extractor
     AUDIO_EXTRACT = "audio-extract"
     AUDIO_EXTRACT_LOGIN = "audio-extract-login"
     AUDIO_EXTRACT_SUBSCRIPT = "audio-extract-subscript"
@@ -130,12 +129,10 @@ class ActionType(Enum):
 
     @classmethod
     def get_all_values(cls):
-        """获取所有行为类型的值"""
         return [member.value for member in cls]
 
     @classmethod
     def is_valid_action(cls, action: str) -> bool:
-        """检查行为类型是否有效"""
         return action in cls.get_all_values()
 
     def __str__(self):

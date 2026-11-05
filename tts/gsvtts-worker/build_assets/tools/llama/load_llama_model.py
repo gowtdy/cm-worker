@@ -27,7 +27,7 @@ from fish_speech.models.text2semantic.llama import (
 )
 
 from dataclasses import dataclass
-from utility.log import setup_logger
+from cmwk_common.log import setup_logger
 
 logger = setup_logger("llama_server")
 

@@ -6,8 +6,8 @@ import os
 
 import httpx
 
-from utility.internal_auth import bearer_auth_header
-from utility.module_enum import ModuleType
+from cmwk_common.internal_auth import bearer_auth_header
+from cmwk_common.module_enum import ModuleType
 
 _GENERATECOUNTS_TIMEOUT_SEC = 3.0
 _GENERATEADD_TIMEOUT_SEC = 3.0

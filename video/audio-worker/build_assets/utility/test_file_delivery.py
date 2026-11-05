@@ -207,7 +207,7 @@ class TestDeliverJobFallback(unittest.TestCase):
 
 class TestCompleteSyncJob(unittest.TestCase):
     def test_success_writes_outdt_complete(self):
-        from utility.module_enum import TaskStatus
+        from cmwk_common.module_enum import TaskStatus
 
         logger = logging.getLogger("test_complete")
         job = _job()
@@ -222,7 +222,7 @@ class TestCompleteSyncJob(unittest.TestCase):
         )
 
     def test_failure_writes_failed_with_error(self):
-        from utility.module_enum import TaskStatus
+        from cmwk_common.module_enum import TaskStatus
 
         logger = logging.getLogger("test_complete")
         job = _job()

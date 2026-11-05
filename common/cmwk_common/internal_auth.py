@@ -4,7 +4,7 @@
 Usage (FastAPI)::
 
     from fastapi import Depends
-    from utility.internal_auth import require_internal_auth
+    from cmwk_common.internal_auth import require_internal_auth
 
     @router.post("/inapi/foo")
     async def foo(request: Request, _auth: None = Depends(require_internal_auth)):

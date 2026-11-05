@@ -4,9 +4,9 @@ import time
 import random
 from celery_worker import celery_app
 from config.comm_config import get_remote_sepaudio_dir
-from utility.module_enum import TaskStatus
-from utility.log import setup_logger, set_reqid, clear_reqid
-from utility.userserver_client import update_task_status
+from cmwk_common.module_enum import TaskStatus
+from cmwk_common.log import setup_logger, set_reqid, clear_reqid
+from cmwk_common.userserver_worker import update_task_status
 from utility.socat_rsyc_util import (
     RsyncTransport,
     get_socat_proxy_configs,
@@ -23,7 +23,8 @@ from utility.file_delivery import (
     start_file_delivery,
 )
 from utility.quic_http_transport import QuicHttpTransport
-from utility.util import gen_res_dict, format_timing_stats
+from cmwk_common.util import gen_res_dict
+from utility.util import format_timing_stats
 from utility.audio_util import convert_to_mp3
 
 DAY_FORMAT = '%Y-%m-%d'
@@ -86,7 +87,11 @@ def split_audio(upfileinfo: dict, reqid: str) -> tuple[int, str, dict]:
     return ret, msg, extractinfo
 
 @celery_app.task(name='task_audio_extract')
-def extract_audio(upfileinfo, task_id='0', email='', domain=''):
+def extract_audio(payload):
+    upfileinfo = payload.get('upfileinfo')
+    task_id = payload.get('task_id', '') or '0'
+    email = payload.get('email', '')
+    domain = payload.get('domain', '')
     set_reqid(task_id)
     try:
         ret = 0

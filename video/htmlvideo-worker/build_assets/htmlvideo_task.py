@@ -8,7 +8,7 @@ import gc
 
 import torch
 
-from utility.util import gen_res_dict
+from cmwk_common.util import gen_res_dict
 from utility.voice_config import (
     get_device,
     ishalf,
@@ -17,8 +17,8 @@ from utility.voice_config import (
     get_quic_client_host,
     get_quic_client_port,
 )
-from utility.module_enum import TaskStatus
-from utility.userserver_client import update_task_status
+from cmwk_common.module_enum import TaskStatus
+from cmwk_common.userserver_worker import update_task_status
 from utility.socat_rsyc_util import (
     RsyncTransport,
     get_socat_proxy_configs,
@@ -35,7 +35,7 @@ from utility.samearea_http_transport import SameAreaHttpTransport
 
 from celery_worker import celery_app
 
-from utility.log import setup_logger, set_reqid, clear_reqid
+from cmwk_common.log import setup_logger, set_reqid, clear_reqid
 from utility.gpu_util import cuda_error_handler
 
 # CUDA调试建议：
@@ -77,9 +77,25 @@ dtype = get_dtype()
 
 @celery_app.task(name='task_gen_htmlvideo')
 @cuda_error_handler(logger)
-def gen_htmlvideo(uid='', email='', task_id='', domain='', content='', source='article', uri=''):
+def gen_htmlvideo(payload):
+    uid = payload.get('uid', '')
+    email = payload.get('email', '')
+    task_id = payload.get('task_id', '') or '0'
+    domain = payload.get('domain', '')
+    content = payload.get('content', '') or ''
+    source = payload.get('source', 'article') or 'article'
+    uri = payload.get('uri', '') or ''
+    aspect = payload.get('aspect')
+    style = payload.get('style')
+    duration = payload.get('duration')
+    modelcat = payload.get('modelcat', '')
+    modelname = payload.get('modelname', '')
     set_reqid(task_id)
     try:
+        logger.info(
+            f'task_id:{task_id} htmlvideo start source:{source} aspect:{aspect} style:{style} '
+            f'duration:{duration} modelcat:{modelcat} modelname:{modelname}'
+        )
         # 与前端 sourceFields / uscm validate 一致：article → content；upload → uri
         if source == 'article':
             if (len(content.strip()) == 0):
@@ -109,6 +125,7 @@ def gen_htmlvideo(uid='', email='', task_id='', domain='', content='', source='a
         start_time = time.time()
         content_length = len(content)
 
+        project_dir =  f'/app/videos/{domain}/{today}/{task_id}'
         try:
 
             delivery_transport = resolve_delivery_transport(email)
