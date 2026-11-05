@@ -139,14 +139,14 @@ def complete_sync_job(
     used = used_transport if used_transport is not None else job.transport
     if ok:
         uri = f"/outdt{job.short_uri_prefix}/{job.output_file}"
-        update_task_status(logger, job.task_id, job.domain, uri, TaskStatus.COMPLETE)
+        update_task_status(logger, job.task_id, job.domain, TaskStatus.COMPLETE, uri=uri)
         logger.info(
             f"async_sync_complete task_id={job.task_id} uri={uri} "
             f"transport={job.transport} used_transport={used} fallback={fallback}"
         )
     else:
         msg = err_msg or "sync_files failed"
-        update_task_status(logger, job.task_id, job.domain, msg, TaskStatus.FAILED)
+        update_task_status(logger, job.task_id, job.domain, TaskStatus.FAILED, payload_msg=msg)
         logger.error(
             f"async_sync_failed task_id={job.task_id} msg={msg} "
             f"transport={job.transport} used_transport={used} fallback={fallback}"

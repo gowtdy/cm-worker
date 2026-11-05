@@ -217,8 +217,8 @@ class TestCompleteSyncJob(unittest.TestCase):
             logger,
             "t1",
             "",
-            "/outdt/sepaudio/2026-09-13/1.2.3.4/song_audio.mp3",
             TaskStatus.COMPLETE,
+            uri="/outdt/sepaudio/2026-09-13/1.2.3.4/song_audio.mp3",
         )
 
     def test_failure_writes_failed_with_error(self):
@@ -232,8 +232,8 @@ class TestCompleteSyncJob(unittest.TestCase):
             logger,
             "t1",
             "",
-            "quic timeout",
             TaskStatus.FAILED,
+            payload_msg="quic timeout",
         )
 
 
