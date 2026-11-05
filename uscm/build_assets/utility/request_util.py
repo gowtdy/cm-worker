@@ -21,6 +21,8 @@ from config.video_config import (
     DEFAULT_VIDEO_DURATION,
     VIDEO_SOURCES,
     DEFAULT_VIDEO_SOURCE,
+    VIDEO_STYLES,
+    DEFAULT_VIDEO_STYLE,
 )
 from utility.auth_session import authenticate_request
 from utility.allused_voicemodels import get_common_model
@@ -402,12 +404,12 @@ def validate_video_create_params(
         return ret, msg, params
     aspect_ratio = VIDEO_ASPECT_RATIO_MAP[aspect]
 
-    style = json_post_raw.get("style", '')
-    #if style not in VIDEO_STYLES:
-    #    ret = 1
-    #    msg = f'style is invalid, reqid:{reqid}!'
-    #    logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} style:{style} referer:{referer}')
-    #    return ret, msg, params
+    style = json_post_raw.get("style", DEFAULT_VIDEO_STYLE)
+    if style not in VIDEO_STYLES:
+        ret = 1
+        msg = f'style is invalid, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} style:{style} referer:{referer}')
+        return ret, msg, params
 
     duration = json_post_raw.get("duration", DEFAULT_VIDEO_DURATION)
     try:
