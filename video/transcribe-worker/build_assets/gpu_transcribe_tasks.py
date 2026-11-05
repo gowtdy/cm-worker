@@ -4,10 +4,10 @@ import time
 from celery_worker import celery_app
 from config.comm_config import get_remote_transcribe_dir, get_localnet_transcribe_dir
 from config.model_conf import get_whisper_model_name
-from utility.module_enum import TaskStatus
-from utility.log import setup_logger, set_reqid, clear_reqid
-from utility.userserver_client import update_task_status
-from utility.util import gen_res_dict
+from cmwk_common.module_enum import TaskStatus
+from cmwk_common.log import setup_logger, set_reqid, clear_reqid
+from cmwk_common.userserver_worker import update_task_status
+from cmwk_common.util import gen_res_dict
 from utility.file_sync_config import get_file_sync_transport
 from utility.file_delivery import (
     SyncJob, enqueue_delivery_job, start_file_delivery, resolve_delivery_transport,
@@ -38,8 +38,14 @@ OUTPUT_EXT = {'json': 'json', 'txt': 'txt', 'srt': 'srt', 'vtt': 'vtt', 'ass': '
 
 
 @celery_app.task(name='task_transcribe_whisper')
-def transcribe_whisper(upfileinfo, language=None, output_format='json', task_id='0',
-                       userid=0, email='', domain=''):
+def transcribe_whisper(payload):
+    upfileinfo = payload.get('upfileinfo')
+    language = payload.get('language')
+    output_format = payload.get('output_format', 'json') or 'json'
+    task_id = payload.get('task_id', '') or '0'
+    userid = payload.get('uid', 0)
+    email = payload.get('email', '')
+    domain = payload.get('domain', '')
     set_reqid(task_id)
     try:
         start_time = time.time()
