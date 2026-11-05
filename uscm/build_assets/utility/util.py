@@ -4,7 +4,7 @@ import hashlib
 import secrets
 import time
 
-from config.comm_config import get_tts_secret_key, get_cover_secret_key, get_sound_secret_key, get_transcribe_secret_key
+from config.comm_config import get_tts_secret_key, get_cover_secret_key, get_sound_secret_key, get_transcribe_secret_key, get_htmlvideo_secret_key
 from utility.module_enum import ModuleType
 
 def gen_reqid(uid=None, timestamp=None):
@@ -42,6 +42,8 @@ def aiflow_hmac_signature(text: str, timestamp: int, module: ModuleType) -> str:
     elif module in (ModuleType.COVER, ModuleType.VOCAL_ISOLATOR, ModuleType.VOCAL_REMOVER,
                     ModuleType.AUDIO_EXTRACTOR):
         secret_key = get_cover_secret_key()
+    elif module == ModuleType.HTMLVIDEO:
+        secret_key = get_htmlvideo_secret_key()
     elif module == ModuleType.TRANSCRIBE:
         secret_key = get_transcribe_secret_key()
     

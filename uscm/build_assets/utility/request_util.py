@@ -6,8 +6,26 @@ import os
 import random
 
 from fastapi import Request
-from config.comm_config import get_white_list, get_limit_config, ALLOWED_DOMAINS
+from config.comm_config import (
+    get_white_list,
+    get_limit_config,
+    ALLOWED_DOMAINS,
+    MIN_HTMLVIDEO_TEXT_LENGTH,
+    MAX_HTMLVIDEO_TEXT_LENGTH,
+)
+from config.video_config import (
+    VIDEO_ASPECTS,
+    DEFAULT_VIDEO_ASPECT,
+    VIDEO_ASPECT_RATIO_MAP,
+    VIDEO_DURATIONS,
+    DEFAULT_VIDEO_DURATION,
+    VIDEO_SOURCES,
+    DEFAULT_VIDEO_SOURCE,
+    VIDEO_STYLES,
+    DEFAULT_VIDEO_STYLE,
+)
 from utility.auth_session import authenticate_request
+from utility.allused_voicemodels import get_common_model
 from utility.module_enum import ModuleType
 from utility.use_strategy import can_use_service
 from utility.userserver_client import fetch_generate_counts, fetch_userinfo
@@ -73,7 +91,7 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
             # 验证用户的登录信息
             session, reason = authenticate_request(request, domain, logger=logger)
             if (session is None or session.email != email):
-                # 验证用户是否可以在未登录的时候继续生成, 如果可以，则继续生成，否则返回错误
+                # 登录已过期，请重新登录
                 ret = 11
                 msg = 'Login expired, please login again!'
                 logger.warning(f'reqid:{reqid} ip:{real_ip} email:{email} domain:{domain!r} reason:{reason}, msg: {msg}, session:{session}')
@@ -87,6 +105,8 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
                 try:
                     subscript = int(user_info.get("user_subscript", 0))
                 except (TypeError, ValueError):
+                    logger.warning(f'reqid:{reqid} email:{email} domain:{domain!r} '
+                        f'fetch_userinfo failed ret:{ret_ui} msg:{msg_ui}, user_info:{user_info}')
                     subscript = 0
             else:
                 logger.warning(
@@ -95,6 +115,7 @@ def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: 
                 )
             if subscript == 1:
                 return 0, "ok", login, subscript
+            # 登录未订阅的情况
             useret, msg = can_use_service(domain, module, True, day_count, month_count)
             if useret == 0:
                 return 0, msg, login, subscript
@@ -183,7 +204,7 @@ def validate_signature(logger: logging.Logger, timestamp, signature, text, datet
     
     return ret, msg
 
-def validate_text_length(text: str, max_length: int = 700, reqid: str = "", logger: logging.Logger = None) -> tuple[int, str]:
+def validate_text_length(text: str, max_length: int = 700, min_length: int = 0, reqid: str = "", logger: logging.Logger = None) -> tuple[int, str]:
     """
     验证文本长度是否超过限制
     
@@ -199,11 +220,14 @@ def validate_text_length(text: str, max_length: int = 700, reqid: str = "", logg
     ret = 0
     msg = 'ok'
     textlen = len(text)
-    if textlen == 0:
+    if textlen < min_length:
         if logger:
-            logger.info(f'reqid:{reqid}, textlen:{textlen} is empty, text:{text}!')
+            logger.info(f'reqid:{reqid}, textlen:{textlen} is less than {min_length}, text:{text}!')
         ret = 1
-        msg = f'Text is empty'
+        if min_length == 0:
+            msg = f'Text is empty'
+        else:
+            msg = f'Text length is less than {min_length}'
         return ret, msg
     if textlen > max_length:
         if logger:
@@ -346,4 +370,124 @@ def validate_internal_tts_url(converturl: str, reqid: str, first_ip: str, email:
     upfileinfo['file_ext'] = file_ext  # 上传文件扩展名，mp3
     logger.debug(f'reqid:{reqid} validate_internal_tts_url, converturl:{converturl}, upfileinfo:{upfileinfo}')
 
-    return ret, msg, upfileinfo 
+    return ret, msg, upfileinfo
+
+
+def validate_video_create_params(
+    logger: logging.Logger,
+    json_post_raw: dict,
+    content: str,
+    uri: str,
+    reqid: str,
+    first_ip: str,
+    real_ip: str,
+    uid,
+    email: str,
+    referer: str,
+) -> tuple[int, str, dict]:
+    """
+    校验 /api/video/create 的业务参数（aspect / duration / model / source / content|uri）。
+
+    source 与前端 sourceFields 对齐：
+      - article：校验 content 长度，sign_text / generate_content = content
+      - upload：校验 uri 非空，sign_text / generate_content = uri（前端 uploadedUri）
+
+    Returns:
+        tuple[int, str, dict]: (ret, msg, params)
+        params 在校验通过时包含：
+        aspect, aspect_ratio, duration, modelcat, modelname, model_entry,
+        source, sign_text, generate_content
+    """
+    params = {}
+
+    aspect = json_post_raw.get("aspect", DEFAULT_VIDEO_ASPECT)
+    if aspect not in VIDEO_ASPECTS:
+        ret = 1
+        msg = f'aspect is invalid, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} aspect:{aspect} referer:{referer}')
+        return ret, msg, params
+    aspect_ratio = VIDEO_ASPECT_RATIO_MAP[aspect]
+
+    style = json_post_raw.get("style", DEFAULT_VIDEO_STYLE)
+    if style not in VIDEO_STYLES:
+        ret = 1
+        msg = f'style is invalid, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} style:{style} referer:{referer}')
+        return ret, msg, params
+
+    duration = json_post_raw.get("duration", DEFAULT_VIDEO_DURATION)
+    try:
+        duration = int(duration)
+    except (TypeError, ValueError):
+        duration = None
+    if duration not in VIDEO_DURATIONS:
+        ret = 1
+        msg = f'duration is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'duration:{json_post_raw.get("duration")} referer:{referer}'
+        )
+        return ret, msg, params
+
+    modelcat = json_post_raw.get("modelcat", '')
+    modelname = json_post_raw.get("modelname", '')
+    model_entry = get_common_model(modelcat, modelname)
+    if not model_entry:
+        ret = 1
+        msg = f'modelname:{modelname} is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} '
+            f'modelcat:{modelcat}, modelname:{modelname}, msg:{msg}'
+        )
+        return ret, msg, params
+
+    # 对应前端 sourceFields：article → content 签名；upload → uri(uploadedUri) 签名
+    source = json_post_raw.get("source", DEFAULT_VIDEO_SOURCE)
+    if source not in VIDEO_SOURCES:
+        ret = 1
+        msg = f'source is invalid, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} source:{source} referer:{referer}')
+        return ret, msg, params
+
+    if source == 'article':
+        # 前端：content + 用正文签名，正文非空且长度合法才 ready
+        ret, msg = validate_text_length(content, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
+        if ret != 0:
+            logger.info(
+                f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},'
+                f'email:{email}, refer:{referer}, source:{source}, content length:{len(content)} {msg}!'
+            )
+            return ret, msg, params
+        sign_text = content
+        generate_content = content
+    elif source == 'upload':
+        # 前端：uri = uploadedUri，用 uploadedUri 签名；已上传才 ready
+        if len(uri.strip()) == 0:
+            ret = 1
+            msg = f'uri is invalid, reqid:{reqid}!'
+            logger.warning(
+                f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+                f'source:{source} uri:{uri} referer:{referer}'
+            )
+            return ret, msg, params
+        sign_text = uri
+        generate_content = uri
+    else:
+        ret = 1
+        msg = f'source is invalid, reqid:{reqid}!'
+        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} source:{source} referer:{referer}')
+        return ret, msg, params
+
+    params = {
+        "aspect": aspect,
+        "aspect_ratio": aspect_ratio,
+        "style": style,
+        "duration": duration,
+        "modelcat": modelcat,
+        "modelname": modelname,
+        "model_entry": model_entry,
+        "source": source,
+        "sign_text": sign_text,
+        "generate_content": generate_content,
+    }
+    return 0, 'ok', params 

@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request, Query
 
 from utility.util import gen_reqid, gen_res_dict, map_lang_abbrev
 from utility.request_util import get_real_ip, validate_request, validate_signature, validate_text_length, \
-    validate_gender, validate_audio_url, validate_internal_tts_url
+    validate_gender, validate_audio_url, validate_internal_tts_url, validate_video_create_params
 from utility.module_enum import ModuleType
 from utility.userserver_client import post_generate_add
 from utility.allused_voicemodels import register_allused_voicemodels, get_common_model
@@ -22,7 +22,7 @@ from utility.voice_settings import parse_emo_params, parse_speed_volume_params
 from config.comm_config import DEFAULT_USER_FIRST_IP
 from config.transcribe_routing import resolve_transcribe_engine
 
-from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract, gpu_cover, gpu_vocal, gpu_instrument, transcribe_whisper
+from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract, gpu_cover, gpu_vocal, gpu_instrument, transcribe_whisper, gen_htmlvideo
 
 app = FastAPI()
 
@@ -110,7 +110,7 @@ async def tts_endpoint(request: Request):
 
     text = json_post_raw.get("text", '')
     # 验证文本长度
-    ret, msg = validate_text_length(text, MAX_TTS_TEXT_LENGTH, reqid, logger)
+    ret, msg = validate_text_length(text, MAX_TTS_TEXT_LENGTH, 0, reqid, logger)
     if ret != 0:
         logger.info(f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},' \
             f'email:{email}, refer:{referer}, textlen:{len(text)} {msg}!')
@@ -249,7 +249,7 @@ async def gensoundTask(request: Request):
         num = 1
 
     # 验证文本长度
-    ret, msg = validate_text_length(text, MAX_SOUND_TEXT_LENGTH, reqid, logger)
+    ret, msg = validate_text_length(text, MAX_SOUND_TEXT_LENGTH, 0, reqid, logger)
     if ret != 0:
         logger.info(f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},' \
             f'email:{email}, refer:{referer}, length:{length}, num:{num} {msg}!')
@@ -663,6 +663,99 @@ async def instrument_endpoint(request: Request):
     logger.info(
         f'instrument, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, '
         f'email:{email}, refer:{referer}, ret:{ret}'
+    )
+    return res
+
+@app.post("/api/video/create")
+async def create_video(request: Request):
+    ret = 0
+    msg = 'ok'
+    task_cmd = '/api/video/create'
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
+    # 获取HTTP请求的Referer
+    referer = request.headers.get("Referer", "Not provided")
+
+    json_post_raw = await request.json()
+
+    timestamp = json_post_raw.get('tstamp', 0)
+    signature = json_post_raw.get('snature', '')
+
+    tm = time.time()
+    uid = json_post_raw.get("uid", 0)
+    reqid = gen_reqid(uid, tm)
+    localtime = time.localtime(tm)
+    today = time.strftime(DAY_FORMAT, localtime)
+    datetime = time.strftime("%Y%m%d_%H%M%S", localtime)
+
+    email = json_post_raw.get("email", '')
+    domain = json_post_raw.get("domain", '')
+    content = json_post_raw.get("content", '')
+    uri = json_post_raw.get("uri", "")
+
+    ret, msg, video_params = validate_video_create_params(
+        logger, json_post_raw, content, uri, reqid, first_ip, real_ip, uid, email, referer,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_video_create_params failed: {msg}')
+        return gen_res_dict(ret, msg)
+    aspect = video_params["aspect"]
+    style = video_params["style"]
+    duration = video_params["duration"]
+    modelcat = video_params["modelcat"]
+    modelname = video_params["modelname"]
+    source = video_params["source"]
+    sign_text = video_params["sign_text"]
+    generate_content = video_params["generate_content"]
+
+    ret, msg = validate_signature(logger, timestamp, signature, sign_text, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.HTMLVIDEO)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} source:{source} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.HTMLVIDEO, domain, request)
+    auth_info = {"islogin": login, "subscript": subscript}
+    if ret != 0:
+        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
+        return gen_res_dict(ret, msg, auth_info)
+
+    task_req = json.dumps({
+        "uid": uid,
+        "email": email,
+        "source": source,
+        "aspect": aspect,
+        "duration": duration,
+        "modelcat": modelcat,
+        "modelname": modelname,
+        "content": content,
+        "uri": uri,
+    }, ensure_ascii=False)
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.HTMLVIDEO,
+        task_cmd=task_cmd, task_req=task_req,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg, auth_info)
+
+    try:
+        gen_htmlvideo.delay(uid=uid, email=email, task_id=reqid, domain=domain, content=content, source=source, uri=uri)
+    except Exception as e:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gpu_instrument.delay failed: {e}')
+        return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
+
+    res = {
+        "ret": 0,
+        "msg": 'ok',
+        "task_id": reqid,
+        "islogin": login,
+        "subscript": subscript,
+    }
+
+    logger.info(
+        f'instrument, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, '
+        f'email:{email}, refer:{referer}, source:{source}, uri:{uri}, content length:{len(content)}, ret:{ret}'
     )
     return res
 

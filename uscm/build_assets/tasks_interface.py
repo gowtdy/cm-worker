@@ -25,6 +25,7 @@ us_celery_app.conf.task_routes = {
     'task_gen_sound': {'queue': 'us_sound_queue'},
     'task_cover.*': {'queue': 'us_cover_queue'},
     'task_audio_extract': {'queue': 'us_audio_queue'},
+    'task_gen_htmlvideo': {'queue': 'us_htmlvideo_queue'},
     'task_transcribe_whisper': {'queue': 'us_transcribe_whisper_queue'}
 }
 
@@ -36,4 +37,5 @@ gpu_cover = us_celery_app.signature('task_cover.cover')
 gpu_vocal = us_celery_app.signature('task_cover.vocal')
 gpu_instrument = us_celery_app.signature('task_cover.instrument')
 audio_extract = us_celery_app.signature('task_audio_extract')
+gen_htmlvideo = us_celery_app.signature('task_gen_htmlvideo')
 transcribe_whisper = us_celery_app.signature('task_transcribe_whisper')
