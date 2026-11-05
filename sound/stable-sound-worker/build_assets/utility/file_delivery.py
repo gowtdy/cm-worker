@@ -14,10 +14,10 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Protocol, Tuple
 
-from utility.log import clear_reqid, set_reqid
-from utility.module_enum import TaskStatus
+from cmwk_common.log import clear_reqid, set_reqid
+from cmwk_common.module_enum import TaskStatus
 from utility.socat_rsyc_util import RsyncProxy, get_socat_proxy_configs
-from utility.userserver_client import update_task_status
+from cmwk_common.userserver_worker import update_task_status
 
 SYNC_SLOT_COUNT = 2
 SYNC_QUEUE_MAXSIZE = 6
