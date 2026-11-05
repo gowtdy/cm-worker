@@ -125,6 +125,7 @@ def gen_htmlvideo(payload):
         start_time = time.time()
         content_length = len(content)
 
+        project_dir =  f'/app/videos/{domain}/{today}/{task_id}'
         try:
 
             delivery_transport = resolve_delivery_transport(email)
