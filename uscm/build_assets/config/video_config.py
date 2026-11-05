@@ -14,3 +14,21 @@ DEFAULT_VIDEO_DURATION = 60
 # 与前端 activeTab 一致：'article' | 'upload' | 'link'
 VIDEO_SOURCES = frozenset({"article", "upload", "link"})
 DEFAULT_VIDEO_SOURCE = "article"
+
+# 与前端 FRAME_PRESET_IDS 一致
+VIDEO_STYLES = frozenset({
+    "capsule",
+    "code-editorial",
+    "daisy-days",
+    "creative-mode",
+    "editorial-forest",
+    "cartesian",
+    "blockframe",
+    "broadside",
+    "bold-poster",
+    "blue-professional",
+    "biennale-yellow",
+    "cobalt-grid",
+    "coral",
+})
+DEFAULT_VIDEO_STYLE = "capsule"
