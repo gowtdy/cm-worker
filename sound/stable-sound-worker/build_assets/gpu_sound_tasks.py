@@ -9,10 +9,10 @@ import httpx
 from einops import rearrange
 import fasttext
 
-from utility.log import setup_logger, set_reqid, clear_reqid
-from utility.module_enum import TaskStatus
-from utility.userserver_client import update_task_status
-from utility.util import gen_res_dict
+from cmwk_common.log import setup_logger, set_reqid, clear_reqid
+from cmwk_common.module_enum import TaskStatus
+from cmwk_common.userserver_worker import update_task_status
+from cmwk_common.util import gen_res_dict
 from utility.socat_rsyc_util import (
     RsyncTransport,
     get_socat_proxy_configs,
@@ -148,7 +148,14 @@ def translate_text(text: str, src_lang: str = '', tgt_lang: str = 'en', logid: s
 
 
 @celery_app.task(name='task_gen_sound')
-def gpu_gen_sound(text, length=15, num=1, userid=0, task_id='0', email='', domain=''):
+def gpu_gen_sound(payload):
+    text = payload.get('text', '')
+    length = payload.get('length', 15)
+    num = payload.get('num', 1)
+    userid = payload.get('uid', 0)
+    task_id = payload.get('task_id', '') or '0'
+    email = payload.get('email', '')
+    domain = payload.get('domain', '')
     set_reqid(task_id)
     try:
         if not (text or '').strip():
