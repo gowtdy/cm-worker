@@ -1147,7 +1147,7 @@ def gpu_cover(payload):
         if not check_cuda_health(reqid):
             msg = 'CUDA health check failed'
             logger.error(f'task_id:{task_id} email:{email} {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return f'cover process failed, task_id:{task_id}, msg:CUDA health check failed'
 
         model_validation_start = time.time()
@@ -1157,14 +1157,14 @@ def gpu_cover(payload):
         if not (os.path.exists(model_index_path) and os.path.exists(model_file_path)):
             msg = f'model {modelcat}-{modelname} is not exists, task_id:{task_id}'
             logger.warning(f'{model_index_path} or {model_file_path} is not exists, {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return f'cover process failed, task_id:{task_id}, msg:{msg}'
         timing_stats['model_validation'] = time.time() - model_validation_start
 
         if not isinstance(upfileinfo, dict) or not upfileinfo.get('relative_path'):
             msg = f'invalid upfileinfo, task_id:{task_id}'
             logger.warning(f'msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return f'cover process failed, task_id:{task_id}, msg:{msg}'
         relative_path = upfileinfo["relative_path"]
         update_str = upfileinfo['update_str']
@@ -1179,7 +1179,7 @@ def gpu_cover(payload):
         ret, msg, extractinfo = extract_vocals(upfileinfo, reqid)
         if ret != 0:
             logger.error(f'task_id:{task_id} email:{email} extract_vocals failed: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return f'cover process failed, task_id:{task_id}, msg:{msg}'
         timing_stats['vocals_extraction'] = time.time() - vocals_extraction_start
         logger.info(f'*********** reqid:{reqid} extract_vocals end ***********')
@@ -1189,7 +1189,7 @@ def gpu_cover(payload):
         is_valid, validation_msg = validate_extractinfo(extractinfo, required_keys, reqid)
         if not is_valid:
             logger.error(f'task_id:{task_id} email:{email} extractinfo validation failed: {validation_msg}')
-            update_task_status(logger, task_id, domain, validation_msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=validation_msg)
             return f'cover process failed, task_id:{task_id}, msg:{validation_msg}'
 
         # 最终提取出来的人声
@@ -1218,7 +1218,7 @@ def gpu_cover(payload):
 
             if ret != 0:
                 logger.error(f'task_id:{task_id} email:{email} process_voice_cover failed: {msg}')
-                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                 return f'cover process failed, task_id:{task_id}, msg:{msg}';
 
             # 保存转换后的人声
@@ -1265,7 +1265,7 @@ def gpu_cover(payload):
                 ret = 1
                 msg = f'Error mixing and encoding audio: {mix_result.stderr}'
                 logger.error(f'task_id:{task_id} email:{email} msg: {msg}')
-                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                 return f'cover process failed, task_id:{task_id}, msg:{msg}';
 
             logger.info(f'reqid:{reqid} Successfully created mp3 file: {output_audio_path}')
@@ -1275,7 +1275,7 @@ def gpu_cover(payload):
             logger.error(f'task_id:{task_id} email:{email} msg: {msg}, error:{e}')
             # 记录详细的错误信息
             logger.error(f'task_id:{task_id} Full traceback: {traceback.format_exc()}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return f'cover process failed, task_id:{task_id}, msg:{msg}';
         finally:
             # 安全地清理CUDA资源
@@ -1308,7 +1308,7 @@ def gpu_cover(payload):
         if not enqueue_delivery_job(logger, sync_job):
             sync_msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
             logger.error(f'task_id:{task_id} email:{email} {sync_msg}')
-            update_task_status(logger, task_id, domain, sync_msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=sync_msg)
             return f'file sync failed, task_id:{task_id}, msg:{sync_msg}'
         timing_stats['file_sync_enqueue'] = time.time() - enqueue_start
 
@@ -1332,7 +1332,7 @@ def gpu_cover(payload):
     except Exception as e:
         msg = f'Error in gpu_cover for task_id:{task_id}: {e}'
         logger.error(f'msg: {msg}')
-        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+        update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         return f'cover process failed, task_id:{task_id}, msg:{msg}'
     finally:
         clear_reqid()
@@ -1357,7 +1357,7 @@ def gpu_vocal(payload):
         if not isinstance(upfileinfo, dict) or not upfileinfo.get('relative_path'):
             msg = f'invalid upfileinfo, task_id:{task_id}'
             logger.warning(f'msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return f'vocal process failed, task_id:{task_id}, msg:{msg}'
         relative_path = upfileinfo["relative_path"]
         update_str = upfileinfo['update_str']
@@ -1372,7 +1372,7 @@ def gpu_vocal(payload):
         ret, msg, extractinfo = extract_vocals(upfileinfo, reqid)
         if ret != 0:
             logger.error(f'task_id:{task_id} email:{email} extract_vocals failed: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return f'vocal process failed, task_id:{task_id}, msg:{msg}';
         timing_stats['vocals_extraction'] = time.time() - vocals_extraction_start
         logger.info(f'*********** reqid:{reqid} extract_vocals end ***********')
@@ -1391,7 +1391,7 @@ def gpu_vocal(payload):
             ret, msg = convert_wav_to_mp3(wav_vocal_path, final_vocal_path, reqid, prefer_vbr=False)
             if ret != 0:
                 logger.error(f'task_id:{task_id} email:{email}, msg: {msg}')
-                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                 return f'vocal process failed, task_id:{task_id}, msg:{msg}';
 
             logger.info(f'task_id:{task_id} email:{email} Successfully converted WAV to MP3: {final_vocal_path}')
@@ -1399,7 +1399,7 @@ def gpu_vocal(payload):
             ret = 1
             msg = f'Error converting WAV to MP3: {str(e)}'
             logger.error(f'task_id:{task_id} email:{email}, msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return f'vocal process failed, task_id:{task_id}, msg:{msg}';
 
         remote_vocal_dir = get_remote_vocal_dir()
@@ -1421,7 +1421,7 @@ def gpu_vocal(payload):
         if not enqueue_delivery_job(logger, sync_job):
             sync_msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
             logger.error(f'task_id:{task_id} email:{email} {sync_msg}')
-            update_task_status(logger, task_id, domain, sync_msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=sync_msg)
             return f'file sync failed, task_id:{task_id}, msg:{sync_msg}'
         logger.info(
             f'task_id:{task_id} vocal sync enqueued transport={delivery_transport}'
@@ -1432,7 +1432,7 @@ def gpu_vocal(payload):
     except Exception as e:
         msg = f'Error in gpu_vocal for task_id:{task_id}: {e}'
         logger.error(f'msg: {msg}')
-        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+        update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         return f'vocal process failed, task_id:{task_id}, msg:{msg}'
     finally:
         clear_reqid()
@@ -1457,7 +1457,7 @@ def gpu_instrument(payload):
         if not isinstance(upfileinfo, dict) or not upfileinfo.get('relative_path'):
             msg = f'invalid upfileinfo, task_id:{task_id}'
             logger.warning(f'msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return f'instrument process failed, task_id:{task_id}, msg:{msg}'
         relative_path = upfileinfo["relative_path"]
         update_str = upfileinfo['update_str']
@@ -1475,7 +1475,7 @@ def gpu_instrument(payload):
         # 示例：data/uploads/2025-02-22/202502221755042_83.229.17.48_lastnight-morgan-male.mp3
         if ret != 0:
             logger.error(f'task_id:{task_id} email:{email}, extract_instruments failed: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return f'instrument process failed, task_id:{task_id}, msg:{msg}';
 
         wav_vocal_path = extractinfo['bsroformer_instrument']
@@ -1491,7 +1491,7 @@ def gpu_instrument(payload):
             ret, msg = convert_wav_to_mp3(wav_vocal_path, final_instrum_path, reqid, prefer_vbr=False)
             if ret != 0:
                 logger.error(f'task_id:{task_id} email:{email}, msg: {msg}')
-                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                 return f'instrument process failed, task_id:{task_id}, msg:{msg}';
 
             logger.info(f'task_id:{task_id} email:{email} Successfully converted WAV to MP3: {final_instrum_path}')
@@ -1499,7 +1499,7 @@ def gpu_instrument(payload):
             ret = 1
             msg = f'Error converting WAV to MP3: {str(e)}'
             logger.error(f'task_id:{task_id} email:{email}, msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return f'instrument process failed, task_id:{task_id}, msg:{msg}';
 
         remote_instrument_dir = get_remote_instrument_dir()
@@ -1521,7 +1521,7 @@ def gpu_instrument(payload):
         if not enqueue_delivery_job(logger, sync_job):
             sync_msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
             logger.error(f'task_id:{task_id} email:{email} {sync_msg}')
-            update_task_status(logger, task_id, domain, sync_msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=sync_msg)
             return f'file sync failed, task_id:{task_id}, msg:{sync_msg}'
         logger.info(
             f'task_id:{task_id} instrument sync enqueued transport={delivery_transport}'
@@ -1532,7 +1532,7 @@ def gpu_instrument(payload):
     except Exception as e:
         msg = f'Error in gpu_instrument for task_id:{task_id}: {e}'
         logger.error(f'msg: {msg}')
-        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+        update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         return f'instrument process failed, task_id:{task_id}, msg:{msg}'
     finally:
         clear_reqid()
