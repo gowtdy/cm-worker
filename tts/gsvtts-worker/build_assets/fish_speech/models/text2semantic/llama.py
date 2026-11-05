@@ -9,7 +9,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from einops import rearrange
-from utility.log import setup_logger
+from cmwk_common.log import setup_logger
 from torch import Tensor
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
