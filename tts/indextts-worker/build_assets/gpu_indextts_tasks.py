@@ -13,15 +13,15 @@ import gc
 import numpy as np
 from pydub import AudioSegment
 
-from utility.util import  gen_res_dict
+from cmwk_common.util import gen_res_dict
 import scipy.io.wavfile as wavfile
 
 from utility.voice_config import (
     get_device, ishalf, get_dtype, get_fasttext_modelpath,
     get_file_sync_transport, get_quic_client_host, get_quic_client_port,
 )
-from utility.module_enum import TaskStatus
-from utility.userserver_client import update_task_status
+from cmwk_common.module_enum import TaskStatus
+from cmwk_common.userserver_worker import update_task_status
 from utility.socat_rsyc_util import (
     RsyncTransport,
     get_socat_proxy_configs,
@@ -47,7 +47,7 @@ from indextts_worker import (
     parse_emo_alpha,
 )
 from indextts.utils.mem_release import log_cuda_mem, log_host_rss, release_after_load
-from utility.log import logset, setup_logger, set_reqid, clear_reqid
+from cmwk_common.log import logset, setup_logger, set_reqid, clear_reqid
 from utility.voice_config import get_remote_ttssave_dir, get_localnet_video_tts_dir
 from utility.gpu_util import cuda_error_handler, check_and_wait_for_gpu_memory, manage_gpu_memory, \
     check_gpu_health, log_gpu_error_details
@@ -217,8 +217,20 @@ def save_audio_file(sample_rate, audio, output_format, base_output_path, filenam
 
 @celery_app.task(name='task_gen_indextts')
 @cuda_error_handler(logger)
-def gpu_gen_tts(modelname, text, modelcat='', userid=0, task_id='0', output_format=DEFAULT_FORMAT, modellang='en', email='',
-                domain='', emo_type='default', emo_alpha=1.0, speed=1.0, volume_db=0.0):
+def gpu_gen_tts(payload):
+    modelname = payload.get('modelname', '') or ''
+    text = payload.get('text', '') or ''
+    modelcat = payload.get('modelcat', '') or ''
+    userid = payload.get('uid', 0)
+    task_id = payload.get('task_id', '') or '0'
+    output_format = payload.get('output_format', DEFAULT_FORMAT) or DEFAULT_FORMAT
+    modellang = payload.get('modellang', 'en') or 'en'
+    email = payload.get('email', '')
+    domain = payload.get('domain', '')
+    emo_type = payload.get('emo_type', 'default')
+    emo_alpha = payload.get('emo_alpha', 1.0)
+    speed = payload.get('speed', 1.0)
+    volume_db = payload.get('volume_db', 0.0)
     set_reqid(task_id)
     try:
         if (len(modelname.strip()) == 0):

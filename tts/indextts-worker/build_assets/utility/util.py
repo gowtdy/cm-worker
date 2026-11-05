@@ -11,13 +11,6 @@ def gen_reqid(uid=None, timestamp=None):
     ts = int(timestamp if timestamp is not None else time.time())
     return f"{ts:x}{secrets.token_hex(4)}"
 
-def gen_res_dict(ret: int, msg: str, dt=None):
-    d = {}
-    if dt:
-        d.update(dt)
-    d['ret'] = ret
-    d['msg'] = msg
-    return d
 
 def verify_signature(text: str, timestamp: int) -> str:
     """验证 HMAC 签名
