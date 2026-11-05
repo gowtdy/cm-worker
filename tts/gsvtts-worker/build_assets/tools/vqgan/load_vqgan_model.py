@@ -8,7 +8,7 @@ import torch
 import torchaudio
 from hydra import compose, initialize
 from hydra.utils import instantiate
-from utility.log import setup_logger
+from cmwk_common.log import setup_logger
 from omegaconf import OmegaConf
 
 from fish_speech.models.vqgan.modules.firefly import FireflyArchitecture
