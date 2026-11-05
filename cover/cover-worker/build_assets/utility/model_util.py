@@ -22,7 +22,7 @@ from infer.lib.uvr5_pack.lib_v5 import nets_61968KB as Nets
 from infer.lib.uvr5_pack.lib_v5.nets_new import CascadedNet
 from infer.lib.uvr5_pack.lib_v5.model_param_init import ModelParameters
 
-from utility.log import setup_logger
+from cmwk_common.log import setup_logger
 
 logger = setup_logger(logger_name="voice_cover_server", log_file='logs/voice_cover_log.txt', console_level="DEBUG", file_level="DEBUG")
 
