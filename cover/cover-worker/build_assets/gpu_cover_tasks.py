@@ -30,13 +30,13 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import torch.multiprocessing as mp
 
-from utility.log import setup_logger, set_reqid, clear_reqid
+from cmwk_common.log import setup_logger, set_reqid, clear_reqid
 from utility.vocal_extract_util import model_extract_vocals
 from utility.model_util import load_hubert, load_convert_model, unload_convert_model, load_bsroformer_model, load_deecho_model,  \
      load_hpkaroke_model, load_mdxnetdereverb_model, load_rmvpe_model
-from utility.util import gen_res_dict
-from utility.module_enum import TaskStatus
-from utility.userserver_client import update_task_status
+from cmwk_common.util import gen_res_dict
+from cmwk_common.module_enum import TaskStatus
+from cmwk_common.userserver_worker import update_task_status
 from utility.socat_rsyc_util import (
     get_socat_proxy_configs,
     initialize_ssh_connections_for_proxies,
@@ -1120,7 +1120,16 @@ def process_voice_cover(
     return ret, msg, (tgt_sr, audio_opt)
 
 @celery_app.task(name='task_cover.cover')
-def gpu_cover(modelcat, modelname, modelgender, upfileinfo, upgender, task_id='0', email='', domain='', lang='english'):                        
+def gpu_cover(payload):
+    modelcat = payload.get('modelcat', '')
+    modelname = payload.get('modelname', '')
+    modelgender = payload.get('modelgender')
+    upfileinfo = payload.get('upfileinfo')
+    upgender = payload.get('upgender')
+    task_id = payload.get('task_id', '') or '0'
+    email = payload.get('email', '')
+    domain = payload.get('domain', '')
+    lang = payload.get('lang', 'english') or 'english'
     set_reqid(task_id)
     try:
         ret = 0
@@ -1328,7 +1337,11 @@ def gpu_cover(modelcat, modelname, modelgender, upfileinfo, upgender, task_id='0
     finally:
         clear_reqid()
 @celery_app.task(name='task_cover.vocal')
-def gpu_vocal(upfileinfo, task_id='0', email='', domain=''):                        
+def gpu_vocal(payload):
+    upfileinfo = payload.get('upfileinfo')
+    task_id = payload.get('task_id', '') or '0'
+    email = payload.get('email', '')
+    domain = payload.get('domain', '')
     set_reqid(task_id)
     try:
         ret = 0
@@ -1424,7 +1437,11 @@ def gpu_vocal(upfileinfo, task_id='0', email='', domain=''):
     finally:
         clear_reqid()
 @celery_app.task(name='task_cover.instrument')
-def gpu_instrument(upfileinfo, task_id='0', email='', domain=''):                        
+def gpu_instrument(payload):
+    upfileinfo = payload.get('upfileinfo')
+    task_id = payload.get('task_id', '') or '0'
+    email = payload.get('email', '')
+    domain = payload.get('domain', '')
     set_reqid(task_id)
     try:
         ret = 0
