@@ -74,7 +74,6 @@ is_half = ishalf()
 device = get_device()
 dtype = get_dtype()
 
-
 @celery_app.task(name='task_gen_htmlvideo')
 @cuda_error_handler(logger)
 def gen_htmlvideo(payload):
