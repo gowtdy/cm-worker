@@ -13,17 +13,15 @@ INTENT_REQUIRED_FIELDS = ("message", "angle", "author", "name", "summary")
 INTENT_FILENAME = "intent.json"
 
 
-def _build_identify_intent_prompt(project_dir: str, content: str) -> str:
-    intent_path = os.path.join(project_dir, INTENT_FILENAME)
+def _build_identify_intent_prompt(output_file: str, content: str) -> str:
     return (
-        f"/aiflow-identify-intent {project_dir}\n\n"
-        f"Work in directory {project_dir}. Write output only to "
-        f"{intent_path} (filename must be {INTENT_FILENAME}).\n\n"
+        f"/aiflow-identify-intent {output_file}\n\n"
+        f"Write output only to {output_file}.\n\n"
         f"Source text:\n\n{content}\n\n"
         "Follow the aiflow-identify-intent skill: extract message, angle, author, "
         "name, summary (and optional customization/notes). Prefer the input language.\n\n"
         "flow is automation → autonomous: proceed without waiting for approval.\n"
-        f"Stop when {intent_path} exists and is valid JSON with required fields.\n"
+        f"Stop when {output_file} exists and is valid JSON with required fields.\n"
     )
 
 
@@ -67,7 +65,7 @@ def _load_and_validate_intent(intent_file: str) -> dict:
 
 
 def run_identify_intent(
-    project_dir: str,
+    output_file: str,
     content: str,
     logger: logging.Logger,
 ) -> dict:
@@ -75,18 +73,18 @@ def run_identify_intent(
     Call /aiflow-identify-intent via claude --print.
 
     ``content`` must already be the full source text (caller converts uri/upload
-    to text before invoking). Writes (and returns) validated intent from
-    ``{project_dir}/intent.json``. Raises on CLI failure or invalid/missing output.
+    to text before invoking). ``output_file`` is the full path of the intent
+    JSON. Raises on CLI failure or invalid/missing output.
     """
-    os.makedirs(project_dir, exist_ok=True)
-    intent_file = os.path.join(project_dir, INTENT_FILENAME)
+    work_dir = os.path.dirname(output_file) or "."
+    os.makedirs(work_dir, exist_ok=True)
     # Avoid accepting a stale file if a previous run left one behind.
-    if os.path.isfile(intent_file):
-        os.remove(intent_file)
+    if os.path.isfile(output_file):
+        os.remove(output_file)
 
-    prompt = _build_identify_intent_prompt(project_dir, content)
-    rc = _run_claude(project_dir, prompt, logger)
+    prompt = _build_identify_intent_prompt(output_file, content)
+    rc = _run_claude(work_dir, prompt, logger)
     if rc != 0:
         raise RuntimeError(f"claude identify-intent failed rc:{rc}")
 
-    return _load_and_validate_intent(intent_file)
+    return _load_and_validate_intent(output_file)
