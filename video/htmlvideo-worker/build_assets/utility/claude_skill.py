@@ -9,7 +9,7 @@ import os
 import shutil
 import subprocess
 
-INTENT_REQUIRED_FIELDS = ("message", "angle", "author", "name", "summary")
+INTENT_REQUIRED_FIELDS = ("message", "angle", "audience", "name", "summary")
 INTENT_FILENAME = "intent.json"
 
 
