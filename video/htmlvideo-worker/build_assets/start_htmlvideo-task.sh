@@ -21,4 +21,4 @@ fi
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PATH="$HOME/.local/bin:$PATH"
 
-PYTHONPATH=/app celery -A htmlvideo_task worker -Q us_htmlvideo_queue --pool=threads --concurrency=${CELERY_CONCURRENCY:-1} --loglevel=info
+PYTHONPATH=/app celery -A htmlvideo_task worker -Q us_videointent_queue,us_htmlvideo_queue --pool=threads --concurrency=${CELERY_CONCURRENCY:-1} --loglevel=info
