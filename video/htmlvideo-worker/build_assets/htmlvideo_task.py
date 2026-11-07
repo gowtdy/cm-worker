@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import os
 import socket
 import time
@@ -32,6 +33,7 @@ from utility.file_delivery import (
 )
 from utility.quic_http_transport import QuicHttpTransport
 from utility.samearea_http_transport import SameAreaHttpTransport
+from utility.claude_skill import INTENT_FILENAME, run_identify_intent
 
 from celery_worker import celery_app
 
@@ -74,6 +76,7 @@ is_half = ishalf()
 device = get_device()
 dtype = get_dtype()
 
+
 @celery_app.task(name='task_video_intent')
 @cuda_error_handler(logger)
 def recognize_intent(payload):
@@ -113,11 +116,26 @@ def recognize_intent(payload):
 
         localtime = time.localtime(time.time())
         today = time.strftime(DAY_FORMAT, localtime)
-        datetime_str = time.strftime("%Y%m%d%H%M%S", localtime)
-        random_number = random.randint(1, 1000)
         start_time = time.time()
-        content_length = len(content)
-        
+
+        project_dir = f'/app/videos/{today}/user{uid}/{task_id}'
+        intent_file = os.path.join(project_dir, INTENT_FILENAME)
+        intent = run_identify_intent(project_dir, content, logger=logger)
+        intent_json = json.dumps(intent, ensure_ascii=False)
+        cost = time.time() - start_time
+        logger.info(
+            f'task_id:{task_id} video_intent done name:{intent.get("name")} '
+            f'file:{intent_file} cost:{cost:.1f}s'
+        )
+        update_task_status(
+            logger,
+            task_id,
+            domain,
+            TaskStatus.COMPLETE,
+            payload_msg='ok',
+            generate_content=intent_json,
+        )
+        return gen_res_dict(0, 'ok', {"intent": intent, "intent_file": intent_file})
     except Exception as e:
         logger.error(f'Error in recognize_intent for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}')
         msg = f'Error in recognize_intent for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}'
