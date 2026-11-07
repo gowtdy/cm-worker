@@ -118,9 +118,12 @@ def recognize_intent(payload):
         today = time.strftime(DAY_FORMAT, localtime)
         start_time = time.time()
 
-        project_dir = f'/app/videos/{today}/user{uid}/{task_id}'
-        intent_file = os.path.join(project_dir, INTENT_FILENAME)
-        intent = run_identify_intent(project_dir, content, logger=logger)
+        rand3 = random.randint(0, 999)
+        video_dir = f'/app/videos'
+        relative_intent_file = f'{today}/user{uid}/{task_id}_{rand3:03d}_{INTENT_FILENAME}'
+        intent_file = os.path.join(video_dir, relative_intent_file)
+        intent = run_identify_intent(intent_file, content, logger=logger)
+        intent['filename'] = relative_intent_file
         intent_json = json.dumps(intent, ensure_ascii=False)
         cost = time.time() - start_time
         logger.info(
