@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import os
 import socket
 import time
@@ -32,6 +33,7 @@ from utility.file_delivery import (
 )
 from utility.quic_http_transport import QuicHttpTransport
 from utility.samearea_http_transport import SameAreaHttpTransport
+from utility.claude_skill import INTENT_FILENAME, run_identify_intent
 
 from celery_worker import celery_app
 
@@ -75,6 +77,76 @@ device = get_device()
 dtype = get_dtype()
 
 
+@celery_app.task(name='task_video_intent')
+@cuda_error_handler(logger)
+def recognize_intent(payload):
+    uid = payload.get('uid', '')
+    email = payload.get('email', '')
+    task_id = payload.get('task_id', '') or '0'
+    domain = payload.get('domain', '')
+    content = payload.get('content', '') or ''
+    source = payload.get('source', 'article') or 'article'
+    uri = payload.get('uri', '') or ''
+    set_reqid(task_id)
+    try:
+        logger.info(
+            f'task_id:{task_id} video_intent start source:{source} uri:{uri}'
+        )
+        # 与前端 sourceFields / uscm validate 一致：article → content；upload → uri
+        if source == 'article':
+            if (len(content.strip()) == 0):
+                ret = 1
+                msg = f'content:{content} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+                logger.warning(f'msg: {msg}')
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+                return gen_res_dict(ret, msg)
+        elif source == 'upload':
+            if (len(uri.strip()) == 0):
+                ret = 1
+                msg = f'uri:{uri} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+                logger.warning(f'msg: {msg}')
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+                return gen_res_dict(ret, msg)
+        else:
+            ret = 1
+            msg = f'source:{source} is invalid, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+            logger.warning(f'msg: {msg}')
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(ret, msg)
+
+        localtime = time.localtime(time.time())
+        today = time.strftime(DAY_FORMAT, localtime)
+        start_time = time.time()
+
+        rand3 = random.randint(0, 999)
+        video_dir = f'/app/videos'
+        relative_intent_file = f'{today}/user{uid}/{task_id}_{rand3:03d}_{INTENT_FILENAME}'
+        intent_file = os.path.join(video_dir, relative_intent_file)
+        intent = run_identify_intent(intent_file, content, logger=logger)
+        intent['filename'] = relative_intent_file
+        intent_json = json.dumps(intent, ensure_ascii=False)
+        cost = time.time() - start_time
+        logger.info(
+            f'task_id:{task_id} video_intent done name:{intent.get("name")} '
+            f'file:{intent_file} cost:{cost:.1f}s'
+        )
+        update_task_status(
+            logger,
+            task_id,
+            domain,
+            TaskStatus.COMPLETE,
+            payload_msg='ok',
+            generate_content=intent_json,
+        )
+        return gen_res_dict(0, 'ok', {"intent": intent, "intent_file": intent_file})
+    except Exception as e:
+        logger.error(f'Error in recognize_intent for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}')
+        msg = f'Error in recognize_intent for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}'
+        update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+        return gen_res_dict(1, msg)
+    finally:
+        clear_reqid()
+
 @celery_app.task(name='task_gen_htmlvideo')
 @cuda_error_handler(logger)
 def gen_htmlvideo(payload):
@@ -102,20 +174,20 @@ def gen_htmlvideo(payload):
                 ret = 1
                 msg = f'content:{content} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
                 logger.warning(f'msg: {msg}')
-                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                 return gen_res_dict(ret, msg)
         elif source == 'upload':
             if (len(uri.strip()) == 0):
                 ret = 1
                 msg = f'uri:{uri} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
                 logger.warning(f'msg: {msg}')
-                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                 return gen_res_dict(ret, msg)
         else:
             ret = 1
             msg = f'source:{source} is invalid, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
             logger.warning(f'msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(ret, msg)
 
         localtime = time.localtime(time.time())
@@ -142,7 +214,7 @@ def gen_htmlvideo(payload):
                     f'worker:{WORKER_HOSTNAME}'
                 )
                 logger.error(msg)
-                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                 return gen_res_dict(1, msg)
             sync_job = SyncJob(
                 source_file=output_path,
@@ -157,12 +229,12 @@ def gen_htmlvideo(payload):
             if not enqueue_delivery_job(logger, sync_job):
                 msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}, worker:{WORKER_HOSTNAME}'
                 logger.error(msg)
-                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
 
         except Exception as e:
             logger.error(f'Error in gen_htmlvideo for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}')
             msg = f'Error in gen_htmlvideo for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}'
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             try:
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()

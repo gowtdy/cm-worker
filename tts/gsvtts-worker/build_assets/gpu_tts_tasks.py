@@ -1316,7 +1316,7 @@ def enqueue_tts_sync(output_path, output_file, short_uri_prefix, remote_target_d
     if not enqueue_delivery_job(logger, sync_job):
         msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
         logger.error(msg)
-        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+        update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         return False, msg
     return True, None
 
@@ -1338,14 +1338,14 @@ def gpu_gen_tts(payload):
             ret = 1
             msg = f'modelname:{modelname} is invalid, task_id:{task_id}!'
             logger.warning(f'msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(ret, msg)
 
         if (len(text.strip()) == 0):
             ret = 1
             msg = f'text:{text} is empty, task_id:{task_id}!'
             logger.warning(f'msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(ret, msg)
 
         lang = "NULL"
@@ -1379,7 +1379,7 @@ def gpu_gen_tts(payload):
                         logger.error(f'GPU memory insufficient for task, task_id:{task_id}')
                         ret = 1
                         msg = f'GPU memory insufficient, please try again later, task_id:{task_id}!'
-                        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                        update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                         return gen_res_dict(ret, msg)
         except Exception as e:
             logger.warning(f'GPU memory check failed at task start: {e}')
@@ -1392,7 +1392,7 @@ def gpu_gen_tts(payload):
                    ret = 1
                    msg = f'modelname:{modelname} is invalid, task_id:{task_id}!'
                    logger.warning(f'fish tts, model_path:{model_path}, modelname:{modelname}, msg:{msg}')
-                   update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                   update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                    return gen_res_dict(ret, msg)
 
                 # 使用带重试机制的fish_tts
@@ -1429,7 +1429,7 @@ def gpu_gen_tts(payload):
                    ret = 1
                    msg = f'modelname:{modelname} is invalid, task_id:{task_id}!'
                    logger.warning(f'model_path:{model_path}, modelname:{modelname}')
-                   update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                   update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                    return gen_res_dict(ret, msg)
 
                 # 在加载模型前检查 GPU 健康状态
@@ -1442,7 +1442,7 @@ def gpu_gen_tts(payload):
                     ret = 1
                     msg = f'GPU is in an unhealthy state, task_id:{task_id}!'
                     logger.error(f'msg: {msg}')
-                    update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                     return gen_res_dict(ret, msg)
 
                 model_desc = f'{model_path}/{model_file_prefix}_desc.txt'
@@ -1450,7 +1450,7 @@ def gpu_gen_tts(payload):
                     ret = 1
                     msg = f'model_desc not found, task_id:{task_id}!'
                     logger.warning(f'msg: {msg}')
-                    update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                     return gen_res_dict(ret, msg)
 
                 load_model_type = "gsv" # 默认使用sovits模型
@@ -1467,11 +1467,11 @@ def gpu_gen_tts(payload):
                         ret = 1
                         msg = f'speacker_pt_path {speacker_pt_path} not found, task_id:{task_id}!'
                         logger.warning(f'msg: {msg}')
-                        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                        update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                         return gen_res_dict(ret, msg)
 
                     msg = f'index-tts is not supported, task_id:{task_id}!'
-                    update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                     return gen_res_dict(ret, msg)
                     #sample_rate, audio = indextts_infer(logger, indextts_model, speacker_pt_path, text)
                 else : # 使用gpt-sovits模型
@@ -1533,7 +1533,7 @@ def gpu_gen_tts(payload):
         except Exception as e:
             logger.error(f'Error in gpu_gen_tts for task_id:{task_id}: {e}')
             msg = f'Error in gpu_gen_tts for task_id:{task_id}: {e}'
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             try:
                 # 仅回收本轮推理显存碎片，不卸常驻 Fish/BERT
                 if torch.cuda.is_available():

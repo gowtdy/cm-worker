@@ -31,6 +31,7 @@ def post_update_task(
     task_cmd: str | None = None,
     task_req: str | None = None,
     reqid: str | None = None,
+    generate_content: str | None = None,
 ) -> tuple[int, str]:
     """POST /inapi/updatetask。失败只记日志，返回 (1, msg)，不抛异常。"""
     task_id = "" if task_id is None else str(task_id).strip()
@@ -66,6 +67,8 @@ def post_update_task(
             payload["task_cmd"] = task_cmd
         if task_req is not None:
             payload["task_req"] = task_req
+        if generate_content is not None:
+            payload["generate_content"] = generate_content
 
         response = requests.post(
             url, json=payload, headers=bearer_auth_header(), timeout=_UPDATE_TASK_TIMEOUT_SEC,
@@ -92,22 +95,26 @@ def post_update_task(
         return 1, msg
 
 
-def update_task_status(logger, task_id, domain, payload_msg_or_uri, task_status: TaskStatus) -> tuple[int, str]:
-    """FAILED 写入 task_message，COMPLETE 写入 out_path。"""
+def update_task_status(
+    logger,
+    task_id,
+    domain,
+    task_status: TaskStatus,
+    *,
+    payload_msg: str | None = None,
+    uri: str | None = None,
+    generate_content: str | None = None,
+) -> tuple[int, str]:
+    """uri → out_path，payload_msg → task_message；generate_content 仅在需要时回传。"""
     status_value = task_status.value if isinstance(task_status, TaskStatus) else str(task_status or "")
     reqid = None if task_id is None else str(task_id)
-    body = None if payload_msg_or_uri is None else str(payload_msg_or_uri)
-    if status_value == TaskStatus.COMPLETE.value:
-        return post_update_task(
-            logger, task_id, domain,
-            task_status=status_value, out_path=body, reqid=reqid,
-        )
-    if status_value == TaskStatus.FAILED.value:
-        return post_update_task(
-            logger, task_id, domain,
-            task_status=status_value, task_message=body, reqid=reqid,
-        )
+    task_message = None if payload_msg is None else str(payload_msg)
+    out_path = None if uri is None else str(uri)
     return post_update_task(
         logger, task_id, domain,
-        task_status=status_value or None, task_message=body or None, reqid=reqid,
+        task_status=status_value or None,
+        task_message=task_message,
+        out_path=out_path,
+        reqid=reqid,
+        generate_content=None if generate_content is None else str(generate_content),
     )

@@ -54,7 +54,7 @@ def transcribe_whisper(payload):
         if not isinstance(upfileinfo, dict) or not upfileinfo.get('relative_path'):
             msg = f'invalid upfileinfo, task_id:{task_id}'
             logger.warning(f'msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(1, msg)
 
         input_path = upfileinfo['relative_path']
@@ -64,7 +64,7 @@ def transcribe_whisper(payload):
         if not result.segments or not (result.text or '').strip():
             msg = f'empty transcription (no speech detected), task_id:{task_id}'
             logger.warning(msg)
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(1, msg)
         content = format_result(result, output_format)
         ext = OUTPUT_EXT.get(output_format, 'json')
@@ -101,7 +101,7 @@ def transcribe_whisper(payload):
         if not enqueue_delivery_job(logger, sync_job):
             msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
             logger.error(msg)
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(1, msg)
 
         cost = time.time() - start_time
@@ -114,7 +114,7 @@ def transcribe_whisper(payload):
     except Exception as e:
         msg = f'transcribe error: {e}'
         logger.error(f'task_id:{task_id} transcribe failed: {e}')
-        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+        update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         return gen_res_dict(1, msg)
     finally:
         clear_reqid()

@@ -240,7 +240,7 @@ class TestCompleteSyncJob(unittest.TestCase):
         with patch("utility.file_delivery.update_task_status") as mock_update:
             complete_sync_job(logger, job, True)
         mock_update.assert_called_once_with(
-            logger, "t1", "", "/outdt/final/2026-09-13/song_cover.mp3", TaskStatus.COMPLETE)
+            logger, "t1", "", TaskStatus.COMPLETE, uri="/outdt/final/2026-09-13/song_cover.mp3")
 
     def test_vocal_success_uri(self):
         from cmwk_common.module_enum import TaskStatus
@@ -254,7 +254,7 @@ class TestCompleteSyncJob(unittest.TestCase):
         with patch("utility.file_delivery.update_task_status") as mock_update:
             complete_sync_job(logger, job, True)
         mock_update.assert_called_once_with(
-            logger, "t1", "", "/outdt/sepvocal/2026-09-13/v.mp3", TaskStatus.COMPLETE)
+            logger, "t1", "", TaskStatus.COMPLETE, uri="/outdt/sepvocal/2026-09-13/v.mp3")
 
     def test_failure_writes_failed_not_covered(self):
         from cmwk_common.module_enum import TaskStatus
@@ -264,8 +264,8 @@ class TestCompleteSyncJob(unittest.TestCase):
         with patch("utility.file_delivery.update_task_status") as mock_update:
             complete_sync_job(logger, job, False, err_msg="quic timeout")
         mock_update.assert_called_once_with(
-            logger, "t1", "", "quic timeout", TaskStatus.FAILED)
-        self.assertNotIn("/covered", mock_update.call_args[0][3])
+            logger, "t1", "", TaskStatus.FAILED, payload_msg="quic timeout")
+        self.assertNotIn("/covered", mock_update.call_args.kwargs["payload_msg"])
 
 
 class TestRsyncTransport(unittest.TestCase):

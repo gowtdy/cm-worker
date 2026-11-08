@@ -24,7 +24,8 @@ from utility.voice_settings import parse_emo_params, parse_speed_volume_params
 from config.comm_config import DEFAULT_USER_FIRST_IP
 from config.transcribe_routing import resolve_transcribe_engine
 
-from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract, gpu_cover, gpu_vocal, gpu_instrument, transcribe_whisper, gen_htmlvideo
+from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract, gpu_cover, gpu_vocal, \
+    gpu_instrument, transcribe_whisper, gen_htmlvideo, recognize_intent
 
 app = FastAPI()
 
@@ -148,7 +149,6 @@ async def tts_endpoint(request: Request):
         f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} handle, '
         f'modellang:{modellang} model_type:{tts_modeltype} model_typeversion:{tts_modelversion}'
     )
-    generate_content = f'{modelcat}|{modelname}|{text}'
     emo_type, emo_alpha, speed, volume_db = 'default', 1.0, 1.0, 0.0
     if tts_modeltype == "index-tts":
         ok, emo_type, emo_alpha, emo_err = parse_emo_params(json_post_raw, logger)
@@ -179,7 +179,7 @@ async def tts_endpoint(request: Request):
         task_sig = gpu_gen_tts
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
-        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.TTS,
+        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.TTS,
         task_cmd=task_cmd, task_req=task_req,
     )
     if ret != 0:
@@ -268,12 +268,11 @@ async def gensoundTask(request: Request):
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} email:{email} uid:{uid} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
 
-    generate_content = text
     task_cmd = '/api/gensound'
     payload = build_payload(reqid, uid, email, domain, text=text, length=length, num=num)
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
-        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.SOUND,
+        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.SOUND,
         task_cmd=task_cmd, task_req=task_req,
     )
     if ret != 0:
@@ -355,11 +354,10 @@ async def extractaudio_endpoint(request: Request):
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} email:{email} uid:{uid} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
 
-    generate_content = upfileinfo['relative_path']
     payload = build_payload(reqid, uid, email, domain, upfileinfo=upfileinfo)
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
-        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.AUDIO_EXTRACTOR,
+        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.AUDIO_EXTRACTOR,
         task_cmd=task_cmd, task_req=task_req,
     )
     if ret != 0:
@@ -451,7 +449,6 @@ async def cover_endpoint(request: Request):
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
 
-    generate_content = f'{modelcat}|{modelname}|{converturl}'
     payload = build_payload(
         reqid, uid, email, domain,
         modelcat=modelcat, modelname=modelname, modelgender=modelgender,
@@ -459,7 +456,7 @@ async def cover_endpoint(request: Request):
     )
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
-        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.COVER,
+        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.COVER,
         task_cmd=task_cmd, task_req=task_req,
     )
     if ret != 0:
@@ -537,11 +534,10 @@ async def vocal_endpoint(request: Request):
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
 
-    generate_content = upfileinfo['relative_path']
     payload = build_payload(reqid, uid, email, domain, upfileinfo=upfileinfo)
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
-        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.VOCAL_ISOLATOR,
+        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.VOCAL_ISOLATOR,
         task_cmd=task_cmd, task_req=task_req,
     )
     if ret != 0:
@@ -618,11 +614,10 @@ async def instrument_endpoint(request: Request):
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
 
-    generate_content = upfileinfo['relative_path']
     payload = build_payload(reqid, uid, email, domain, upfileinfo=upfileinfo)
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
-        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.VOCAL_REMOVER,
+        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.VOCAL_REMOVER,
         task_cmd=task_cmd, task_req=task_req,
     )
     if ret != 0:
@@ -646,6 +641,87 @@ async def instrument_endpoint(request: Request):
     logger.info(
         f'instrument, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, '
         f'email:{email}, refer:{referer}, ret:{ret}'
+    )
+    return res
+
+@app.post("/api/video/intent")
+async def video_intent(request: Request):
+    ret = 0
+    msg = 'ok'
+    task_cmd = '/api/video/intent'
+
+    real_ip = get_real_ip(request)
+    first_ip = real_ip.split(',')[0].strip() if real_ip else DEFAULT_USER_FIRST_IP
+    # 获取HTTP请求的Referer
+    referer = request.headers.get("Referer", "Not provided")
+
+    json_post_raw = await request.json()
+
+    timestamp = json_post_raw.get('tstamp', 0)
+    signature = json_post_raw.get('snature', '')
+
+    tm = time.time()
+    uid = json_post_raw.get("uid", 0)
+    reqid = gen_reqid(uid, tm)
+    localtime = time.localtime(tm)
+    today = time.strftime(DAY_FORMAT, localtime)
+    datetime = time.strftime("%Y%m%d_%H%M%S", localtime)
+
+    email = json_post_raw.get("email", '')
+    domain = json_post_raw.get("domain", '')
+    content = json_post_raw.get("content", '')
+    uri = json_post_raw.get("uri", "")
+
+    ret, msg, video_params = validate_video_intent_params(
+        logger, json_post_raw, content, uri, reqid, first_ip, real_ip, uid, email, referer,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_video_intent_params failed: {msg}')
+        return gen_res_dict(ret, msg)
+    source = video_params["source"]
+    sign_text = video_params["sign_text"]
+
+    ret, msg = validate_signature(logger, timestamp, signature, sign_text, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.VIDEO_INTENT)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} source:{source} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
+    ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.VIDEO_INTENT, domain, request)
+    auth_info = {"islogin": login, "subscript": subscript}
+    if ret != 0:
+        logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
+        return gen_res_dict(ret, msg, auth_info)
+
+    payload = build_payload(
+        reqid, uid, email, domain, 
+        content=content, uri=uri,  source=source,
+    )
+    task_req = json.dumps(payload, ensure_ascii=False)
+    ret, msg = post_generate_add(
+        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.VIDEO_INTENT,
+        task_cmd=task_cmd, task_req=task_req,
+    )
+    if ret != 0:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} post_generate_add failed: {msg}')
+        return gen_res_dict(ret, msg, auth_info)
+
+    try:
+        dispatch(recognize_intent, payload)
+    except Exception as e:
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} recognize_intent.delay failed: {e}')
+        return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
+
+    res = {
+        "ret": 0,
+        "msg": 'ok',
+        "task_id": reqid,
+        "islogin": login,
+        "subscript": subscript,
+    }
+
+    logger.info(
+        f'instrument, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, '
+        f'email:{email}, refer:{referer}, source:{source}, uri:{uri}, content length:{len(content)}, ret:{ret}'
     )
     return res
 
@@ -690,7 +766,6 @@ async def create_video(request: Request):
     modelname = video_params["modelname"]
     source = video_params["source"]
     sign_text = video_params["sign_text"]
-    generate_content = video_params["generate_content"]
 
     ret, msg = validate_signature(logger, timestamp, signature, sign_text, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.HTMLVIDEO)
     if ret != 0:
@@ -711,7 +786,7 @@ async def create_video(request: Request):
     )
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
-        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.HTMLVIDEO,
+        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.HTMLVIDEO,
         task_cmd=task_cmd, task_req=task_req,
     )
     if ret != 0:
@@ -793,14 +868,13 @@ async def transcribe_endpoint(request: Request):
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
         return gen_res_dict(ret, msg, auth_info)
 
-    generate_content = upfileinfo['relative_path']
     payload = build_payload(
         reqid, uid, email, domain,
         upfileinfo=upfileinfo, language=language, output_format=output_format,
     )
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
-        logger, reqid, first_ip, email, uid, domain, generate_content, real_ip, ModuleType.TRANSCRIBE,
+        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.TRANSCRIBE,
         task_cmd=task_cmd, task_req=task_req,
     )
     if ret != 0:

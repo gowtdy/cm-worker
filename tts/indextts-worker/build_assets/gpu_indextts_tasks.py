@@ -237,14 +237,14 @@ def gpu_gen_tts(payload):
             ret = 1
             msg = f'modelname:{modelname} is invalid, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
             logger.warning(f'msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(ret, msg)
 
         if (len(text.strip()) == 0):
             ret = 1
             msg = f'text:{text} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
             logger.warning(f'msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(ret, msg)
 
         try:
@@ -258,7 +258,7 @@ def gpu_gen_tts(payload):
             ret = 1
             msg = f'{e}, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
             logger.warning(f'msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(ret, msg)
 
         localtime = time.localtime(time.time())
@@ -280,7 +280,7 @@ def gpu_gen_tts(payload):
                         logger.error(f'GPU memory insufficient for task, task_id:{task_id}')
                         ret = 1
                         msg = f'GPU memory insufficient, please try again later, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
-                        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                        update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                         return gen_res_dict(ret, msg)
         except Exception as e:
             logger.warning(f'GPU memory check failed at task start: {e}')
@@ -294,7 +294,7 @@ def gpu_gen_tts(payload):
                 ret = 1
                 msg = f'modelname:{modelname} is invalid, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
                 logger.warning(f'model_path:{model_path}, modelname:{modelname}, worker:{WORKER_HOSTNAME}')
-                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                 return gen_res_dict(ret, msg)
 
             # 在加载模型前检查 GPU 健康状态
@@ -307,7 +307,7 @@ def gpu_gen_tts(payload):
                 ret = 1
                 msg = f'GPU is in an unhealthy state, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
                 logger.error(f'msg: {msg}')
-                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                 return gen_res_dict(ret, msg)
         
             filename_prefix = f'idx_{modelname}_{datetime_str}_{random_number}'
@@ -316,7 +316,7 @@ def gpu_gen_tts(payload):
                 ret = 1
                 msg = f'speacker_pt_path {speacker_pt_path} not found, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
                 logger.warning(f'msg: {msg}')
-                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                 return gen_res_dict(ret, msg)
 
             text_lang = resolve_text_lang(text, fallback_lang=modellang, logger=logger)
@@ -362,12 +362,12 @@ def gpu_gen_tts(payload):
             if not enqueue_delivery_job(logger, sync_job):
                 msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}, worker:{WORKER_HOSTNAME}'
                 logger.error(msg)
-                update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
 
         except Exception as e:
             logger.error(f'Error in gpu_gen_tts for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}')
             msg = f'Error in gpu_gen_tts for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}'
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             try:
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()

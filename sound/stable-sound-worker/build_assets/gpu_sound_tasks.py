@@ -161,7 +161,7 @@ def gpu_gen_sound(payload):
         if not (text or '').strip():
             msg = f'text is empty, task_id:{task_id}'
             logger.warning(msg)
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(1, msg)
 
         start_time = time.time()
@@ -247,7 +247,7 @@ def gpu_gen_sound(payload):
         if not enqueue_delivery_job(logger, sync_job):
             msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
             logger.error(msg)
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
 
         # 任务结束：仅回收本轮推理显存碎片，不负责释放常驻模型主机内存
         if torch.cuda.is_available():
@@ -264,7 +264,7 @@ def gpu_gen_sound(payload):
     except Exception as e:
         logger.error(f'Error in gpu_gen_sound for task_id:{task_id}: {e}')
         msg = f'Error in gpu_gen_sound for task_id:{task_id}: {e}'
-        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+        update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         try:
             # 仅回收本轮推理显存碎片，不卸常驻模型
             if torch.cuda.is_available():

@@ -106,7 +106,7 @@ def extract_audio(payload):
         if not isinstance(upfileinfo, dict) or not upfileinfo.get('relative_path'):
             msg = f'invalid upfileinfo, task_id:{task_id}, worker:{WORKER_HOSTNAME}'
             logger.warning(f'msg: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(1, msg)
 
         relative_path = upfileinfo["relative_path"]
@@ -122,7 +122,7 @@ def extract_audio(payload):
         ret, msg, extractinfo = split_audio(upfileinfo, task_id)
         if ret != 0:
             logger.error(f'task_id:{task_id} email:{email} extract_audio failed: {msg}')
-            update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(1, msg)
         timing_stats['audio_extraction'] = time.time() - audio_extraction_start
         logger.info(f'*********** task_id:{task_id} extract_audio end ***********')
@@ -148,7 +148,7 @@ def extract_audio(payload):
         if not enqueue_delivery_job(logger, sync_job):
             sync_msg = f'enqueue sync failed, queue full or workers down, task_id:{task_id}'
             logger.error(f'task_id:{task_id} email:{email} {sync_msg}')
-            update_task_status(logger, task_id, domain, sync_msg, TaskStatus.FAILED)
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=sync_msg)
             return gen_res_dict(1, sync_msg)
         timing_stats['file_sync_enqueue'] = time.time() - enqueue_start
         logger.info(
@@ -169,7 +169,7 @@ def extract_audio(payload):
     except Exception as e:
         msg = f'Error in extract_audio for task_id:{task_id}, worker:{WORKER_HOSTNAME}: {e}'
         logger.error(f'msg: {msg}')
-        update_task_status(logger, task_id, domain, msg, TaskStatus.FAILED)
+        update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         return gen_res_dict(1, msg)
     finally:
         clear_reqid()
