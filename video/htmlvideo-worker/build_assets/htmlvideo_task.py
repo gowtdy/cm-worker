@@ -122,7 +122,17 @@ def recognize_intent(payload):
         video_dir = f'/app/videos'
         relative_intent_file = f'{today}/user{uid}/{task_id}_{rand3:03d}_{INTENT_FILENAME}'
         intent_file = os.path.join(video_dir, relative_intent_file)
-        intent = run_identify_intent(intent_file, content, logger=logger)
+        if os.getenv('INTENT_MOCK', 'false') == 'true':
+            intent = {
+                'name': 'Buy, Hold, Sell',
+                'message': "Analyzing a stock's fundamentals and market signals tells you whether it's worth buying and when it's time to sell.",
+                'angle': "how-to",
+                'audience': "Beginner to intermediate individual investors who want a practical framework for buy and sell decisions",
+                'summary': "A practical how-to on evaluating stocks: how to judge whether a stock is worth buying, and how to recognize the right time to sell. Aimed at everyday investors, it turns a common question into a clear, actionable decision framework.",
+                'customization': "Two-part structure: first, how to analyze whether a stock is worth buying; second, how to determine when to sell."
+            }
+        else:
+            intent = run_identify_intent(intent_file, content, logger=logger)
         intent['filename'] = relative_intent_file
         intent_json = json.dumps(intent, ensure_ascii=False)
         cost = time.time() - start_time
