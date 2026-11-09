@@ -134,6 +134,7 @@ def recognize_intent(payload):
         else:
             intent = run_identify_intent(intent_file, content, logger=logger)
         intent['filename'] = relative_intent_file
+        intent['content'] = content
         intent_json = json.dumps(intent, ensure_ascii=False)
         cost = time.time() - start_time
         logger.info(
