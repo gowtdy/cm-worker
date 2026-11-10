@@ -94,14 +94,14 @@ def recognize_intent(payload):
         )
         # 与前端 sourceFields / uscm validate 一致：article → content；upload → uri
         if source == 'article':
-            if (len(content.strip()) == 0):
+            if len(content.strip()) == 0:
                 ret = 1
                 msg = f'content:{content} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
                 logger.warning(f'msg: {msg}')
                 update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                 return gen_res_dict(ret, msg)
         elif source == 'upload':
-            if (len(uri.strip()) == 0):
+            if len(uri.strip()) == 0:
                 ret = 1
                 msg = f'uri:{uri} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
                 logger.warning(f'msg: {msg}')
@@ -122,8 +122,19 @@ def recognize_intent(payload):
         video_dir = f'/app/videos'
         relative_intent_file = f'{today}/user{uid}/{task_id}_{rand3:03d}_{INTENT_FILENAME}'
         intent_file = os.path.join(video_dir, relative_intent_file)
-        intent = run_identify_intent(intent_file, content, logger=logger)
+        if os.getenv('INTENT_MOCK', 'false') == 'true':
+            intent = {
+                'name': 'Buy, Hold, Sell',
+                'message': "Analyzing a stock's fundamentals and market signals tells you whether it's worth buying and when it's time to sell.",
+                'angle': "how-to",
+                'audience': "Beginner to intermediate individual investors who want a practical framework for buy and sell decisions",
+                'summary': "A practical how-to on evaluating stocks: how to judge whether a stock is worth buying, and how to recognize the right time to sell. Aimed at everyday investors, it turns a common question into a clear, actionable decision framework.",
+                'customization': "Two-part structure: first, how to analyze whether a stock is worth buying; second, how to determine when to sell."
+            }
+        else:
+            intent = run_identify_intent(intent_file, content, logger=logger)
         intent['filename'] = relative_intent_file
+        intent['content'] = content
         intent_json = json.dumps(intent, ensure_ascii=False)
         cost = time.time() - start_time
         logger.info(
@@ -154,38 +165,31 @@ def gen_htmlvideo(payload):
     email = payload.get('email', '')
     task_id = payload.get('task_id', '') or '0'
     domain = payload.get('domain', '')
+    intent_taskid = payload.get('intent_taskid', '')
     content = payload.get('content', '') or ''
-    source = payload.get('source', 'article') or 'article'
-    uri = payload.get('uri', '') or ''
     aspect = payload.get('aspect')
     style = payload.get('style')
     duration = payload.get('duration')
     modelcat = payload.get('modelcat', '')
     modelname = payload.get('modelname', '')
+    message = payload.get('message', '') 
+    angle = payload.get('angle', '')
+    audience = payload.get('audience', '')
+    name = payload.get('name', '')
+    summary = payload.get('summary', '')
+    customization = payload.get('customization', '')
+    notes = payload.get('notes', '')
     set_reqid(task_id)
     try:
         logger.info(
-            f'task_id:{task_id} htmlvideo start source:{source} aspect:{aspect} style:{style} '
+            f'task_id:{task_id} htmlvideo start aspect:{aspect} style:{style} '
             f'duration:{duration} modelcat:{modelcat} modelname:{modelname}'
+            f'message:{message} angle:{angle} audience:{audience} name:{name} intent_taskid:{intent_taskid}'
+            f'summary:{summary} customization:{customization} notes:{notes}'
         )
-        # 与前端 sourceFields / uscm validate 一致：article → content；upload → uri
-        if source == 'article':
-            if (len(content.strip()) == 0):
-                ret = 1
-                msg = f'content:{content} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
-                logger.warning(f'msg: {msg}')
-                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-                return gen_res_dict(ret, msg)
-        elif source == 'upload':
-            if (len(uri.strip()) == 0):
-                ret = 1
-                msg = f'uri:{uri} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
-                logger.warning(f'msg: {msg}')
-                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-                return gen_res_dict(ret, msg)
-        else:
+        if len(content.strip()) == 0:
             ret = 1
-            msg = f'source:{source} is invalid, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+            msg = f'content:{content} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
             logger.warning(f'msg: {msg}')
             update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(ret, msg)
@@ -197,17 +201,23 @@ def gen_htmlvideo(payload):
         start_time = time.time()
         content_length = len(content)
 
-        project_dir =  f'/app/videos/{domain}/{today}/{task_id}'
+        video_dir = f'/app/videos'
+        #output_path = f'{video_dir}/{today}/user{uid}/{task_id}'
+        output_path = f'{video_dir}/{today}/user{uid}/6aefce31f79c496b'
+        output_file = 'fourth-video.mp4'
+        #if intent_taskid:
+        #    output_file = f'{task_id}_{datetime_str}_{rand3:03d}.mp4'
+        #else:
+        #    output_file = f'{task_id}_{datetime_str}_{rand3:03d}.mp4'
         try:
 
             delivery_transport = resolve_delivery_transport(email)
             proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
             # short_uri_prefix: sync success -> /outdt{prefix}/file; complete only after async sync
-            short_uri_prefix = f'/htmlvideos/{today}/user{uid}'
+            short_uri_prefix = f'/video/{today}/user{uid}'
             remote_target_dir = f'/home/aigc/data/aioutput/htmlvideos/{today}/user{uid}'
             # TODO: 在 enqueue 前完成 htmlvideo 生成，写入 output_path / output_file
-            output_path = ''
-            output_file = ''
+
             if not output_path or not output_file:
                 msg = (
                     f'htmlvideo output missing before sync, task_id:{task_id}, '
@@ -256,7 +266,7 @@ def gen_htmlvideo(payload):
         tts_time = time.time()
         cost_tts = tts_time - start_time
         logger.info(
-            f'task_id:{task_id}, htmlvideo finish, sync enqueued, source:{source}, transport:{delivery_transport} time[tts:{cost_tts}] '
+            f'task_id:{task_id}, htmlvideo finish, sync enqueued, transport:{delivery_transport} time[tts:{cost_tts}] '
         )
 
         result = f"Processed: {task_id}"

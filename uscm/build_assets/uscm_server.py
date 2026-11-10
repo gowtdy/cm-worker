@@ -694,8 +694,8 @@ async def video_intent(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     payload = build_payload(
-        reqid, uid, email, domain, 
-        content=content, uri=uri,  source=source,
+        reqid, uid, email, domain,
+        content=content, uri=uri, source=source,
     )
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
@@ -752,25 +752,25 @@ async def create_video(request: Request):
     email = json_post_raw.get("email", '')
     domain = json_post_raw.get("domain", '')
     content = json_post_raw.get("content", '')
-    uri = json_post_raw.get("uri", "")
+    if len(content) > 10000:
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} '
+            f'content truncated from {len(content)} to 10000 referer:{referer}'
+        )
+        content = content[:10000]
 
+    intent_taskid = json_post_raw.get("intent_taskid", "")
     ret, msg, video_params = validate_video_create_params(
-        logger, json_post_raw, content, uri, reqid, first_ip, real_ip, uid, email, referer,
+        logger, json_post_raw, content, reqid, first_ip, real_ip, uid, email, referer,
     )
     if ret != 0:
         logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_video_create_params failed: {msg}')
         return gen_res_dict(ret, msg)
-    aspect = video_params["aspect"]
-    style = video_params["style"]
-    duration = video_params["duration"]
-    modelcat = video_params["modelcat"]
-    modelname = video_params["modelname"]
-    source = video_params["source"]
-    sign_text = video_params["sign_text"]
+    sign_text = video_params["message"]
 
     ret, msg = validate_signature(logger, timestamp, signature, sign_text, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.HTMLVIDEO)
     if ret != 0:
-        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} source:{source} validate_signature failed: {msg}')
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_signature failed: {msg}')
         return gen_res_dict(ret, msg)
 
     ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.HTMLVIDEO, domain, request)
@@ -781,9 +781,8 @@ async def create_video(request: Request):
 
     payload = build_payload(
         reqid, uid, email, domain,
-        content=content, uri=uri, source=source,
-        aspect=aspect, style=style, duration=duration,
-        modelcat=modelcat, modelname=modelname,
+        content=content,
+        **video_params,
     )
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
@@ -810,7 +809,7 @@ async def create_video(request: Request):
 
     logger.info(
         f'instrument, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, '
-        f'email:{email}, refer:{referer}, source:{source}, uri:{uri}, content length:{len(content)}, ret:{ret}'
+        f'email:{email}, refer:{referer}, content length:{len(content)}, ret:{ret}'
     )
     return res
 

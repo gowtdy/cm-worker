@@ -21,6 +21,7 @@ services:
       - AIGC_GID=${AIGC_GID:-1001}
       - TZ=Asia/Shanghai
       - FILE_SYNC_TRANSPORT=quic
+      - INTENT_MOCK=true
     env_file:
       - /home/aigc/data/env/.env_usmqdb
       - /home/aigc/data/env/.env_htmlvideo

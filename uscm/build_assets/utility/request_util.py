@@ -438,7 +438,6 @@ def validate_video_create_params(
     logger: logging.Logger,
     json_post_raw: dict,
     content: str,
-    uri: str,
     reqid: str,
     first_ip: str,
     real_ip: str,
@@ -447,17 +446,17 @@ def validate_video_create_params(
     referer: str,
 ) -> tuple[int, str, dict]:
     """
-    校验 /api/video/create 的业务参数（aspect / duration / model / source / content|uri）。
+    校验 /api/video/create 的业务参数（aspect / duration / model / content / intent）。
 
-    source 与前端 sourceFields 对齐：
-      - article：校验 content 长度，sign_text = content
-      - upload：校验 uri 非空，sign_text = uri（前端 uploadedUri）
+    source / upload / uri 已在 /api/video/intent 处理，create 校验 content 与 intent 字段。
+    签名字段用 message。
+    message / angle / audience / name / summary 必填；customization / notes 可选。
 
     Returns:
         tuple[int, str, dict]: (ret, msg, params)
         params 在校验通过时包含：
         aspect, aspect_ratio, duration, modelcat, modelname, model_entry,
-        source, sign_text
+        message, angle, audience, name, summary, customization, notes
     """
     params = {}
 
@@ -502,40 +501,87 @@ def validate_video_create_params(
         )
         return ret, msg, params
 
-    # 对应前端 sourceFields：article → content 签名；upload → uri(uploadedUri) 签名
-    source = json_post_raw.get("source", DEFAULT_VIDEO_SOURCE)
-    if source not in VIDEO_SOURCES:
+    message = str(json_post_raw.get("message", '') or '').strip()
+    if not (0 < len(message) < 300):
         ret = 1
-        msg = f'source is invalid, reqid:{reqid}!'
-        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} source:{source} referer:{referer}')
+        msg = f'message is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'message_len:{len(message)} message:{json_post_raw.get("message")!r} referer:{referer}'
+        )
         return ret, msg, params
 
-    if source == 'article':
-        # 前端：content + 用正文签名，正文非空且长度合法才 ready
-        ret, msg = validate_text_length(content, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
-        if ret != 0:
-            logger.info(
-                f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},'
-                f'email:{email}, refer:{referer}, source:{source}, content length:{len(content)} {msg}!'
-            )
-            return ret, msg, params
-        sign_text = content
-    elif source == 'upload':
-        # 前端：uri = uploadedUri，用 uploadedUri 签名；已上传才 ready
-        if len(uri.strip()) == 0:
-            ret = 1
-            msg = f'uri is invalid, reqid:{reqid}!'
-            logger.warning(
-                f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
-                f'source:{source} uri:{uri} referer:{referer}'
-            )
-            return ret, msg, params
-        sign_text = uri
-    else:
+    angle = str(json_post_raw.get("angle", '') or '').strip()
+    if not (0 < len(angle) < 100):
         ret = 1
-        msg = f'source is invalid, reqid:{reqid}!'
-        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} source:{source} referer:{referer}')
+        msg = f'angle is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'angle_len:{len(angle)} angle:{json_post_raw.get("angle")!r} referer:{referer}'
+        )
         return ret, msg, params
+
+    audience = str(json_post_raw.get("audience", '') or '').strip()
+    if not (0 < len(audience) < 200):
+        ret = 1
+        msg = f'audience is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'audience_len:{len(audience)} audience:{json_post_raw.get("audience")!r} referer:{referer}'
+        )
+        return ret, msg, params
+
+    name = str(json_post_raw.get("name", '') or '').strip()
+    if not name:
+        ret = 1
+        msg = f'name is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'name:{json_post_raw.get("name")!r} referer:{referer}'
+        )
+        return ret, msg, params
+    if len(name) > 50:
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} '
+            f'name truncated from {len(name)} to 50 referer:{referer}'
+        )
+        name = name[:50]
+
+    summary = str(json_post_raw.get("summary", '') or '').strip()
+    if not (0 < len(summary) < 2000):
+        ret = 1
+        msg = f'summary is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'summary_len:{len(summary)} summary:{json_post_raw.get("summary")!r} referer:{referer}'
+        )
+        return ret, msg, params
+
+    customization = str(json_post_raw.get("customization", '') or '').strip()
+    if len(customization) > 1000:
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} '
+            f'customization truncated from {len(customization)} to 1000 referer:{referer}'
+        )
+        customization = customization[:1000]
+    notes = str(json_post_raw.get("notes", '') or '').strip()
+    if len(notes) > 1000:
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} '
+            f'notes truncated from {len(notes)} to 1000 referer:{referer}'
+        )
+        notes = notes[:1000]
+
+    # 前端：content 非空且长度合法才 ready；签名用 message
+    ret, msg = validate_text_length(content, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
+    if ret != 0:
+        logger.info(
+            f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},'
+            f'email:{email}, refer:{referer}, content length:{len(content)} {msg}!'
+        )
+        return ret, msg, params
+
+    intent_taskid = json_post_raw.get("intent_taskid", "")
 
     params = {
         "aspect": aspect,
@@ -545,7 +591,13 @@ def validate_video_create_params(
         "modelcat": modelcat,
         "modelname": modelname,
         "model_entry": model_entry,
-        "source": source,
-        "sign_text": sign_text,
+        "message": message,
+        "angle": angle,
+        "audience": audience,
+        "name": name,
+        "summary": summary,
+        "customization": customization,
+        "notes": notes,
+        "intent_taskid": intent_taskid,
     }
-    return 0, 'ok', params 
+    return 0, 'ok', params
