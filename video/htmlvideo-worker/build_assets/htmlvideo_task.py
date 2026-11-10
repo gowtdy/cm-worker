@@ -79,7 +79,7 @@ dtype = get_dtype()
 
 @celery_app.task(name='task_video_intent')
 @cuda_error_handler(logger)
-def recognize_intent(payload):
+def video_intent(payload):
     uid = payload.get('uid', '')
     email = payload.get('email', '')
     task_id = payload.get('task_id', '') or '0'
@@ -158,9 +158,9 @@ def recognize_intent(payload):
     finally:
         clear_reqid()
 
-@celery_app.task(name='task_gen_htmlvideo')
+@celery_app.task(name='task_video_create')
 @cuda_error_handler(logger)
-def gen_htmlvideo(payload):
+def video_create(payload):
     uid = payload.get('uid', '')
     email = payload.get('email', '')
     task_id = payload.get('task_id', '') or '0'
