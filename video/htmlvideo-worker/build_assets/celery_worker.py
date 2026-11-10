@@ -21,5 +21,5 @@ celery_app = Celery(
 
 celery_app.conf.task_routes = {
     'task_video_intent': {'queue': 'us_videointent_queue'},
-    'task_gen_htmlvideo': {'queue': 'us_htmlvideo_queue'}
+    'task_video_create': {'queue': 'us_videocreate_queue'}
 }
