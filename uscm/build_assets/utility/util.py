@@ -75,5 +75,9 @@ def map_lang_abbrev(lang: str, default: str = 'english') -> str:
 if __name__ == "__main__":
     userid = 1
     timestamp = time.time()
-    id = genid(userid, timestamp)
+    id = gen_reqid(userid, timestamp)
     print(f'id:{id}')
+    ts = 1794286054
+    text = "How to analyze whether a stock is worth buying and when to sell it?"
+    sign = aiflow_hmac_signature(text, ts, ModuleType.TTS)
+    print(f'ts:{ts}, text:{text}, sign:{sign}')
