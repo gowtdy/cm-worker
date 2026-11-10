@@ -572,15 +572,6 @@ def validate_video_create_params(
         )
         notes = notes[:1000]
 
-    # 前端：content 非空且长度合法才 ready；签名用 message
-    ret, msg = validate_text_length(content, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
-    if ret != 0:
-        logger.info(
-            f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},'
-            f'email:{email}, refer:{referer}, content length:{len(content)} {msg}!'
-        )
-        return ret, msg, params
-
     intent_taskid = json_post_raw.get("intent_taskid", "")
 
     params = {

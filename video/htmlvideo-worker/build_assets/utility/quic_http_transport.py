@@ -19,6 +19,7 @@ _BIZ_URI_PREFIXES = {
     "tts": "/wavcl",
     "sound": "/sounds/tk",
     "extract_audio": "/sepaudio",
+    "video": "/video",
 }
 
 

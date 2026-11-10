@@ -79,7 +79,7 @@ dtype = get_dtype()
 
 @celery_app.task(name='task_video_intent')
 @cuda_error_handler(logger)
-def recognize_intent(payload):
+def video_intent(payload):
     uid = payload.get('uid', '')
     email = payload.get('email', '')
     task_id = payload.get('task_id', '') or '0'
@@ -158,9 +158,9 @@ def recognize_intent(payload):
     finally:
         clear_reqid()
 
-@celery_app.task(name='task_gen_htmlvideo')
+@celery_app.task(name='task_video_create')
 @cuda_error_handler(logger)
-def gen_htmlvideo(payload):
+def video_create(payload):
     uid = payload.get('uid', '')
     email = payload.get('email', '')
     task_id = payload.get('task_id', '') or '0'
@@ -203,8 +203,8 @@ def gen_htmlvideo(payload):
 
         video_dir = f'/app/videos'
         #output_path = f'{video_dir}/{today}/user{uid}/{task_id}'
-        output_path = f'{video_dir}/{today}/user{uid}/6aefce31f79c496b'
         output_file = 'fourth-video.mp4'
+        output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
         #if intent_taskid:
         #    output_file = f'{task_id}_{datetime_str}_{rand3:03d}.mp4'
         #else:
@@ -215,7 +215,7 @@ def gen_htmlvideo(payload):
             proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
             # short_uri_prefix: sync success -> /outdt{prefix}/file; complete only after async sync
             short_uri_prefix = f'/video/{today}/user{uid}'
-            remote_target_dir = f'/home/aigc/data/aioutput/htmlvideos/{today}/user{uid}'
+            remote_target_dir = f'/home/aigc/data/aioutput/video/{today}/user{uid}'
             # TODO: 在 enqueue 前完成 htmlvideo 生成，写入 output_path / output_file
 
             if not output_path or not output_file:
@@ -307,7 +307,7 @@ def initialize_file_delivery():
         "http": SameAreaHttpTransport(),
     }
     if cross_transport == "quic":
-        transports["quic"] = QuicHttpTransport(biz_type="tts")
+        transports["quic"] = QuicHttpTransport(biz_type="video")
 
     try:
         start_file_delivery(logger, transports)

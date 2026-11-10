@@ -35,7 +35,7 @@ def aiflow_hmac_signature(text: str, timestamp: int, module: ModuleType) -> str:
     elif module in (ModuleType.COVER, ModuleType.VOCAL_ISOLATOR, ModuleType.VOCAL_REMOVER,
                     ModuleType.AUDIO_EXTRACTOR):
         secret_key = get_cover_secret_key()
-    elif module in (ModuleType.HTMLVIDEO, ModuleType.VIDEO_INTENT):
+    elif module in (ModuleType.VIDEO_CREATE, ModuleType.VIDEO_INTENT):
         secret_key = get_htmlvideo_secret_key()
     elif module == ModuleType.TRANSCRIBE:
         secret_key = get_transcribe_secret_key()
@@ -75,5 +75,9 @@ def map_lang_abbrev(lang: str, default: str = 'english') -> str:
 if __name__ == "__main__":
     userid = 1
     timestamp = time.time()
-    id = genid(userid, timestamp)
+    id = gen_reqid(userid, timestamp)
     print(f'id:{id}')
+    ts = 1794286054
+    text = "How to analyze whether a stock is worth buying and when to sell it?"
+    sign = aiflow_hmac_signature(text, ts, ModuleType.TTS)
+    print(f'ts:{ts}, text:{text}, sign:{sign}')

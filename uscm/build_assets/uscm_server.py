@@ -26,7 +26,7 @@ from config.comm_config import DEFAULT_USER_FIRST_IP
 from config.transcribe_routing import resolve_transcribe_engine
 
 from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract, gpu_cover, gpu_vocal, \
-    gpu_instrument, transcribe_whisper, gen_htmlvideo, recognize_intent
+    gpu_instrument, transcribe_whisper, video_intent, video_create
 
 app = FastAPI()
 
@@ -707,7 +707,7 @@ async def video_intent(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     try:
-        dispatch(recognize_intent, payload)
+        dispatch(video_intent, payload)
     except Exception as e:
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} recognize_intent.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
@@ -759,6 +759,12 @@ async def create_video(request: Request):
         )
         content = content[:10000]
 
+    message = json_post_raw.get("message", '')
+    ret, msg = validate_signature(logger, timestamp, signature, message, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.VIDEO_CREATE)
+    if ret != 0:
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} message:{message} validate_signature failed: {msg}')
+        return gen_res_dict(ret, msg)
+
     intent_taskid = json_post_raw.get("intent_taskid", "")
     ret, msg, video_params = validate_video_create_params(
         logger, json_post_raw, content, reqid, first_ip, real_ip, uid, email, referer,
@@ -766,14 +772,9 @@ async def create_video(request: Request):
     if ret != 0:
         logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_video_create_params failed: {msg}')
         return gen_res_dict(ret, msg)
-    sign_text = video_params["message"]
 
-    ret, msg = validate_signature(logger, timestamp, signature, sign_text, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.HTMLVIDEO)
-    if ret != 0:
-        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_signature failed: {msg}')
-        return gen_res_dict(ret, msg)
 
-    ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.HTMLVIDEO, domain, request)
+    ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.VIDEO_CREATE, domain, request)
     auth_info = {"islogin": login, "subscript": subscript}
     if ret != 0:
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
@@ -786,7 +787,7 @@ async def create_video(request: Request):
     )
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
-        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.HTMLVIDEO,
+        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.VIDEO_CREATE,
         task_cmd=task_cmd, task_req=task_req,
     )
     if ret != 0:
@@ -794,9 +795,9 @@ async def create_video(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     try:
-        dispatch(gen_htmlvideo, payload)
+        dispatch(video_create, payload)
     except Exception as e:
-        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gen_htmlvideo.delay failed: {e}')
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} video_create.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
 
     res = {
