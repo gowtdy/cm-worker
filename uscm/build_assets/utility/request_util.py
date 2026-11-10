@@ -502,7 +502,6 @@ def validate_video_create_params(
         return ret, msg, params
 
     message = str(json_post_raw.get("message", '') or '').strip()
-    logger.info(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} message:{message}')
     if not (0 < len(message) < 300):
         ret = 1
         msg = f'message is invalid, reqid:{reqid}!'
