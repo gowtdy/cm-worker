@@ -8,7 +8,7 @@ ASPECT_MAP = {
 }
 
 LANGUAGE_MAP = {
-    "english": "en"
+    "english": "en",
     "china": "zh",
     "japan": "ja",
     "spanish": "es",
