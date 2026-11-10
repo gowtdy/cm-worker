@@ -438,7 +438,6 @@ def validate_video_create_params(
     logger: logging.Logger,
     json_post_raw: dict,
     content: str,
-    uri: str,
     reqid: str,
     first_ip: str,
     real_ip: str,
@@ -447,17 +446,16 @@ def validate_video_create_params(
     referer: str,
 ) -> tuple[int, str, dict]:
     """
-    校验 /api/video/create 的业务参数（aspect / duration / model / source / content|uri）。
+    校验 /api/video/create 的业务参数（aspect / duration / model / content）。
 
-    source 与前端 sourceFields 对齐：
-      - article：校验 content 长度，sign_text = content
-      - upload：校验 uri 非空，sign_text = uri（前端 uploadedUri）
+    source / upload / uri 已在 /api/video/intent 处理，create 只校验 content。
+    sign_text = content。
 
     Returns:
         tuple[int, str, dict]: (ret, msg, params)
         params 在校验通过时包含：
         aspect, aspect_ratio, duration, modelcat, modelname, model_entry,
-        source, sign_text
+        sign_text
     """
     params = {}
 
@@ -502,39 +500,13 @@ def validate_video_create_params(
         )
         return ret, msg, params
 
-    # 对应前端 sourceFields：article → content 签名；upload → uri(uploadedUri) 签名
-    source = json_post_raw.get("source", DEFAULT_VIDEO_SOURCE)
-    if source not in VIDEO_SOURCES:
-        ret = 1
-        msg = f'source is invalid, reqid:{reqid}!'
-        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} source:{source} referer:{referer}')
-        return ret, msg, params
-
-    if source == 'article':
-        # 前端：content + 用正文签名，正文非空且长度合法才 ready
-        ret, msg = validate_text_length(content, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
-        if ret != 0:
-            logger.info(
-                f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},'
-                f'email:{email}, refer:{referer}, source:{source}, content length:{len(content)} {msg}!'
-            )
-            return ret, msg, params
-        sign_text = content
-    elif source == 'upload':
-        # 前端：uri = uploadedUri，用 uploadedUri 签名；已上传才 ready
-        if len(uri.strip()) == 0:
-            ret = 1
-            msg = f'uri is invalid, reqid:{reqid}!'
-            logger.warning(
-                f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
-                f'source:{source} uri:{uri} referer:{referer}'
-            )
-            return ret, msg, params
-        sign_text = uri
-    else:
-        ret = 1
-        msg = f'source is invalid, reqid:{reqid}!'
-        logger.warning(f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} source:{source} referer:{referer}')
+    # 前端：content + 用正文签名，正文非空且长度合法才 ready
+    ret, msg = validate_text_length(content, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
+    if ret != 0:
+        logger.info(
+            f'reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid},'
+            f'email:{email}, refer:{referer}, content length:{len(content)} {msg}!'
+        )
         return ret, msg, params
 
     params = {
@@ -545,7 +517,6 @@ def validate_video_create_params(
         "modelcat": modelcat,
         "modelname": modelname,
         "model_entry": model_entry,
-        "source": source,
-        "sign_text": sign_text,
+        "sign_text": content,
     }
     return 0, 'ok', params 
