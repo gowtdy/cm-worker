@@ -26,7 +26,7 @@ from config.comm_config import DEFAULT_USER_FIRST_IP
 from config.transcribe_routing import resolve_transcribe_engine
 
 from tasks_interface import gpu_gen_tts, gpu_gen_indextts, gpu_gen_sound, audio_extract, gpu_cover, gpu_vocal, \
-    gpu_instrument, transcribe_whisper, gen_htmlvideo, recognize_intent
+    gpu_instrument, transcribe_whisper, video_intent, video_create
 
 app = FastAPI()
 
@@ -707,7 +707,7 @@ async def video_intent(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     try:
-        dispatch(recognize_intent, payload)
+        dispatch(video_intent, payload)
     except Exception as e:
         logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} recognize_intent.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
@@ -795,9 +795,9 @@ async def create_video(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     try:
-        dispatch(gen_htmlvideo, payload)
+        dispatch(video_create, payload)
     except Exception as e:
-        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} gen_htmlvideo.delay failed: {e}')
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} video_create.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
 
     res = {
