@@ -446,15 +446,17 @@ def validate_video_create_params(
     referer: str,
 ) -> tuple[int, str, dict]:
     """
-    校验 /api/video/create 的业务参数（aspect / duration / model / content）。
+    校验 /api/video/create 的业务参数（aspect / duration / model / content / intent）。
 
-    source / upload / uri 已在 /api/video/intent 处理，create 只校验 content。
+    source / upload / uri 已在 /api/video/intent 处理，create 校验 content 与 intent 字段。
     sign_text = content。
+    message / angle / audience / name / summary 必填；customization / notes 可选。
 
     Returns:
         tuple[int, str, dict]: (ret, msg, params)
         params 在校验通过时包含：
         aspect, aspect_ratio, duration, modelcat, modelname, model_entry,
+        message, angle, audience, name, summary, customization, notes,
         sign_text
     """
     params = {}
@@ -500,6 +502,77 @@ def validate_video_create_params(
         )
         return ret, msg, params
 
+    message = str(json_post_raw.get("message", '') or '').strip()
+    if not (0 < len(message) < 300):
+        ret = 1
+        msg = f'message is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'message_len:{len(message)} message:{json_post_raw.get("message")!r} referer:{referer}'
+        )
+        return ret, msg, params
+
+    angle = str(json_post_raw.get("angle", '') or '').strip()
+    if not (0 < len(angle) < 100):
+        ret = 1
+        msg = f'angle is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'angle_len:{len(angle)} angle:{json_post_raw.get("angle")!r} referer:{referer}'
+        )
+        return ret, msg, params
+
+    audience = str(json_post_raw.get("audience", '') or '').strip()
+    if not (0 < len(audience) < 200):
+        ret = 1
+        msg = f'audience is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'audience_len:{len(audience)} audience:{json_post_raw.get("audience")!r} referer:{referer}'
+        )
+        return ret, msg, params
+
+    name = str(json_post_raw.get("name", '') or '').strip()
+    if not name:
+        ret = 1
+        msg = f'name is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'name:{json_post_raw.get("name")!r} referer:{referer}'
+        )
+        return ret, msg, params
+    if len(name) > 50:
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} '
+            f'name truncated from {len(name)} to 50 referer:{referer}'
+        )
+        name = name[:50]
+
+    summary = str(json_post_raw.get("summary", '') or '').strip()
+    if not (0 < len(summary) < 2000):
+        ret = 1
+        msg = f'summary is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'summary_len:{len(summary)} summary:{json_post_raw.get("summary")!r} referer:{referer}'
+        )
+        return ret, msg, params
+
+    customization = str(json_post_raw.get("customization", '') or '').strip()
+    if len(customization) > 1000:
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} '
+            f'customization truncated from {len(customization)} to 1000 referer:{referer}'
+        )
+        customization = customization[:1000]
+    notes = str(json_post_raw.get("notes", '') or '').strip()
+    if len(notes) > 1000:
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} '
+            f'notes truncated from {len(notes)} to 1000 referer:{referer}'
+        )
+        notes = notes[:1000]
+
     # 前端：content + 用正文签名，正文非空且长度合法才 ready
     ret, msg = validate_text_length(content, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
     if ret != 0:
@@ -517,6 +590,13 @@ def validate_video_create_params(
         "modelcat": modelcat,
         "modelname": modelname,
         "model_entry": model_entry,
+        "message": message,
+        "angle": angle,
+        "audience": audience,
+        "name": name,
+        "summary": summary,
+        "customization": customization,
+        "notes": notes,
         "sign_text": content,
     }
     return 0, 'ok', params 
