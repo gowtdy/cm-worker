@@ -24,7 +24,7 @@ def init_html_brief(video_dir, message, aspect, duration, language, audience, an
     lines.append(f"message: {yaml_quote(message)}")
     lines.append(f"audience: {yaml_quote(audience)}")
     lines.append(f"aspect: {ASPECT_MAP[aspect]}")
-    lines.append(f"language: {LANGUAGE_MAP[language]}")
+    lines.append(f"language: {language}")
     lines.append(f"length: {duration}s")
     lines.append(f"angle: {angle}")
     #lines.append(f"tone: {tone}")
