@@ -1,4 +1,4 @@
-from html_utility.video_constant import ASPECT_MAP
+from html_utility.video_constant import ASPECT_MAP, LANGUAGE_MAP
 
 def yaml_quote(value: str) -> str:
     """Double-quote a YAML scalar and escape \\ and \"."""
@@ -23,8 +23,8 @@ def init_html_brief(video_dir, message, aspect, duration, language, audience, an
     lines.append(f"mode: {mode}")
     lines.append(f"message: {yaml_quote(message)}")
     lines.append(f"audience: {yaml_quote(audience)}")
-    lines.append(f"aspect: {ASPECT_MAP['aspect']}")
-    lines.append(f"language: {LANGUAGE_MAP['language']}")
+    lines.append(f"aspect: {ASPECT_MAP[aspect]}")
+    lines.append(f"language: {LANGUAGE_MAP[language]}")
     lines.append(f"length: {duration}s")
     lines.append(f"angle: {angle}")
     #lines.append(f"tone: {tone}")
@@ -43,7 +43,7 @@ def init_html_brief(video_dir, message, aspect, duration, language, audience, an
     #        lines.append(f"- {item}")
     #    lines.append("")
 
-    if customizations:
+    if customization:
         lines.append("## Customizations")
         lines.append("")
         lines.append(customization)
