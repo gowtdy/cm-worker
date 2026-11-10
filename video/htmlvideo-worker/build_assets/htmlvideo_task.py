@@ -307,7 +307,7 @@ def initialize_file_delivery():
         "http": SameAreaHttpTransport(),
     }
     if cross_transport == "quic":
-        transports["quic"] = QuicHttpTransport(biz_type="tts")
+        transports["quic"] = QuicHttpTransport(biz_type="video")
 
     try:
         start_file_delivery(logger, transports)
