@@ -62,7 +62,7 @@ def caluma_use_strategy(generate_module: ModuleType, is_login: bool, day_count: 
                 ret = 1
                 msg = 'Please login to continue!'
                 return ret, msg
-    elif generate_module == ModuleType.HTMLVIDEO:
+    elif generate_module == ModuleType.VIDEO_CREATE:
         # todo 
         if is_login:
             # 当用户登录时，当月最多免费生成10次，当天最多免费生成5次
