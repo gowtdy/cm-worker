@@ -171,6 +171,13 @@ def gen_htmlvideo(payload):
     duration = payload.get('duration')
     modelcat = payload.get('modelcat', '')
     modelname = payload.get('modelname', '')
+    message = payload.get('message', '') 
+    angle = payload.get('angle', '')
+    audience = payload.get('audience', '')
+    name = payload.get('name', '')
+    summary = payload.get('summary', '')
+    customization = payload.get('customization', '')
+    notes = payload.get('notes', '')
     set_reqid(task_id)
     try:
         logger.info(
