@@ -165,6 +165,7 @@ def gen_htmlvideo(payload):
     email = payload.get('email', '')
     task_id = payload.get('task_id', '') or '0'
     domain = payload.get('domain', '')
+    intent_taskid = payload.get('intent_taskid', '')
     content = payload.get('content', '') or ''
     aspect = payload.get('aspect')
     style = payload.get('style')
@@ -183,6 +184,8 @@ def gen_htmlvideo(payload):
         logger.info(
             f'task_id:{task_id} htmlvideo start aspect:{aspect} style:{style} '
             f'duration:{duration} modelcat:{modelcat} modelname:{modelname}'
+            f'message:{message} angle:{angle} audience:{audience} name:{name} intent_taskid:{intent_taskid}'
+            f'summary:{summary} customization:{customization} notes:{notes}'
         )
         if len(content.strip()) == 0:
             ret = 1
@@ -198,17 +201,23 @@ def gen_htmlvideo(payload):
         start_time = time.time()
         content_length = len(content)
 
-        project_dir =  f'/app/videos/{domain}/{today}/{task_id}'
+        video_dir = f'/app/videos'
+        #output_path = f'{video_dir}/{today}/user{uid}/{task_id}'
+        output_path = f'{video_dir}/{today}/user{uid}/6aefce31f79c496b'
+        output_file = 'fourth-video.mp4'
+        #if intent_taskid:
+        #    output_file = f'{task_id}_{datetime_str}_{rand3:03d}.mp4'
+        #else:
+        #    output_file = f'{task_id}_{datetime_str}_{rand3:03d}.mp4'
         try:
 
             delivery_transport = resolve_delivery_transport(email)
             proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
             # short_uri_prefix: sync success -> /outdt{prefix}/file; complete only after async sync
-            short_uri_prefix = f'/htmlvideos/{today}/user{uid}'
+            short_uri_prefix = f'/video/{today}/user{uid}'
             remote_target_dir = f'/home/aigc/data/aioutput/htmlvideos/{today}/user{uid}'
             # TODO: 在 enqueue 前完成 htmlvideo 生成，写入 output_path / output_file
-            output_path = ''
-            output_file = ''
+
             if not output_path or not output_file:
                 msg = (
                     f'htmlvideo output missing before sync, task_id:{task_id}, '
