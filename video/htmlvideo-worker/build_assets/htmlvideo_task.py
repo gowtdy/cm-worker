@@ -94,14 +94,14 @@ def recognize_intent(payload):
         )
         # 与前端 sourceFields / uscm validate 一致：article → content；upload → uri
         if source == 'article':
-            if (len(content.strip()) == 0):
+            if len(content.strip()) == 0:
                 ret = 1
                 msg = f'content:{content} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
                 logger.warning(f'msg: {msg}')
                 update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
                 return gen_res_dict(ret, msg)
         elif source == 'upload':
-            if (len(uri.strip()) == 0):
+            if len(uri.strip()) == 0:
                 ret = 1
                 msg = f'uri:{uri} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
                 logger.warning(f'msg: {msg}')
@@ -166,8 +166,6 @@ def gen_htmlvideo(payload):
     task_id = payload.get('task_id', '') or '0'
     domain = payload.get('domain', '')
     content = payload.get('content', '') or ''
-    source = payload.get('source', 'article') or 'article'
-    uri = payload.get('uri', '') or ''
     aspect = payload.get('aspect')
     style = payload.get('style')
     duration = payload.get('duration')
@@ -176,27 +174,12 @@ def gen_htmlvideo(payload):
     set_reqid(task_id)
     try:
         logger.info(
-            f'task_id:{task_id} htmlvideo start source:{source} aspect:{aspect} style:{style} '
+            f'task_id:{task_id} htmlvideo start aspect:{aspect} style:{style} '
             f'duration:{duration} modelcat:{modelcat} modelname:{modelname}'
         )
-        # 与前端 sourceFields / uscm validate 一致：article → content；upload → uri
-        if source == 'article':
-            if (len(content.strip()) == 0):
-                ret = 1
-                msg = f'content:{content} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
-                logger.warning(f'msg: {msg}')
-                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-                return gen_res_dict(ret, msg)
-        elif source == 'upload':
-            if (len(uri.strip()) == 0):
-                ret = 1
-                msg = f'uri:{uri} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
-                logger.warning(f'msg: {msg}')
-                update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-                return gen_res_dict(ret, msg)
-        else:
+        if len(content.strip()) == 0:
             ret = 1
-            msg = f'source:{source} is invalid, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
+            msg = f'content:{content} is empty, task_id:{task_id}, worker:{WORKER_HOSTNAME}!'
             logger.warning(f'msg: {msg}')
             update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(ret, msg)
@@ -267,7 +250,7 @@ def gen_htmlvideo(payload):
         tts_time = time.time()
         cost_tts = tts_time - start_time
         logger.info(
-            f'task_id:{task_id}, htmlvideo finish, sync enqueued, source:{source}, transport:{delivery_transport} time[tts:{cost_tts}] '
+            f'task_id:{task_id}, htmlvideo finish, sync enqueued, transport:{delivery_transport} time[tts:{cost_tts}] '
         )
 
         result = f"Processed: {task_id}"
