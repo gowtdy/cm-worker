@@ -693,8 +693,8 @@ async def video_intent(request: Request):
         return gen_res_dict(ret, msg, auth_info)
 
     payload = build_payload(
-        reqid, uid, email, domain, 
-        content=content, uri=uri,  source=source,
+        reqid, uid, email, domain,
+        content=content, uri=uri, source=source,
     )
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
@@ -751,10 +751,9 @@ async def create_video(request: Request):
     email = json_post_raw.get("email", '')
     domain = json_post_raw.get("domain", '')
     content = json_post_raw.get("content", '')
-    uri = json_post_raw.get("uri", "")
 
     ret, msg, video_params = validate_video_create_params(
-        logger, json_post_raw, content, uri, reqid, first_ip, real_ip, uid, email, referer,
+        logger, json_post_raw, content, reqid, first_ip, real_ip, uid, email, referer,
     )
     if ret != 0:
         logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_video_create_params failed: {msg}')
@@ -764,12 +763,11 @@ async def create_video(request: Request):
     duration = video_params["duration"]
     modelcat = video_params["modelcat"]
     modelname = video_params["modelname"]
-    source = video_params["source"]
     sign_text = video_params["sign_text"]
 
     ret, msg = validate_signature(logger, timestamp, signature, sign_text, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.HTMLVIDEO)
     if ret != 0:
-        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} source:{source} validate_signature failed: {msg}')
+        logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_signature failed: {msg}')
         return gen_res_dict(ret, msg)
 
     ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.HTMLVIDEO, domain, request)
@@ -780,7 +778,7 @@ async def create_video(request: Request):
 
     payload = build_payload(
         reqid, uid, email, domain,
-        content=content, uri=uri, source=source,
+        content=content,
         aspect=aspect, style=style, duration=duration,
         modelcat=modelcat, modelname=modelname,
     )
@@ -809,7 +807,7 @@ async def create_video(request: Request):
 
     logger.info(
         f'instrument, reqid:{reqid}, first_ip:{first_ip}, real_ip:{real_ip}, uid:{uid}, '
-        f'email:{email}, refer:{referer}, source:{source}, uri:{uri}, content length:{len(content)}, ret:{ret}'
+        f'email:{email}, refer:{referer}, content length:{len(content)}, ret:{ret}'
     )
     return res
 
