@@ -449,15 +449,14 @@ def validate_video_create_params(
     校验 /api/video/create 的业务参数（aspect / duration / model / content / intent）。
 
     source / upload / uri 已在 /api/video/intent 处理，create 校验 content 与 intent 字段。
-    sign_text = content。
+    签名字段用 message。
     message / angle / audience / name / summary 必填；customization / notes 可选。
 
     Returns:
         tuple[int, str, dict]: (ret, msg, params)
         params 在校验通过时包含：
         aspect, aspect_ratio, duration, modelcat, modelname, model_entry,
-        message, angle, audience, name, summary, customization, notes,
-        sign_text
+        message, angle, audience, name, summary, customization, notes
     """
     params = {}
 
@@ -573,7 +572,7 @@ def validate_video_create_params(
         )
         notes = notes[:1000]
 
-    # 前端：content + 用正文签名，正文非空且长度合法才 ready
+    # 前端：content 非空且长度合法才 ready；签名用 message
     ret, msg = validate_text_length(content, MAX_HTMLVIDEO_TEXT_LENGTH, MIN_HTMLVIDEO_TEXT_LENGTH, reqid, logger)
     if ret != 0:
         logger.info(
@@ -597,6 +596,5 @@ def validate_video_create_params(
         "summary": summary,
         "customization": customization,
         "notes": notes,
-        "sign_text": content,
     }
-    return 0, 'ok', params 
+    return 0, 'ok', params
