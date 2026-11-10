@@ -35,7 +35,7 @@ def aiflow_hmac_signature(text: str, timestamp: int, module: ModuleType) -> str:
     elif module in (ModuleType.COVER, ModuleType.VOCAL_ISOLATOR, ModuleType.VOCAL_REMOVER,
                     ModuleType.AUDIO_EXTRACTOR):
         secret_key = get_cover_secret_key()
-    elif module in (ModuleType.HTMLVIDEO, ModuleType.VIDEO_INTENT):
+    elif module in (ModuleType.VIDEO_CREATE, ModuleType.VIDEO_INTENT):
         secret_key = get_htmlvideo_secret_key()
     elif module == ModuleType.TRANSCRIBE:
         secret_key = get_transcribe_secret_key()
