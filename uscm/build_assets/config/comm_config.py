@@ -6,7 +6,7 @@ ALLOWED_DOMAINS = frozenset({"caluma.ai", "mogofun.com", "aivoicelab.net"})
 
 # 后端比前段适当宽松
 MIN_HTMLVIDEO_TEXT_LENGTH = 10
-MAX_HTMLVIDEO_TEXT_LENGTH = 6000
+MAX_HTMLVIDEO_TEXT_LENGTH = 10000
 
 def get_allowed_domains():
     return ALLOWED_DOMAINS
