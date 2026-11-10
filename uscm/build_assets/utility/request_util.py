@@ -581,6 +581,8 @@ def validate_video_create_params(
         )
         return ret, msg, params
 
+    intent_taskid = json_post_raw.get("intent_taskid", "")
+
     params = {
         "aspect": aspect,
         "aspect_ratio": aspect_ratio,
@@ -596,5 +598,6 @@ def validate_video_create_params(
         "summary": summary,
         "customization": customization,
         "notes": notes,
+        "intent_taskid": intent_taskid,
     }
     return 0, 'ok', params
