@@ -203,8 +203,8 @@ def gen_htmlvideo(payload):
 
         video_dir = f'/app/videos'
         #output_path = f'{video_dir}/{today}/user{uid}/{task_id}'
-        output_path = f'{video_dir}/{today}/user{uid}/6aefce31f79c496b'
         output_file = 'fourth-video.mp4'
+        output_path = f'{video_dir}/{today}/user{uid}/6aefce31f79c496b/{output_file}'
         #if intent_taskid:
         #    output_file = f'{task_id}_{datetime_str}_{rand3:03d}.mp4'
         #else:
