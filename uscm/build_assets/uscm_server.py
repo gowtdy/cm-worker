@@ -751,6 +751,12 @@ async def create_video(request: Request):
     email = json_post_raw.get("email", '')
     domain = json_post_raw.get("domain", '')
     content = json_post_raw.get("content", '')
+    if len(content) > 10000:
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} '
+            f'content truncated from {len(content)} to 10000 referer:{referer}'
+        )
+        content = content[:10000]
 
     ret, msg, video_params = validate_video_create_params(
         logger, json_post_raw, content, reqid, first_ip, real_ip, uid, email, referer,
@@ -758,12 +764,7 @@ async def create_video(request: Request):
     if ret != 0:
         logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} validate_video_create_params failed: {msg}')
         return gen_res_dict(ret, msg)
-    aspect = video_params["aspect"]
-    style = video_params["style"]
-    duration = video_params["duration"]
-    modelcat = video_params["modelcat"]
-    modelname = video_params["modelname"]
-    sign_text = video_params["sign_text"]
+    sign_text = video_params["message"]
 
     ret, msg = validate_signature(logger, timestamp, signature, sign_text, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.HTMLVIDEO)
     if ret != 0:
@@ -779,8 +780,7 @@ async def create_video(request: Request):
     payload = build_payload(
         reqid, uid, email, domain,
         content=content,
-        aspect=aspect, style=style, duration=duration,
-        modelcat=modelcat, modelname=modelname,
+        **video_params,
     )
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
