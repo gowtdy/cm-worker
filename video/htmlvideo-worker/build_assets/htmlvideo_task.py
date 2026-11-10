@@ -172,7 +172,8 @@ def video_create(payload):
     aspect = payload.get('aspect')
     style = payload.get('style')
     duration = payload.get('duration')
-    modelcat = payload.get('modelcat', '')
+    #language = payload.get('language', 'english')
+    modelcat = payload.get('modelcat', 'english')
     modelname = payload.get('modelname', '')
     message = payload.get('message', '') 
     angle = payload.get('angle', '')
@@ -181,11 +182,13 @@ def video_create(payload):
     summary = payload.get('summary', '')
     customization = payload.get('customization', '')
     notes = payload.get('notes', '')
+
+    language = LANGUAGE_MAP[modelcat]
     set_reqid(task_id)
     try:
         logger.info(
             f'task_id:{task_id} htmlvideo start aspect:{aspect} style:{style} '
-            f'duration:{duration} modelcat:{modelcat} modelname:{modelname}'
+            f'duration:{duration} language:{language} modelcat:{modelcat} modelname:{modelname}'
             f'message:{message} angle:{angle} audience:{audience} name:{name} intent_taskid:{intent_taskid}'
             f'summary:{summary} customization:{customization} notes:{notes}'
         )
@@ -205,6 +208,7 @@ def video_create(payload):
 
         video_dir = f'/app/videos'
         project_dir = f'{video_dir}/{today}/user{uid}/{task_id}'
+        os.makedirs(project_dir, exist_ok=True)
         voice = f'{modelcat}|{modelname}'
         
         brief = init_html_brief(project_dir, message, aspect, duration, language, audience, angle, summary, customization, notes, content)
