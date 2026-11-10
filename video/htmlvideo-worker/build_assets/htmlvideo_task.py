@@ -215,7 +215,7 @@ def gen_htmlvideo(payload):
             proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
             # short_uri_prefix: sync success -> /outdt{prefix}/file; complete only after async sync
             short_uri_prefix = f'/video/{today}/user{uid}'
-            remote_target_dir = f'/home/aigc/data/aioutput/htmlvideos/{today}/user{uid}'
+            remote_target_dir = f'/home/aigc/data/aioutput/video/{today}/user{uid}'
             # TODO: 在 enqueue 前完成 htmlvideo 生成，写入 output_path / output_file
 
             if not output_path or not output_file:
