@@ -43,7 +43,7 @@ class ModuleType(Enum):
     AUDIO_EXTRACTOR = "audio_extractor"
     TRANSCRIBE = "transcribe"
     VIDEO_INTENT = "video_intent"
-    HTMLVIDEO = "htmlvideo"
+    VIDEO_CREATE = "video_create"
 
     @classmethod
     def get_all_values(cls):
