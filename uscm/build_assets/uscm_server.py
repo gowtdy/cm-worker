@@ -758,6 +758,7 @@ async def create_video(request: Request):
         )
         content = content[:10000]
 
+    intent_taskid = json_post_raw.get("intent_taskid", "")
     ret, msg, video_params = validate_video_create_params(
         logger, json_post_raw, content, reqid, first_ip, real_ip, uid, email, referer,
     )
