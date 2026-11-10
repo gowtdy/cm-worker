@@ -760,7 +760,6 @@ async def create_video(request: Request):
         content = content[:10000]
 
     message = json_post_raw.get("message", '')
-    logger.info(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} message:{message}')
     ret, msg = validate_signature(logger, timestamp, signature, message, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.HTMLVIDEO)
     if ret != 0:
         logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} message:{message} validate_signature failed: {msg}')
