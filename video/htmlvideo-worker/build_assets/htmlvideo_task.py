@@ -40,6 +40,8 @@ from celery_worker import celery_app
 from cmwk_common.log import setup_logger, set_reqid, clear_reqid
 from utility.gpu_util import cuda_error_handler
 
+from html_utility.init_html_brief import init_html_brief
+
 # CUDA调试建议：
 # 如果遇到CUDA错误，可以设置以下环境变量来帮助调试：
 # export CUDA_LAUNCH_BLOCKING=1  # 同步CUDA操作，便于定位错误
@@ -166,7 +168,7 @@ def video_create(payload):
     task_id = payload.get('task_id', '') or '0'
     domain = payload.get('domain', '')
     intent_taskid = payload.get('intent_taskid', '')
-    content = payload.get('content', '') or ''
+    content = payload.get('content', '')
     aspect = payload.get('aspect')
     style = payload.get('style')
     duration = payload.get('duration')
@@ -202,15 +204,14 @@ def video_create(payload):
         content_length = len(content)
 
         video_dir = f'/app/videos'
-        #output_path = f'{video_dir}/{today}/user{uid}/{task_id}'
+        project_dir = f'{video_dir}/{today}/user{uid}/{task_id}'
+        voice = f'{modelcat}|{modelname}'
+        
+        brief = init_html_brief(project_dir, message, aspect, duration, language, audience, angle, summary, customization, notes, content)
+        
         output_file = 'fourth-video.mp4'
         output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
-        #if intent_taskid:
-        #    output_file = f'{task_id}_{datetime_str}_{rand3:03d}.mp4'
-        #else:
-        #    output_file = f'{task_id}_{datetime_str}_{rand3:03d}.mp4'
         try:
-
             delivery_transport = resolve_delivery_transport(email)
             proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
             # short_uri_prefix: sync success -> /outdt{prefix}/file; complete only after async sync
