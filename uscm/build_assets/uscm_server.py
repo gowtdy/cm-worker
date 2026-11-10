@@ -760,7 +760,7 @@ async def create_video(request: Request):
         content = content[:10000]
 
     message = json_post_raw.get("message", '')
-    ret, msg = validate_signature(logger, timestamp, signature, message, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.HTMLVIDEO)
+    ret, msg = validate_signature(logger, timestamp, signature, message, datetime, reqid, first_ip, real_ip, uid, email, ModuleType.VIDEO_CREATE)
     if ret != 0:
         logger.error(f'reqid:{reqid} real_ip:{real_ip} uid:{uid} email:{email} message:{message} validate_signature failed: {msg}')
         return gen_res_dict(ret, msg)
@@ -774,7 +774,7 @@ async def create_video(request: Request):
         return gen_res_dict(ret, msg)
 
 
-    ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.HTMLVIDEO, domain, request)
+    ret, msg, login, subscript = validate_request(logger, real_ip, referer, reqid, email, today, uid, ModuleType.VIDEO_CREATE, domain, request)
     auth_info = {"islogin": login, "subscript": subscript}
     if ret != 0:
         logger.info(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} ret:{ret}, msg:{msg}')
@@ -787,7 +787,7 @@ async def create_video(request: Request):
     )
     task_req = json.dumps(payload, ensure_ascii=False)
     ret, msg = post_generate_add(
-        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.HTMLVIDEO,
+        logger, reqid, first_ip, email, uid, domain, real_ip, ModuleType.VIDEO_CREATE,
         task_cmd=task_cmd, task_req=task_req,
     )
     if ret != 0:
