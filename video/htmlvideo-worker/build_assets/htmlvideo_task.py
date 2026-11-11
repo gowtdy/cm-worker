@@ -39,9 +39,10 @@ from celery_worker import celery_app
 from cmwk_common.log import setup_logger, set_reqid, clear_reqid
 from utility.gpu_util import cuda_error_handler
 
+from html_utility.video_constant import LANGUAGE_MAP
 from html_utility.intent import INTENT_FILENAME, identify_intent
 from html_utility.init_htmlvideo import init_htmlvideo
-from html_utility.video_constant import LANGUAGE_MAP
+from html_utility.storyboard import build_storyboard
 
 # CUDA调试建议：
 # 如果遇到CUDA错误，可以设置以下环境变量来帮助调试：
@@ -235,9 +236,19 @@ def video_create(payload):
             logger.error(f'task_id:{task_id} Failed to initialize htmlvideo: {msg}')
             update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(1, msg)
-
+        logger.info(f'task_id:{task_id} htmlvideo initialized, project_dir:{project_dir}')
         update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INITED, payload_msg='ok')
-        
+
+        try:
+            storyboard_path = build_storyboard(project_dir, logger)
+        except Exception as e:
+            msg = f'Failed to build storyboard: {e}'
+            logger.error(f'task_id:{task_id} {msg}')
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        logger.info(f'task_id:{task_id} storyboard built, storyboard_path:{storyboard_path}, project_dir:{project_dir}')
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_STORIED, payload_msg='ok')
+
         output_file = 'fourth-video.mp4'
         output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
         try:
