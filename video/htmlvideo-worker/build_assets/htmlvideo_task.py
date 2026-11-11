@@ -228,6 +228,7 @@ def video_create(payload):
             summary=summary,
             customization=customization,
             notes=notes,
+            style_preset=style,
             task_id=task_id,
         )
         if ret != 0:
