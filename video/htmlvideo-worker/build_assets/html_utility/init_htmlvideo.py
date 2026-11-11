@@ -113,12 +113,18 @@ def init_htmlframe(
     env = os.environ.copy()
     if skip_skills:
         env["HYPERFRAMES_SKIP_SKILLS"] = "1"
-    logger.info("+", " ".join(cmd))
-    proc = subprocess.run(cmd, env=env)
+    logger.info("+ %s", " ".join(cmd))
+    proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if proc.returncode != 0:
         ret = 1
-        msg = f"cmd:{' '.join(cmd)}, returncode:{proc.returncode}, stdout:{proc.stdout}, stderr:{proc.stderr}"
+        msg = (
+            f"cmd:{' '.join(cmd)}, returncode:{proc.returncode}, "
+            f"stdout:{proc.stdout}, stderr:{proc.stderr}"
+        )
         logger.error(f"task_id:{task_id} Failed to initialize htmlframe: {msg}")
+
+    if proc.stdout:
+        logger.info("task_id:%s hyperframes init stdout: %s", task_id, proc.stdout.strip())
         return ret, msg
     return ret, msg
 
