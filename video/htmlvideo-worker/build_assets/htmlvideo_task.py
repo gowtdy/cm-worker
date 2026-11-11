@@ -40,7 +40,7 @@ from celery_worker import celery_app
 from cmwk_common.log import setup_logger, set_reqid, clear_reqid
 from utility.gpu_util import cuda_error_handler
 
-from html_utility.init_html_brief import init_html_brief
+from html_utility.init_htmlvideo import create_html_brief, init_htmlframe
 from html_utility.video_constant import LANGUAGE_MAP
 
 # CUDA调试建议：
@@ -212,8 +212,18 @@ def video_create(payload):
         os.makedirs(project_dir, exist_ok=True)
         voice = f'{modelcat}|{modelname}'
         
-        brief = init_html_brief(project_dir, message, aspect, duration, language, audience, angle, summary, customization, notes, content)
+        brief = create_html_brief(project_dir, message, aspect, duration, language, audience, angle, summary, customization, notes, content)
+        ret, msg = init_htmlframe(logger, project_dir, aspect, message=message, duration=duration, language=language, audience=audience, angle=angle, summary=summary, customization=customization, notes=notes, content=content)
+        if ret != 0:
+            logger.error(f'task_id:{task_id} Failed to initialize htmlframe: {msg}')
+            msg = f'Init video failed!'
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            
+            return gen_res_dict(1, msg)
         
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INITED, payload_msg='ok')
+        
+
         output_file = 'fourth-video.mp4'
         output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
         try:
