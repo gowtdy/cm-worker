@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 
@@ -8,7 +9,7 @@ def yaml_quote(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
-def create_html_brief(video_dir, message, aspect, duration, language, audience, angle, summary, customization, notes, content, assets=None):
+def create_html_brief(video_dir, message, aspect, duration, language, audience, angle, summary, customization, notes, assets=None):
     brief_path = f'{video_dir}/BRIEF.md'
     workflow = 'aiflow-htmlvideo'
     # Who drives execution.  取值为：automation or companion
@@ -56,12 +57,6 @@ def create_html_brief(video_dir, message, aspect, duration, language, audience, 
         lines.append("## Notes")
         lines.append("")
         lines.append(notes)
-        lines.append("")
-
-    if content:
-        lines.append("## user input content")
-        lines.append("")
-        lines.append(content)
         lines.append("")
 
     brief = '\n'.join(lines)
@@ -131,9 +126,77 @@ def init_htmlframe(
 def init_capture(
     logger,
     video_dir,
+    content: str,
+    message: str,
+    summary: str,
     task_id: str = "",
 ):
     ret = 0
     msg = "ok"
     
+    extracted_dir = f'{video_dir}/capture/extracted'
+    visible_text_path = f'{extracted_dir}/visible_text.txt'
+    tokens_path = f'{extracted_dir}/tokens.json'
+
+    # 创建 extracted 目录并写入 visible_text.txt / tokens.json
+    try:
+        os.makedirs(extracted_dir, exist_ok=True)
+        with open(visible_text_path, 'w', encoding='utf-8') as f:
+            f.write(f'{content}\n')
+
+        tokens_str = json.dumps(
+            {
+                "title": message,
+                "description": summary,
+                "colors": [],
+                "fonts": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        with open(tokens_path, 'w', encoding='utf-8') as f:
+            f.write(f'{tokens_str}\n')
+    except Exception as e:
+        ret = 1
+        msg = f"Failed to write capture files: {e}"
+        logger.error(f"task_id:{task_id} {msg}")
+
     return ret, msg
+
+def init_htmlvideo(
+    logger,
+    project_dir,
+    *,
+    resolution,
+    content,
+    message,
+    aspect,
+    duration,
+    language,
+    audience,
+    angle,
+    summary,
+    customization,
+    notes,
+    task_id: str = "",
+):
+    # hyperframes init 要求目标目录为空；BRIEF.md 必须在 init 之后写入
+    ret, msg = init_htmlframe(logger, project_dir, resolution=resolution, task_id=task_id)
+    if ret != 0:
+        return ret, "Init video failed!"
+
+    try:
+        create_html_brief(
+            project_dir, message, aspect, duration, language,
+            audience, angle, summary, customization, notes,
+        )
+    except Exception as e:
+        msg = f"Failed to write BRIEF.md: {e}"
+        logger.error(f"task_id:{task_id} {msg}")
+        return 1, "Init brief failed!"
+
+    ret, msg = init_capture(logger, project_dir, content, message, summary, task_id=task_id)
+    if ret != 0:
+        return ret, "Init capture failed!"
+
+    return 0, "ok"
