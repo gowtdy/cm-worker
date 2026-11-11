@@ -121,3 +121,13 @@ def init_htmlframe(
         logger.error(f"task_id:{task_id} Failed to initialize htmlframe: {msg}")
         return ret, msg
     return ret, msg
+
+def init_capture(
+    logger,
+    video_dir,
+    task_id: str = "",
+):
+    ret = 0
+    msg = "ok"
+    
+    return ret, msg
