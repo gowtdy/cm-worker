@@ -1,3 +1,6 @@
+import os
+import subprocess
+
 from html_utility.video_constant import ASPECT_MAP, LANGUAGE_MAP
 
 def yaml_quote(value: str) -> str:
