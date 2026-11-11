@@ -33,6 +33,7 @@ class TaskStatus(Enum):
     FAILED = "failed"
     # video 生成过程状态
     VIDEO_INITED = "video_inited"
+    VIDEO_STORIED = "video_storied"
 
 
 class ModuleType(Enum):
