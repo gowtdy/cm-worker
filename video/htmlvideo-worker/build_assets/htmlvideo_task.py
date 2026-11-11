@@ -41,6 +41,7 @@ from cmwk_common.log import setup_logger, set_reqid, clear_reqid
 from utility.gpu_util import cuda_error_handler
 
 from html_utility.init_html_brief import init_html_brief
+from html_utility.video_constant import LANGUAGE_MAP
 
 # CUDA调试建议：
 # 如果遇到CUDA错误，可以设置以下环境变量来帮助调试：
