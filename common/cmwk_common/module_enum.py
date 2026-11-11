@@ -31,6 +31,8 @@ class TaskStatus(Enum):
     CANCELLED = "cancelled"
     COMPLETE = "complete"
     FAILED = "failed"
+    # video 生成过程状态
+    VIDEO_INITED = "video_inited"
 
 
 class ModuleType(Enum):

@@ -40,6 +40,9 @@ from celery_worker import celery_app
 from cmwk_common.log import setup_logger, set_reqid, clear_reqid
 from utility.gpu_util import cuda_error_handler
 
+from html_utility.init_htmlvideo import init_htmlvideo
+from html_utility.video_constant import LANGUAGE_MAP
+
 # CUDA调试建议：
 # 如果遇到CUDA错误，可以设置以下环境变量来帮助调试：
 # export CUDA_LAUNCH_BLOCKING=1  # 同步CUDA操作，便于定位错误
@@ -166,11 +169,12 @@ def video_create(payload):
     task_id = payload.get('task_id', '') or '0'
     domain = payload.get('domain', '')
     intent_taskid = payload.get('intent_taskid', '')
-    content = payload.get('content', '') or ''
+    content = payload.get('content', '')
     aspect = payload.get('aspect')
     style = payload.get('style')
     duration = payload.get('duration')
-    modelcat = payload.get('modelcat', '')
+    #language = payload.get('language', 'english')
+    modelcat = payload.get('modelcat', 'english')
     modelname = payload.get('modelname', '')
     message = payload.get('message', '') 
     angle = payload.get('angle', '')
@@ -179,11 +183,13 @@ def video_create(payload):
     summary = payload.get('summary', '')
     customization = payload.get('customization', '')
     notes = payload.get('notes', '')
+
+    language = LANGUAGE_MAP[modelcat]
     set_reqid(task_id)
     try:
         logger.info(
             f'task_id:{task_id} htmlvideo start aspect:{aspect} style:{style} '
-            f'duration:{duration} modelcat:{modelcat} modelname:{modelname}'
+            f'duration:{duration} language:{language} modelcat:{modelcat} modelname:{modelname}'
             f'message:{message} angle:{angle} audience:{audience} name:{name} intent_taskid:{intent_taskid}'
             f'summary:{summary} customization:{customization} notes:{notes}'
         )
@@ -202,15 +208,39 @@ def video_create(payload):
         content_length = len(content)
 
         video_dir = f'/app/videos'
-        #output_path = f'{video_dir}/{today}/user{uid}/{task_id}'
+        project_dir = f'{video_dir}/{today}/user{uid}/{task_id}'
+        os.makedirs(project_dir, exist_ok=True)
+        voice = f'{modelcat}|{modelname}'
+        
+        # hyperframes init 要求目标目录为空；BRIEF.md 必须在 init 之后写入
+        # aspect 为 landscape/portrait 等，对应 hyperframes --resolution preset
+        ret, msg = init_htmlvideo(
+            logger,
+            project_dir,
+            resolution=aspect,
+            content=content,
+            message=message,
+            aspect=aspect,
+            duration=duration,
+            language=language,
+            audience=audience,
+            angle=angle,
+            summary=summary,
+            customization=customization,
+            notes=notes,
+            style_preset=style,
+            task_id=task_id,
+        )
+        if ret != 0:
+            logger.error(f'task_id:{task_id} Failed to initialize htmlvideo: {msg}')
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INITED, payload_msg='ok')
+        
         output_file = 'fourth-video.mp4'
         output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
-        #if intent_taskid:
-        #    output_file = f'{task_id}_{datetime_str}_{rand3:03d}.mp4'
-        #else:
-        #    output_file = f'{task_id}_{datetime_str}_{rand3:03d}.mp4'
         try:
-
             delivery_transport = resolve_delivery_transport(email)
             proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
             # short_uri_prefix: sync success -> /outdt{prefix}/file; complete only after async sync

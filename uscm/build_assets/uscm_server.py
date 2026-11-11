@@ -646,7 +646,7 @@ async def instrument_endpoint(request: Request):
     return res
 
 @app.post("/api/video/intent")
-async def video_intent(request: Request):
+async def video_intent_endpoint(request: Request):
     ret = 0
     msg = 'ok'
     task_cmd = '/api/video/intent'
@@ -709,7 +709,7 @@ async def video_intent(request: Request):
     try:
         dispatch(video_intent, payload)
     except Exception as e:
-        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} recognize_intent.delay failed: {e}')
+        logger.error(f'reqid:{reqid} first_ip:{first_ip} real_ip:{real_ip} uid:{uid} email:{email} video_intent.delay failed: {e}')
         return gen_res_dict(1, f'dispatch failed: {e}', auth_info)
 
     res = {
