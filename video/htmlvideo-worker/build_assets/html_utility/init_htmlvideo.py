@@ -192,10 +192,10 @@ def init_capture(
     msg = "ok"
     
     extracted_dir = f'{video_dir}/capture/extracted'
-    visible_text_path = f'{extracted_dir}/visible_text.txt'
+    visible_text_path = f'{extracted_dir}/visible-text.txt'
     tokens_path = f'{extracted_dir}/tokens.json'
 
-    # 创建 extracted 目录并写入 visible_text.txt / tokens.json
+    # 创建 extracted 目录并写入 visible-text.txt / tokens.json
     try:
         os.makedirs(extracted_dir, exist_ok=True)
         with open(visible_text_path, 'w', encoding='utf-8') as f:
