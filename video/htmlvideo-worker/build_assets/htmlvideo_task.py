@@ -39,7 +39,7 @@ from celery_worker import celery_app
 from cmwk_common.log import setup_logger, set_reqid, clear_reqid
 from utility.gpu_util import cuda_error_handler
 
-from html_utility.claude_skill import INTENT_FILENAME, run_identify_intent
+from html_utility.intent import INTENT_FILENAME, identify_intent
 from html_utility.init_htmlvideo import init_htmlvideo
 from html_utility.video_constant import LANGUAGE_MAP
 
@@ -135,7 +135,7 @@ def video_intent(payload):
                 'customization': "Two-part structure: first, how to analyze whether a stock is worth buying; second, how to determine when to sell."
             }
         else:
-            intent = run_identify_intent(intent_file, content, logger=logger)
+            intent = identify_intent(intent_file, content, logger=logger)
         intent['filename'] = relative_intent_file
         intent['content'] = content
         intent_json = json.dumps(intent, ensure_ascii=False)
