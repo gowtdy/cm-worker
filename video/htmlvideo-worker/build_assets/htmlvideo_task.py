@@ -40,7 +40,7 @@ from celery_worker import celery_app
 from cmwk_common.log import setup_logger, set_reqid, clear_reqid
 from utility.gpu_util import cuda_error_handler
 
-from html_utility.init_htmlvideo import create_html_brief, init_htmlframe
+from html_utility.init_htmlvideo import init_htmlvideo
 from html_utility.video_constant import LANGUAGE_MAP
 
 # CUDA调试建议：
@@ -214,18 +214,29 @@ def video_create(payload):
         
         # hyperframes init 要求目标目录为空；BRIEF.md 必须在 init 之后写入
         # aspect 为 landscape/portrait 等，对应 hyperframes --resolution preset
-        ret, msg = init_htmlframe(logger, project_dir, resolution=aspect, task_id=task_id)
+        ret, msg = init_htmlvideo(
+            logger,
+            project_dir,
+            resolution=aspect,
+            content=content,
+            message=message,
+            aspect=aspect,
+            duration=duration,
+            language=language,
+            audience=audience,
+            angle=angle,
+            summary=summary,
+            customization=customization,
+            notes=notes,
+            task_id=task_id,
+        )
         if ret != 0:
-            logger.error(f'task_id:{task_id} Failed to initialize htmlframe: {msg}')
-            msg = f'Init video failed!'
+            logger.error(f'task_id:{task_id} Failed to initialize htmlvideo: {msg}')
             update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-            
             return gen_res_dict(1, msg)
 
-        brief = create_html_brief(project_dir, message, aspect, duration, language, audience, angle, summary, customization, notes, content)
         update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INITED, payload_msg='ok')
         
-
         output_file = 'fourth-video.mp4'
         output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
         try:
