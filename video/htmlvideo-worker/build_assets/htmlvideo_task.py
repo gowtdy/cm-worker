@@ -33,13 +33,13 @@ from utility.file_delivery import (
 )
 from utility.quic_http_transport import QuicHttpTransport
 from utility.samearea_http_transport import SameAreaHttpTransport
-from utility.claude_skill import INTENT_FILENAME, run_identify_intent
 
 from celery_worker import celery_app
 
 from cmwk_common.log import setup_logger, set_reqid, clear_reqid
 from utility.gpu_util import cuda_error_handler
 
+from html_utility.claude_skill import INTENT_FILENAME, run_identify_intent
 from html_utility.init_htmlvideo import init_htmlvideo
 from html_utility.video_constant import LANGUAGE_MAP
 
