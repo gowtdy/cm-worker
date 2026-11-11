@@ -4,12 +4,68 @@ import subprocess
 
 from html_utility.video_constant import ASPECT_MAP, LANGUAGE_MAP
 
+
+def init_htmlvideo(
+    logger,
+    project_dir,
+    *,
+    resolution,
+    content,
+    message,
+    aspect,
+    duration,
+    language,
+    audience,
+    angle,
+    summary,
+    customization,
+    notes,
+    style_preset=None,
+    task_id: str = "",
+):
+    # 下面的初始化顺序不能颠倒
+    # 1. hyperframes init 要求目标目录为空；
+    # 2. BRIEF.md 必须在 init 之后写入
+    # 3. capture 文件必须在 frame.md 文件之前写入
+    # 4. frame.md 文件必须在 frame style 文件之前写入
+    # hyperframes init 要求目标目录为空；BRIEF.md 必须在 init 之后写入
+    ret, msg = init_htmlframe(logger, project_dir, resolution=resolution, task_id=task_id)
+    if ret != 0:
+        return ret, "Init video failed!"
+
+    # 写 brief文件
+    try:
+        create_html_brief(
+            project_dir, message, aspect, duration, language,
+            audience, angle, summary, customization, notes,
+            style_preset=style_preset,
+        )
+    except Exception as e:
+        msg = f"Failed to write BRIEF.md: {e}"
+        logger.error(f"task_id:{task_id} {msg}")
+        return 1, "Init brief failed!"
+
+    # 写 capture文件
+    ret, msg = init_capture(logger, project_dir, content, message, summary, task_id=task_id)
+    if ret != 0:
+        return ret, "Init capture failed!"
+
+    # 写 frame.md 文件
+    ret, msg = init_frame_style(
+        logger, project_dir, style_preset=style_preset, task_id=task_id,
+    )
+    if ret != 0:
+        return ret, "Init frame style failed!"
+
+    return 0, "ok"
+
+
 def yaml_quote(value: str) -> str:
     """Double-quote a YAML scalar and escape \\ and \"."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
-def create_html_brief(video_dir, message, aspect, duration, language, audience, angle, summary, customization, notes, assets=None):
+def create_html_brief(video_dir, message, aspect, duration, language, audience, angle, summary, customization, notes, style_preset, assets=None):
     brief_path = f'{video_dir}/BRIEF.md'
     workflow = 'aiflow-htmlvideo'
     # Who drives execution.  取值为：automation or companion
@@ -31,6 +87,7 @@ def create_html_brief(video_dir, message, aspect, duration, language, audience, 
     lines.append(f"language: {language}")
     lines.append(f"length: {duration}s")
     lines.append(f"angle: {yaml_quote(angle)}")
+    lines.append(f"style_preset: {style_preset}")
     #lines.append(f"tone: {tone}")
     lines.append("---")
 
@@ -163,40 +220,36 @@ def init_capture(
 
     return ret, msg
 
-def init_htmlvideo(
+def init_frame_style(
     logger,
     project_dir,
     *,
-    resolution,
-    content,
-    message,
-    aspect,
-    duration,
-    language,
-    audience,
-    angle,
-    summary,
-    customization,
-    notes,
+    style_preset,
     task_id: str = "",
 ):
-    # hyperframes init 要求目标目录为空；BRIEF.md 必须在 init 之后写入
-    ret, msg = init_htmlframe(logger, project_dir, resolution=resolution, task_id=task_id)
-    if ret != 0:
-        return ret, "Init video failed!"
+    ret = 0
+    msg = "ok"
 
-    try:
-        create_html_brief(
-            project_dir, message, aspect, duration, language,
-            audience, angle, summary, customization, notes,
-        )
-    except Exception as e:
-        msg = f"Failed to write BRIEF.md: {e}"
+    script_path = f'/app/scripts/build-frame.mjs'
+    if not os.path.exists(script_path):
+        ret = 1
+        msg = f"script_path:{script_path} not found"
         logger.error(f"task_id:{task_id} {msg}")
-        return 1, "Init brief failed!"
+        return ret, msg
 
-    ret, msg = init_capture(logger, project_dir, content, message, summary, task_id=task_id)
-    if ret != 0:
-        return ret, "Init capture failed!"
-
-    return 0, "ok"
+    cmd = [
+        "node",
+        script_path,
+        "--preset",
+        style_preset,
+        "--videodir",
+        str(project_dir),
+    ]
+    logger.info("+ %s", " ".join(cmd))
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        ret = 1
+        msg = f"cmd:{' '.join(cmd)}, returncode:{proc.returncode}, stdout:{proc.stdout}, stderr:{proc.stderr}"
+        logger.error(f"task_id:{task_id} {msg}")
+        return ret, msg
+    return ret, msg
