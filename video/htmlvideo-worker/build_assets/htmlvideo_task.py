@@ -41,7 +41,7 @@ from cmwk_common.log import setup_logger, set_reqid, clear_reqid
 from utility.gpu_util import cuda_error_handler
 
 from html_utility.init_htmlvideo import create_html_brief, init_htmlframe
-from html_utility.video_constant import ASPECT_MAP, LANGUAGE_MAP
+from html_utility.video_constant import LANGUAGE_MAP
 
 # CUDA调试建议：
 # 如果遇到CUDA错误，可以设置以下环境变量来帮助调试：
@@ -213,8 +213,8 @@ def video_create(payload):
         voice = f'{modelcat}|{modelname}'
         
         brief = create_html_brief(project_dir, message, aspect, duration, language, audience, angle, summary, customization, notes, content)
-        resolution = ASPECT_MAP.get(aspect) if aspect else None
-        ret, msg = init_htmlframe(logger, project_dir, resolution, task_id=task_id)
+        # 传进来的参数 aspect 为 ”landscape“ 或 ”portrait“， 即对应 htmlframe 的 resolution
+        ret, msg = init_htmlframe(logger, project_dir, resolution=aspect, task_id=task_id)
         if ret != 0:
             logger.error(f'task_id:{task_id} Failed to initialize htmlframe: {msg}')
             msg = f'Init video failed!'
