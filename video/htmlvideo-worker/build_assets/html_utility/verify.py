@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import glob
 import logging
 import os
 
@@ -12,7 +13,11 @@ HYPERFRAMES_JSON = "hyperframes.json"
 INDEX_FILENAME = "index.html"
 STORYBOARD_FILENAME = "STORYBOARD.md"
 FRAMES_DIR = os.path.join("compositions", "frames")
-CONTACT_SHEET = os.path.join("snapshots", "contact-sheet.jpg")
+SNAPSHOTS_DIR = "snapshots"
+CONTACT_SHEET = os.path.join(SNAPSHOTS_DIR, "contact-sheet.jpg")
+# `snapshot` paginates into contact-sheet-1..N.jpg (9 per page) when more than
+# 9 frames are captured; the bare contact-sheet.jpg only exists for a single page.
+CONTACT_SHEET_GLOB = os.path.join(SNAPSHOTS_DIR, "contact-sheet*.jpg")
 
 
 def _build_verify_frame_prompt() -> str:
@@ -65,14 +70,28 @@ def _validate_prerequisites(project_dir: str) -> None:
 
 
 def _validate_verify_outputs(project_dir: str) -> str:
-    contact_sheet = os.path.join(project_dir, CONTACT_SHEET)
-    if not os.path.isfile(contact_sheet):
+    """Return the contact sheet(s) written by ``snapshot``.
+
+    ``hyperframes snapshot`` emits a single ``snapshots/contact-sheet.jpg``
+    when <=9 frames were captured, or paginated ``contact-sheet-1..N.jpg``
+    sheets (9 per page) when more. Accept either form.
+    """
+    snapshots_dir = os.path.join(project_dir, SNAPSHOTS_DIR)
+    sheets = sorted(glob.glob(os.path.join(snapshots_dir, "contact-sheet*.jpg")))
+    if not sheets:
         raise FileNotFoundError(
-            f"snapshots/contact-sheet.jpg missing after verify: {contact_sheet}"
+            f"snapshots/contact-sheet*.jpg missing after verify: {snapshots_dir}"
         )
-    if os.path.getsize(contact_sheet) == 0:
-        raise ValueError(f"snapshots/contact-sheet.jpg is empty: {contact_sheet}")
-    return contact_sheet
+    non_empty = [s for s in sheets if os.path.getsize(s) > 0]
+    if not non_empty:
+        raise ValueError(
+            f"all snapshots/contact-sheet*.jpg are empty: {snapshots_dir}"
+        )
+    if len(non_empty) == 1:
+        return non_empty[0]
+    # Joining keeps the caller's single-value log line informative for
+    # paginated sheets without changing verify_frame's str return contract.
+    return ", ".join(non_empty)
 
 
 def verify_frame(
@@ -86,7 +105,8 @@ def verify_frame(
     ``hyperframes.json``, ``index.html``, ``STORYBOARD.md``, and
     ``compositions/frames/*.html``. Raises on missing prerequisites, CLI
     failure, or missing contact sheet. Returns the path to
-    ``snapshots/contact-sheet.jpg``. Does not render.
+    ``snapshots/contact-sheet.jpg``, or a comma-joined list of paths when
+    the sheet was paginated (``contact-sheet-1..N.jpg``). Does not render.
     """
     _validate_prerequisites(project_dir)
 
