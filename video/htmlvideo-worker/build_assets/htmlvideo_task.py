@@ -45,6 +45,7 @@ from html_utility.init_htmlvideo import init_htmlvideo
 from html_utility.storyboard import build_storyboard
 from html_utility.visual import build_frame_visual
 from html_utility.frame_html import build_frame_html
+from html_utility.audio import video_audio
 
 # CUDA调试建议：
 # 如果遇到CUDA错误，可以设置以下环境变量来帮助调试：
@@ -251,7 +252,7 @@ def video_create(payload):
         #logger.info(f'task_id:{task_id} storyboard built, storyboard_path:{storyboard_path}, project_dir:{project_dir}')
         #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_STORIED, payload_msg=TaskStatus.VIDEO_STORIED)
 
-        ret, msg = video_audio(logger, project_dir, modelcat, modelname, task_id)
+        ret, msg = video_audio(logger, project_dir, modelcat, modelname, domain, task_id)
         if ret != 0:
             logger.error(f"video_audio task_id:{task_id} {msg}")
             update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
