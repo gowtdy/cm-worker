@@ -44,7 +44,7 @@ from html_utility.intent import INTENT_FILENAME, identify_intent
 from html_utility.init_htmlvideo import init_htmlvideo
 from html_utility.storyboard import build_storyboard
 from html_utility.visual import build_frame_visual
-from html_utility.frame_html import build_frame_html
+from html_utility.frame_html import build_frame_packets, build_frame_html
 from html_utility.audio import video_audio
 
 # CUDA调试建议：
@@ -261,18 +261,26 @@ def video_create(payload):
         # 已在 video_audio 更新了tts 和 caption 状态
 
 
-        try:
-            frame_visual_path = build_frame_visual(project_dir, logger)
-        except Exception as e:
-            msg = f'Failed to build frame visual: {e}'
-            logger.error(f'task_id:{task_id} {msg}')
+        #try:
+        #    frame_visual_path = build_frame_visual(project_dir, logger)
+        #except Exception as e:
+        #    msg = f'Failed to build frame visual: {e}'
+        #    logger.error(f'task_id:{task_id} {msg}')
+        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+        #    return gen_res_dict(1, msg)
+        #logger.info(
+        #    f'task_id:{task_id} frame visual built, frame_visual_path:{frame_visual_path}, '
+        #    f'project_dir:{project_dir}'
+        #)
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VISUALED, payload_msg=TaskStatus.VIDEO_VISUALED)
+
+        ret, msg = build_frame_packets(logger, project_dir, task_id)
+        if ret != 0:
+            logger.error(f"build_frame_packets task_id:{task_id} {msg}")
             update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(1, msg)
-        logger.info(
-            f'task_id:{task_id} frame visual built, frame_visual_path:{frame_visual_path}, '
-            f'project_dir:{project_dir}'
-        )
-        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VISUALED, payload_msg=TaskStatus.VIDEO_VISUALED)
+        logger.info(f"task_id:{task_id} frame packets built, project_dir:{project_dir}")
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAME_PACKETED, payload_msg=TaskStatus.VIDEO_FRAME_PACKETED)
 
         #try:
         #    frame_html_path = build_frame_html(project_dir, logger)
