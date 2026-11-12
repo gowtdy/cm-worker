@@ -190,4 +190,3 @@ def build_frame_packets(
     if proc.stdout:
         logger.info("build_frame_packets stdout: %s", proc.stdout.strip())
     return ret, msg
-)
