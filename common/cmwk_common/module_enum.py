@@ -34,6 +34,7 @@ class TaskStatus(Enum):
     # video 生成过程状态
     VIDEO_INITED = "video_inited"
     VIDEO_STORIED = "video_storied"
+    VIDEO_TTSED = "video_ttsed"
     VIDEO_VISUALED = "video_visualed"
     VIDEO_FRAMED = "video_framed"
 
