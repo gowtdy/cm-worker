@@ -176,9 +176,10 @@ def build_frame_packets(
     cmd = [
         "node",
         script_path,
-        "build",
-        "--videodir",
+        "--project",
         str(project_dir),
+        "--storyboard",
+        f"{project_dir}/STORYBOARD.md",
     ]
     logger.info("+ %s", " ".join(cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True)
