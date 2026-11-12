@@ -157,3 +157,37 @@ def build_frame_html(
         _assemble_index(project_dir, logger)
 
     return _validate_frame_html_outputs(project_dir)
+
+def build_frame_packets(
+    logger: logging.Logger,
+    project_dir: str,
+    task_id: str = "",
+) -> tuple[int, str]:
+    ret = 0
+    msg = "ok"
+
+    script_path = f'/app/scripts/frame-packets.mjs'
+    if not os.path.exists(script_path):
+        ret = 1
+        msg = f"script_path:{script_path} not found"
+        logger.error(f"build_frame_packets task_id:{task_id} {msg}")
+        return ret, msg
+
+    cmd = [
+        "node",
+        script_path,
+        "build",
+        "--videodir",
+        str(project_dir),
+    ]
+    logger.info("+ %s", " ".join(cmd))
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        ret = 1
+        msg = f"cmd:{' '.join(cmd)}, returncode:{proc.returncode}, stdout:{proc.stdout}, stderr:{proc.stderr}"
+        logger.error(f"build_frame_packets task_id:{task_id} {msg}")
+        return ret, msg
+    if proc.stdout:
+        logger.info("build_frame_packets stdout: %s", proc.stdout.strip())
+    return ret, msg
+)
