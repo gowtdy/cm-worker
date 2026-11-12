@@ -1,5 +1,7 @@
 import os
 import subprocess
+from common.cmwk_common.module_enum import TaskStatus
+from common.cmwk_common.module_utils import update_task_status
 
 def video_audio(
     logger,
@@ -15,6 +17,7 @@ def video_audio(
     if ret != 0:
         logger.error(f"tts_generate task_id:{task_id} {msg}")
         return ret, "TTS generate failed!"
+    update_task_status(logger, task_id, domain, TaskStatus.VIDEO_TTSED, payload_msg=TaskStatus.VIDEO_TTSED)
 
     ret, msg = sync_duration(logger, project_dir, task_id)
     if ret != 0:
@@ -25,6 +28,7 @@ def video_audio(
     if ret != 0:
         logger.error(f"caption_generate task_id:{task_id} {msg}")
         return ret, "Caption generate failed!"
+    update_task_status(logger, task_id, domain, TaskStatus.VIDEO_CAPTIONED, payload_msg=TaskStatus.VIDEO_CAPTIONED)
 
     return ret, msg
 
