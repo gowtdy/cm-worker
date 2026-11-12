@@ -37,6 +37,7 @@ class TaskStatus(Enum):
     VIDEO_TTSED = "video_ttsed"
     VIDEO_CAPTIONED = "video_captioned"
     VIDEO_VISUALED = "video_visualed"
+    VIDEO_FRAME_PACKETED = "video_frame_packeted"
     VIDEO_FRAMED = "video_framed"
 
 
