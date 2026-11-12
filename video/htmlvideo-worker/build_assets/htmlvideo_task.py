@@ -383,7 +383,7 @@ def video_create(payload):
         cost_total = time.time() - start_time
         logger.info(
             f'task_id:{task_id}, htmlvideo finish, sync enqueued, transport:{delivery_transport} '
-            f'time[packets:{cost_packets:.1f}s total:{cost_total:.1f}s]'
+            f'time[frame_html:{cost_frame_html:.1f}s total:{cost_total:.1f}s]'
             # 全链路恢复后可改为:
             # f'time[init:{cost_init:.1f}s storyboard:{cost_storyboard:.1f}s audio:{cost_audio:.1f}s '
             # f'visual:{cost_visual:.1f}s packets:{cost_packets:.1f}s frame_html:{cost_frame_html:.1f}s '
