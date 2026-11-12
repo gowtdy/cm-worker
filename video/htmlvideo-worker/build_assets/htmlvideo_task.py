@@ -47,6 +47,7 @@ from html_utility.visual import build_frame_visual
 from html_utility.frame_html import build_frame_packets, build_frame_html, build_index_html
 from html_utility.audio import tts_generate, sync_duration, caption_generate
 from html_utility.verify import verify_frame
+from html_utility.render import render_video
 
 # CUDA调试建议：
 # 如果遇到CUDA错误，可以设置以下环境变量来帮助调试：
@@ -215,6 +216,7 @@ def video_create(payload):
         video_dir = f'/app/videos'
         #project_dir = f'{video_dir}/{today}/user{uid}/{task_id}'
         project_dir = f'{video_dir}/2026-11-11/userclm17919893695531772/6af47d10f984844e'
+        video_name = f'{task_id}_{datetime_str}_{random_number:03d}.mp4'
         os.makedirs(project_dir, exist_ok=True)
         
         # hyperframes init 要求目标目录为空；BRIEF.md 必须在 init 之后写入
@@ -367,6 +369,21 @@ def video_create(payload):
             f'project_dir:{project_dir} cost:{cost_verify:.1f}s'
         )
         update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VERIFIED, payload_msg=TaskStatus.VIDEO_VERIFIED)
+
+        step_start = time.time()
+        try:
+            render_video(logger, project_dir, video_name, task_id)
+        except Exception as e:
+            msg = f'Failed to render video: {e}'
+            logger.error(f'task_id:{task_id} {msg}')
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        cost_render = time.time() - step_start
+        logger.info(
+            f'task_id:{task_id} video rendered, video_name:{video_name}, '
+            f'project_dir:{project_dir} cost:{cost_render:.1f}s'
+        )
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_RENDERED, payload_msg=TaskStatus.VIDEO_RENDERED)
 
         output_file = 'fourth-video.mp4'
         output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
