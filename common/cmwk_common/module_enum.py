@@ -40,6 +40,7 @@ class TaskStatus(Enum):
     VIDEO_FRAME_PACKETED = "video_frame_packeted"
     VIDEO_FRAMED_HTML = "video_framed_html"
     VIDEO_INDEXED = "video_indexed"
+    VIDEO_VERIFIED = "video_verified"
 
 class ModuleType(Enum):
     """定义系统支持的模块类型"""
