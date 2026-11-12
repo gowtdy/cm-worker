@@ -214,7 +214,6 @@ def video_create(payload):
         #project_dir = f'{video_dir}/{today}/user{uid}/{task_id}'
         project_dir = f'{video_dir}/2026-11-11/userclm17919893695531772/6af47d10f984844e'
         os.makedirs(project_dir, exist_ok=True)
-        voice = f'{modelcat}|{modelname}'
         
         # hyperframes init 要求目标目录为空；BRIEF.md 必须在 init 之后写入
         # aspect 为 landscape/portrait 等，对应 hyperframes --resolution preset
@@ -252,7 +251,7 @@ def video_create(payload):
         #logger.info(f'task_id:{task_id} storyboard built, storyboard_path:{storyboard_path}, project_dir:{project_dir}')
         #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_STORIED, payload_msg='ok')
 
-        
+
 
         #try:
         #    storyboard_path = build_frame_visual(project_dir, logger)
