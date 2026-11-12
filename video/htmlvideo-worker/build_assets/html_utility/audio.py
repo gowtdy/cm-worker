@@ -1,13 +1,16 @@
 import os
 import subprocess
-from common.cmwk_common.module_enum import TaskStatus
-from common.cmwk_common.module_utils import update_task_status
+
+from cmwk_common.module_enum import TaskStatus
+from cmwk_common.userserver_worker import update_task_status
+
 
 def video_audio(
     logger,
     project_dir,
     modelcat,
     modelname,
+    domain,
     task_id: str = "",
 ):
     ret = 0
