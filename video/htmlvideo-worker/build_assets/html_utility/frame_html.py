@@ -32,12 +32,30 @@ visually designed STORYBOARD.md (shot sequences + ## Video direction) already
 exist — do not re-init, do not invent visual design, do not run audio, assemble
 index, or render.
 
-Follow the aiflow-build-frame-html skill: dispatch per-frame workers to write
-compositions/frames/*.html and mark each frame animated. Sketches were skipped
+Follow the aiflow-build-frame-html skill and
+../hyperframes-core/references/subagent-dispatch.md. Sketches were skipped
 upstream — none on disk.
 
+Hard constraints (do not violate):
+1. You are the orchestrator ONLY. Never write or edit
+   compositions/frames/*.html yourself — every frame HTML must come from a
+   dispatched per-frame worker.
+2. Before the first dispatch, list storyboard frames and the matching packets
+   under .hyperframes/frame-packets/ (plus _role.md). One worker per frame.
+3. Parallel fan-out: in the SAME turn, DISPATCH all frame workers at once
+   (or in waves of the harness concurrency cap — never serial one-then-next
+   unless the harness hard-caps active children). Do not merge frames into
+   one worker.
+4. WAIT on disk artifacts, not on harness completion text: a frame is done
+   only when compositions/frames/<frame_id>.html exists. Missing file →
+   re-dispatch that worker once with the same prompt; still missing → stop
+   and report.
+5. After each worker lands its HTML, mark that frame animated in
+   STORYBOARD.md (you own storyboard status; workers never edit it).
+
 flow is automation → autonomous: proceed without waiting for confirmation.
-Stop when the skill gate passes (every frame status: animated).
+Stop when the skill gate passes (every frame has compositions/frames/*.html
+on disk and status: animated).
         """
     )
 
