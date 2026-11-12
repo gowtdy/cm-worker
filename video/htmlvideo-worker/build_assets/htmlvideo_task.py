@@ -46,6 +46,7 @@ from html_utility.storyboard import build_storyboard
 from html_utility.visual import build_frame_visual
 from html_utility.frame_html import build_frame_packets, build_frame_html, build_index_html
 from html_utility.audio import tts_generate, sync_duration, caption_generate
+from html_utility.verify import verify_frame
 
 # CUDA调试建议：
 # 如果遇到CUDA错误，可以设置以下环境变量来帮助调试：
@@ -352,6 +353,21 @@ def video_create(payload):
         #)
         #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INDEXED, payload_msg=TaskStatus.VIDEO_INDEXED)
 
+        step_start = time.time()
+        try:
+            contact_sheet_path = verify_frame(project_dir, logger)
+        except Exception as e:
+            msg = f'Failed to verify frame: {e}'
+            logger.error(f'task_id:{task_id} {msg}')
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        cost_verify = time.time() - step_start
+        logger.info(
+            f'task_id:{task_id} frame verified, contact_sheet_path:{contact_sheet_path}, '
+            f'project_dir:{project_dir} cost:{cost_verify:.1f}s'
+        )
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VERIFIED, payload_msg=TaskStatus.VIDEO_VERIFIED)
+
         output_file = 'fourth-video.mp4'
         output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
         try:
@@ -410,11 +426,11 @@ def video_create(payload):
         cost_total = time.time() - start_time
         logger.info(
             f'task_id:{task_id}, htmlvideo finish, sync enqueued, transport:{delivery_transport} '
-            f'time[frame_html:{cost_frame_html:.1f}s total:{cost_total:.1f}s]'
+            f'time[verify:{cost_verify:.1f}s total:{cost_total:.1f}s]'
             # 全链路恢复后可改为:
             # f'time[init:{cost_init:.1f}s storyboard:{cost_storyboard:.1f}s audio:{cost_audio:.1f}s '
             # f'visual:{cost_visual:.1f}s packets:{cost_packets:.1f}s frame_html:{cost_frame_html:.1f}s '
-            # f'total:{cost_total:.1f}s]'
+            # f'index:{cost_index_html:.1f}s verify:{cost_verify:.1f}s total:{cost_total:.1f}s]'
         )
 
         result = f"Processed: {task_id}"
