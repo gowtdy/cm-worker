@@ -44,8 +44,8 @@ from html_utility.intent import INTENT_FILENAME, identify_intent
 from html_utility.init_htmlvideo import init_htmlvideo
 from html_utility.storyboard import build_storyboard
 from html_utility.visual import build_frame_visual
-from html_utility.frame_html import build_frame_packets, build_frame_html
-from html_utility.audio import video_audio
+from html_utility.frame_html import build_frame_packets, build_frame_html, build_index_html
+from html_utility.audio import tts_generate, sync_duration, caption_generate
 
 # CUDA调试建议：
 # 如果遇到CUDA错误，可以设置以下环境变量来帮助调试：
@@ -297,7 +297,19 @@ def video_create(payload):
         #    logger.error(f"sync_duration task_id:{task_id} {msg}")
         #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         #    return gen_res_dict(1, msg)
+        #ret, msg = caption_generate(logger, project_dir, task_id)
+        #if ret != 0:
+        #    logger.error(f"caption_generate task_id:{task_id} {msg}")
+        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+        #    return gen_res_dict(1, msg)
+        #cost_caption = time.time() - step_start
+        #logger.info(
+        #    f"task_id:{task_id} caption generated, project_dir:{project_dir} "
+        #    f"cost:{cost_caption:.1f}s"
+        #)
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_CAPTIONED, payload_msg=TaskStatus.VIDEO_CAPTIONED)
 
+        #step_start = time.time()
         #ret, msg = build_frame_packets(logger, project_dir, task_id)
         #if ret != 0:
         #    logger.error(f"build_frame_packets task_id:{task_id} {msg}")
@@ -310,20 +322,35 @@ def video_create(payload):
         #)
         #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAME_PACKETED, payload_msg=TaskStatus.VIDEO_FRAME_PACKETED)
 
-        step_start = time.time()
-        try:
-            frame_html_path = build_frame_html(project_dir, logger)
-        except Exception as e:
-            msg = f'Failed to build frame html: {e}'
-            logger.error(f'task_id:{task_id} {msg}')
-            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-            return gen_res_dict(1, msg)
-        cost_frame_html = time.time() - step_start
-        logger.info(
-            f'task_id:{task_id} frame html built, frame_html_path:{frame_html_path}, '
-            f'project_dir:{project_dir} cost:{cost_frame_html:.1f}s'
-        )
-        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAMED, payload_msg=TaskStatus.VIDEO_FRAMED)
+        #step_start = time.time()
+        #try:
+        #    frame_html_path = build_frame_html(project_dir, logger)
+        #except Exception as e:
+        #    msg = f'Failed to build frame html: {e}'
+        #    logger.error(f'task_id:{task_id} {msg}')
+        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+        #    return gen_res_dict(1, msg)
+        #cost_frame_html = time.time() - step_start
+        #logger.info(
+        #    f'task_id:{task_id} frame html built, frame_html_path:{frame_html_path}, '
+        #    f'project_dir:{project_dir} cost:{cost_frame_html:.1f}s'
+        #)
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAMED_HTML, payload_msg=TaskStatus.VIDEO_FRAMED_HTML)
+
+        #step_start = time.time()
+        #try:
+        #    index_html_path = build_index_html(project_dir, logger)
+        #except Exception as e:
+        #    msg = f'Failed to build index html: {e}'
+        #    logger.error(f'task_id:{task_id} {msg}')
+        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+        #    return gen_res_dict(1, msg)
+        #cost_index_html = time.time() - step_start
+        #logger.info(
+        #    f'task_id:{task_id} index html built, index_html_path:{index_html_path}, '
+        #    f'project_dir:{project_dir} cost:{cost_index_html:.1f}s'
+        #)
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INDEXED, payload_msg=TaskStatus.VIDEO_INDEXED)
 
         output_file = 'fourth-video.mp4'
         output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
