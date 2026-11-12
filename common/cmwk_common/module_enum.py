@@ -41,6 +41,7 @@ class TaskStatus(Enum):
     VIDEO_FRAMED_HTML = "video_framed_html"
     VIDEO_INDEXED = "video_indexed"
     VIDEO_VERIFIED = "video_verified"
+    VIDEO_RENDERED = "video_rendered"
 
 class ModuleType(Enum):
     """定义系统支持的模块类型"""
