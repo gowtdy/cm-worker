@@ -239,7 +239,7 @@ def video_create(payload):
         #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         #    return gen_res_dict(1, msg)
         #logger.info(f'task_id:{task_id} htmlvideo initialized, project_dir:{project_dir}')
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INITED, payload_msg='ok')
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INITED, payload_msg=TaskStatus.VIDEO_INITED)
 
         #try:
         #    storyboard_path = build_storyboard(project_dir, logger)
@@ -249,35 +249,42 @@ def video_create(payload):
         #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         #    return gen_res_dict(1, msg)
         #logger.info(f'task_id:{task_id} storyboard built, storyboard_path:{storyboard_path}, project_dir:{project_dir}')
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_STORIED, payload_msg='ok')
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_STORIED, payload_msg=TaskStatus.VIDEO_STORIED)
 
+        ret, msg = video_audio(logger, project_dir, modelcat, modelname, task_id)
+        if ret != 0:
+            logger.error(f"video_audio task_id:{task_id} {msg}")
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        logger.info(f"task_id:{task_id} tts and caption generated, project_dir:{project_dir}")
+        # 已在 video_audio 更新了tts 和 caption 状态
 
 
         #try:
-        #    storyboard_path = build_frame_visual(project_dir, logger)
+        #    frame_visual_path = build_frame_visual(project_dir, logger)
         #except Exception as e:
         #    msg = f'Failed to build frame visual: {e}'
         #    logger.error(f'task_id:{task_id} {msg}')
         #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         #    return gen_res_dict(1, msg)
         #logger.info(
-        #    f'task_id:{task_id} frame visual built, storyboard_path:{storyboard_path}, '
+        #    f'task_id:{task_id} frame visual built, frame_visual_path:{frame_visual_path}, '
         #    f'project_dir:{project_dir}'
         #)
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VISUALED, payload_msg='ok')
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VISUALED, payload_msg=TaskStatus.VIDEO_VISUALED)
 
         #try:
-        #    index_path = build_frame_html(project_dir, logger)
+        #    frame_html_path = build_frame_html(project_dir, logger)
         #except Exception as e:
         #    msg = f'Failed to build frame html: {e}'
         #    logger.error(f'task_id:{task_id} {msg}')
         #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         #    return gen_res_dict(1, msg)
         #logger.info(
-        #    f'task_id:{task_id} frame html built, index_path:{index_path}, '
+        #    f'task_id:{task_id} frame html built, frame_html_path:{frame_html_path}, '
         #    f'project_dir:{project_dir}'
         #)
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAMED, payload_msg='ok')
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAMED, payload_msg=TaskStatus.VIDEO_FRAMED)
 
         output_file = 'fourth-video.mp4'
         output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
