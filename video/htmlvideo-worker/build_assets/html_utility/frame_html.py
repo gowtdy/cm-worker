@@ -24,21 +24,21 @@ STATUS_RE = re.compile(r"^- status:\s*(\w+)", re.MULTILINE)
 
 def _build_frame_html_prompt() -> str:
     return (
-        "/aiflow-build-frame-html\n\n"
-        "Work in this HyperFrames project root. hyperframes.json, frame.md, and a\n"
-        "visually designed STORYBOARD.md (shot sequences + ## Video direction) already\n"
-        "exist. .hyperframes/frame-packets/ and _role.md are already built upstream —\n"
-        "do not init, invent visual design, run frame-packets.mjs, audio, transitions\n"
-        "inject, lint/check/preview, or render.\n\n"
-        "Follow the aiflow-build-frame-html skill: consume the pre-built packets,\n"
-        "dispatch one worker per frame (parallel if possible) to write\n"
-        "compositions/frames/NN-*.html, and mark each frame status: animated as\n"
-        "workers return. Sketches were skipped upstream — none on disk. Then assemble\n"
-        "index.html with:\n"
-        "  node /app/scripts/assemble-index.mjs --videodir <this project root>\n\n"
-        "flow is automation → autonomous: proceed without waiting for confirmation.\n"
-        "Stop when the skill gate passes (every frame status: animated; index.html\n"
-        "exists).\n"
+        """
+/aiflow-build-frame-html
+
+Work in this HyperFrames project directory. hyperframes.json, frame.md, and a
+visually designed STORYBOARD.md (shot sequences + ## Video direction) already
+exist — do not re-init, do not invent visual design, do not run audio, assemble
+index, or render.
+
+Follow the aiflow-build-frame-html skill: dispatch per-frame workers to write
+compositions/frames/*.html and mark each frame animated. Sketches were skipped
+upstream — none on disk.
+
+flow is automation → autonomous: proceed without waiting for confirmation.
+Stop when the skill gate passes (every frame status: animated).
+        """
     )
 
 
