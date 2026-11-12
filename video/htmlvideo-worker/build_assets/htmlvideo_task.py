@@ -252,27 +252,27 @@ def video_create(payload):
         #logger.info(f'task_id:{task_id} storyboard built, storyboard_path:{storyboard_path}, project_dir:{project_dir}')
         #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_STORIED, payload_msg=TaskStatus.VIDEO_STORIED)
 
-        ret, msg = video_audio(logger, project_dir, modelcat, modelname, domain, task_id)
-        if ret != 0:
-            logger.error(f"video_audio task_id:{task_id} {msg}")
-            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-            return gen_res_dict(1, msg)
-        logger.info(f"task_id:{task_id} tts and caption generated, project_dir:{project_dir}")
+        #ret, msg = video_audio(logger, project_dir, modelcat, modelname, domain, task_id)
+        #if ret != 0:
+        #    logger.error(f"video_audio task_id:{task_id} {msg}")
+        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+        #    return gen_res_dict(1, msg)
+        #logger.info(f"task_id:{task_id} tts and caption generated, project_dir:{project_dir}")
         # 已在 video_audio 更新了tts 和 caption 状态
 
 
-        #try:
-        #    frame_visual_path = build_frame_visual(project_dir, logger)
-        #except Exception as e:
-        #    msg = f'Failed to build frame visual: {e}'
-        #    logger.error(f'task_id:{task_id} {msg}')
-        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-        #    return gen_res_dict(1, msg)
-        #logger.info(
-        #    f'task_id:{task_id} frame visual built, frame_visual_path:{frame_visual_path}, '
-        #    f'project_dir:{project_dir}'
-        #)
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VISUALED, payload_msg=TaskStatus.VIDEO_VISUALED)
+        try:
+            frame_visual_path = build_frame_visual(project_dir, logger)
+        except Exception as e:
+            msg = f'Failed to build frame visual: {e}'
+            logger.error(f'task_id:{task_id} {msg}')
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        logger.info(
+            f'task_id:{task_id} frame visual built, frame_visual_path:{frame_visual_path}, '
+            f'project_dir:{project_dir}'
+        )
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VISUALED, payload_msg=TaskStatus.VIDEO_VISUALED)
 
         #try:
         #    frame_html_path = build_frame_html(project_dir, logger)
