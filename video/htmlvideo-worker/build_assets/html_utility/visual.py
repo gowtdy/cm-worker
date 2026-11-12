@@ -16,24 +16,20 @@ VIDEO_DIRECTION_HEADING = "## Video direction"
 
 def _build_frame_visual_prompt() -> str:
     return (
-        "/aiflow-build-frame-visual\n\n"
-        "Work in this HyperFrames project root. hyperframes.json, frame.md, and an\n"
-        "outline-stage STORYBOARD.md already exist — do not init, invent a storyboard,\n"
-        "re-interrogate, write HTML, dispatch frame workers, run audio, assemble\n"
-        "index.html, or render.\n\n"
-        "Follow the aiflow-build-frame-visual skill: frame visual design only. Skip the\n"
-        "sketch pass (autonomous mode). Edit STORYBOARD.md in place — do not create\n"
-        "another storyboard. Use frame.md as source of truth for color, type, layout\n"
-        "feel, and style. Read references/visual-design.md,\n"
-        "../hyperframes-animation/blueprints-index.md, references/motion-language.md,\n"
-        "and ../hyperframes-animation/rules-index.md.\n\n"
-        "For every frame, write a time-coded shot sequence paced to the voiceover\n"
-        "(no front-loading), with invented focal/roles named inline Layout and motion\n"
-        "per Scene. Add one video-wide ## Video direction block. Do not change story,\n"
-        "script, transition_in, status, or the source text.\n\n"
-        "flow is automation → autonomous: proceed without waiting for sketch/approval.\n"
-        "Stop when the skill gate passes (every frame has a time-coded shot sequence;\n"
-        "## Video direction exists). Do not build HTML.\n"
+        """
+/aiflow-build-frame-visual
+
+Work in this HyperFrames project directory. hyperframes.json, frame.md, and an
+outline-stage STORYBOARD.md already exist — do not re-init, do not invent a
+storyboard, do not write HTML, do not run audio, assemble index, or render.
+
+Follow the aiflow-build-frame-visual skill: enrich STORYBOARD.md with time-coded
+shot sequences and a ## Video direction block (skip sketch; autonomous). Do not
+mark frames animated; do not write compositions/frames/*.html.
+
+flow is automation → autonomous: proceed without waiting for sketch confirmation.
+Stop when the skill gate passes (shot sequences + ## Video direction).
+        """
     )
 
 
