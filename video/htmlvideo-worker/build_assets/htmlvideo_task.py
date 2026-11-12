@@ -263,18 +263,18 @@ def video_create(payload):
         #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_STORIED, payload_msg=TaskStatus.VIDEO_STORIED)
 
         #step_start = time.time()
-        #ret, msg = video_audio(logger, project_dir, modelcat, modelname, domain, task_id)
+        #ret, msg = tts_generate(logger, project_dir, modelcat, modelname, task_id)
         #if ret != 0:
-        #    logger.error(f"video_audio task_id:{task_id} {msg}")
+        #    logger.error(f"tts_generate task_id:{task_id} {msg}")
         #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         #    return gen_res_dict(1, msg)
+        #
         #cost_audio = time.time() - step_start
         #logger.info(
-        #    f"task_id:{task_id} tts and caption generated, project_dir:{project_dir} "
-        #    f"cost:{cost_audio:.1f}s"
+        #    f"task_id:{task_id}  generated, project_dir:{project_dir} "
+        #    f"cost:{cost_tts:.1f}s"
         #)
-        # 已在 video_audio 更新了tts 和 caption 状态
-
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_TTSED, payload_msg=TaskStatus.VIDEO_TTSED)
 
         #step_start = time.time()
         #try:
@@ -291,33 +291,39 @@ def video_create(payload):
         #)
         #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VISUALED, payload_msg=TaskStatus.VIDEO_VISUALED)
 
-        step_start = time.time()
-        ret, msg = build_frame_packets(logger, project_dir, task_id)
-        if ret != 0:
-            logger.error(f"build_frame_packets task_id:{task_id} {msg}")
-            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-            return gen_res_dict(1, msg)
-        cost_packets = time.time() - step_start
-        logger.info(
-            f"task_id:{task_id} frame packets built, project_dir:{project_dir} "
-            f"cost:{cost_packets:.1f}s"
-        )
-        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAME_PACKETED, payload_msg=TaskStatus.VIDEO_FRAME_PACKETED)
-
         #step_start = time.time()
-        #try:
-        #    frame_html_path = build_frame_html(project_dir, logger)
-        #except Exception as e:
-        #    msg = f'Failed to build frame html: {e}'
-        #    logger.error(f'task_id:{task_id} {msg}')
+        #ret, msg = sync_duration(logger, project_dir, task_id)
+        #if ret != 0:
+        #    logger.error(f"sync_duration task_id:{task_id} {msg}")
         #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         #    return gen_res_dict(1, msg)
-        #cost_frame_html = time.time() - step_start
+
+        #ret, msg = build_frame_packets(logger, project_dir, task_id)
+        #if ret != 0:
+        #    logger.error(f"build_frame_packets task_id:{task_id} {msg}")
+        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+        #    return gen_res_dict(1, msg)
+        #cost_packets = time.time() - step_start
         #logger.info(
-        #    f'task_id:{task_id} frame html built, frame_html_path:{frame_html_path}, '
-        #    f'project_dir:{project_dir} cost:{cost_frame_html:.1f}s'
+        #    f"task_id:{task_id} frame packets built, project_dir:{project_dir} "
+        #    f"cost:{cost_packets:.1f}s"
         #)
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAMED, payload_msg=TaskStatus.VIDEO_FRAMED)
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAME_PACKETED, payload_msg=TaskStatus.VIDEO_FRAME_PACKETED)
+
+        step_start = time.time()
+        try:
+            frame_html_path = build_frame_html(project_dir, logger)
+        except Exception as e:
+            msg = f'Failed to build frame html: {e}'
+            logger.error(f'task_id:{task_id} {msg}')
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        cost_frame_html = time.time() - step_start
+        logger.info(
+            f'task_id:{task_id} frame html built, frame_html_path:{frame_html_path}, '
+            f'project_dir:{project_dir} cost:{cost_frame_html:.1f}s'
+        )
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAMED, payload_msg=TaskStatus.VIDEO_FRAMED)
 
         output_file = 'fourth-video.mp4'
         output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
