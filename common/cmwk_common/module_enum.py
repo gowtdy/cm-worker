@@ -33,7 +33,15 @@ class TaskStatus(Enum):
     FAILED = "failed"
     # video 生成过程状态
     VIDEO_INITED = "video_inited"
-
+    VIDEO_STORIED = "video_storied"
+    VIDEO_TTSED = "video_ttsed"
+    VIDEO_CAPTIONED = "video_captioned"
+    VIDEO_VISUALED = "video_visualed"
+    VIDEO_FRAME_PACKETED = "video_frame_packeted"
+    VIDEO_FRAMED_HTML = "video_framed_html"
+    VIDEO_INDEXED = "video_indexed"
+    VIDEO_VERIFIED = "video_verified"
+    VIDEO_RENDERED = "video_rendered"
 
 class ModuleType(Enum):
     """定义系统支持的模块类型"""

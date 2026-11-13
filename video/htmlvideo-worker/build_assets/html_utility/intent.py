@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Non-interactive Claude Code skill runners for htmlvideo worker."""
+"""Intent extraction helpers for htmlvideo worker."""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
-import shutil
-import subprocess
+from html_utility.claude_cli import run_claude
 
 INTENT_REQUIRED_FIELDS = ("message", "angle", "audience", "name", "summary")
 INTENT_FILENAME = "intent.json"
-
 
 def _build_identify_intent_prompt(output_file: str, content: str) -> str:
     return (
@@ -23,31 +21,6 @@ def _build_identify_intent_prompt(output_file: str, content: str) -> str:
         "flow is automation → autonomous: proceed without waiting for approval.\n"
         f"Stop when {output_file} exists and is valid JSON with required fields.\n"
     )
-
-
-def _run_claude(project_dir: str, prompt: str, logger: logging.Logger) -> int:
-    """Invoke Claude Code non-interactively (same flags as run_aiflow_build_skills)."""
-    if shutil.which("claude") is None:
-        raise RuntimeError("claude CLI not found on PATH")
-    cmd = [
-        "claude",
-        "--print",
-        "--dangerously-skip-permissions",
-        "--permission-mode",
-        "bypassPermissions",
-        "--output-format",
-        "text",
-        prompt,
-    ]
-    logger.info(
-        "claude skill start cwd=%s cmd=claude --print "
-        "--dangerously-skip-permissions --permission-mode bypassPermissions "
-        "--output-format text <prompt>",
-        project_dir,
-    )
-    proc = subprocess.run(cmd, cwd=project_dir)
-    return proc.returncode
-
 
 def _load_and_validate_intent(intent_file: str) -> dict:
     if not os.path.isfile(intent_file):
@@ -64,7 +37,7 @@ def _load_and_validate_intent(intent_file: str) -> dict:
     return intent
 
 
-def run_identify_intent(
+def identify_intent(
     output_file: str,
     content: str,
     logger: logging.Logger,
@@ -83,7 +56,7 @@ def run_identify_intent(
         os.remove(output_file)
 
     prompt = _build_identify_intent_prompt(output_file, content)
-    rc = _run_claude(work_dir, prompt, logger)
+    rc = run_claude(work_dir, prompt, logger)
     if rc != 0:
         raise RuntimeError(f"claude identify-intent failed rc:{rc}")
 
