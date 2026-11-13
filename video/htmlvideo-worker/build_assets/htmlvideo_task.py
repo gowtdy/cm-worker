@@ -214,8 +214,8 @@ def video_create(payload):
         content_length = len(content)
 
         video_dir = f'/app/videos'
-        #project_dir = f'{video_dir}/{today}/user{uid}/{task_id}'
-        project_dir = f'{video_dir}/2026-11-11/userclm17919893695531772/6af47d10f984844e'
+        project_dir = f'{video_dir}/{today}/user{uid}/{task_id}'
+        #project_dir = f'{video_dir}/2026-11-11/userclm17919893695531772/6af47d10f984844e'
         video_name = f'{task_id}_{datetime_str}_{random_number:03d}.mp4'
         os.makedirs(project_dir, exist_ok=True)
         
@@ -385,10 +385,10 @@ def video_create(payload):
         )
         update_task_status(logger, task_id, domain, TaskStatus.VIDEO_RENDERED, payload_msg=TaskStatus.VIDEO_RENDERED)
 
-        #output_file = 'fourth-video.mp4'
-        #output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
-        output_file = video_name
-        output_path = f'{project_dir}/{output_file}'
+        output_file = '6af6699ac7c3bba6_20261113013627_056.mp4'
+        output_path = f'{video_dir}/2026-11-11/userclm17919893695531772/6af47d10f984844e/{output_file}'
+        #output_file = video_name
+        #output_path = f'{project_dir}/{output_file}'
         try:
             delivery_transport = resolve_delivery_transport(email)
             proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
