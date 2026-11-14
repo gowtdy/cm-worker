@@ -121,7 +121,16 @@ def build_frame_html(
         )
 
     prompt = _build_frame_html_prompt()
-    rc = run_claude(project_dir, prompt, logger)
+    # Cap the effort of this skill's per-frame worker subagents at "high"
+    # (the model's own default tier; the env-level max drives 32k-token
+    # deliberation stalls on ambiguous frames). The orchestrator session
+    # keeps its own effort; other skills are untouched.
+    rc = run_claude(
+        project_dir,
+        prompt,
+        logger,
+        extra_env={"CLAUDE_CODE_SUBAGENT_EFFORT": "high"},
+    )
     if rc != 0:
         raise RuntimeError(f"claude build-frame-html failed rc:{rc}")
 
