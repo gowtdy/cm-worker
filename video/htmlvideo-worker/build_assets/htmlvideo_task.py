@@ -225,6 +225,7 @@ def video_create(payload):
         content_length = len(content)
 
         video_dir = f'/app/videos'
+        task_id = "6afb004009d47552"
         project_dir = f'{video_dir}/{today}/user{uid}/{task_id}'
         #project_dir = f'{video_dir}/2026-11-11/userclm17919893695531772/6af47d10f984844e'
         video_name = f'{task_id}_{datetime_str}_{random_number:03d}.mp4'
