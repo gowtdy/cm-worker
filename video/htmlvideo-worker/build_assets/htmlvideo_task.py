@@ -286,8 +286,8 @@ def video_create(payload):
         
         cost_audio = time.time() - step_start
         logger.info(
-            f"task_id:{task_id}  generated, project_dir:{project_dir} "
-            f"cost:{cost_tts:.1f}s"
+            f"task_id:{task_id} tts generated, project_dir:{project_dir} "
+            f"cost:{cost_audio:.1f}s"
         )
         update_task_status(logger, task_id, domain, TaskStatus.VIDEO_TTSED, payload_msg=TaskStatus.VIDEO_TTSED)
 
