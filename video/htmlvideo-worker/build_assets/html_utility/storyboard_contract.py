@@ -39,13 +39,18 @@ def _prompt_header() -> str:
 def _prompt_footer() -> str:
     return (
         "Write outline-stage STORYBOARD.md (status: outline, required narrative "
-        "fields filled) and SCRIPT.md in ONE response using two Write tool calls "
-        "(parallel, same response), then end with the heads-up summary: "
+        "fields filled) and SCRIPT.md in ONE response: issue both Write tool "
+        "calls together in the same assistant turn (SCRIPT.md whenever any frame "
+        "has a non-empty voiceover). Never split the two files across turns, "
+        "never end the turn between the two Writes, and never re-read either "
+        "file after writing. Then end with the heads-up summary: "
         "'This video tells [audience] that [message]' + a frame table "
         "(frame · beat (type, duration) · on screen · why).\n\n"
         "Do not write ## Video direction or time-coded Scene shot blocks — those "
-        "belong to /aiflow-build-frame-visual. Stop when the gate passes: both "
-        "files exist and every frame carries the required narrative fields.\n"
+        "belong to /aiflow-build-frame-visual. Stop when the gate passes: "
+        "STORYBOARD.md exists with every frame carrying the required narrative "
+        "fields, and SCRIPT.md exists whenever any frame has a non-empty "
+        "voiceover.\n"
     )
 
 
