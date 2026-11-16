@@ -14,12 +14,22 @@ INTENT_FILENAME = "intent.json"
 def _build_identify_intent_prompt(output_file: str, content: str) -> str:
     return (
         f"/aiflow-identify-intent {output_file}\n\n"
-        f"Write output only to {output_file}.\n\n"
-        f"Source text:\n\n{content}\n\n"
-        "Follow the aiflow-identify-intent skill: extract message, angle, author, "
+        f"Write output only to {output_file}. The parent directory already exists\n"
+        f"(the caller created it) — do not mkdir, do not list or inspect anything.\n\n"
+        f"Source text (already inlined below, nothing to read):\n\n{content}\n\n"
+        "Follow the aiflow-identify-intent skill: extract message, angle, audience,\n"
         "name, summary (and optional customization/notes). Prefer the input language.\n\n"
+        "Execution discipline (automation run — the caller validates the file):\n"
+        "1. Your FIRST response must be the Write tool call carrying the complete\n"
+        "   pretty-printed JSON as the file content — do NOT echo or preview the\n"
+        "   JSON as text first.\n"
+        "2. Do NOT run Bash / python / mkdir / json.tool or re-read the file — the\n"
+        "   caller validates intent.json itself.\n"
+        "3. Delete the skill's 'briefly confirm' step for this run: after the Write\n"
+        "   returns success, end your turn immediately — no confirmation, no summary.\n\n"
         "flow is automation → autonomous: proceed without waiting for approval.\n"
-        f"Stop when {output_file} exists and is valid JSON with required fields.\n"
+        f"Gate: {output_file} exists and is valid JSON with required fields\n"
+        "(verified by the caller, not by you).\n"
     )
 
 def _load_and_validate_intent(intent_file: str) -> dict:
