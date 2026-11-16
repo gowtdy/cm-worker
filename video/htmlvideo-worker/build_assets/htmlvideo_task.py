@@ -232,96 +232,96 @@ def video_create(payload):
         
         # hyperframes init 要求目标目录为空；BRIEF.md 必须在 init 之后写入
         # aspect 为 landscape/portrait 等，对应 hyperframes --resolution preset
-        step_start = time.time()
-        ret, msg = init_htmlvideo(
-            logger,
-            project_dir,
-            resolution=aspect,
-            content=content,
-            message=message,
-            aspect=aspect,
-            duration=duration,
-            language=language,
-            audience=audience,
-            angle=angle,
-            summary=summary,
-            customization=customization,
-            notes=notes,
-            style_preset=style,
-            task_id=task_id,
-        )
-        if ret != 0:
-            logger.error(f'task_id:{task_id} Failed to initialize htmlvideo: {msg}')
-            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-            return gen_res_dict(1, msg)
-        cost_init = time.time() - step_start
-        logger.info(
-            f'task_id:{task_id} htmlvideo initialized, project_dir:{project_dir} '
-            f'cost:{cost_init:.1f}s'
-        )
-        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INITED, payload_msg=TaskStatus.VIDEO_INITED)
-
-        step_start = time.time()
-        try:
-            storyboard_path = build_storyboard(project_dir, logger)
-        except Exception as e:
-            msg = f'Failed to build storyboard: {e}'
-            logger.error(f'task_id:{task_id} {msg}')
-            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-            return gen_res_dict(1, msg)
-        cost_storyboard = time.time() - step_start
-        logger.info(
-            f'task_id:{task_id} storyboard built, storyboard_path:{storyboard_path}, '
-            f'project_dir:{project_dir} cost:{cost_storyboard:.1f}s'
-        )
-        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_STORIED, payload_msg=TaskStatus.VIDEO_STORIED)
-
         #step_start = time.time()
-        #ret, msg = tts_generate(logger, project_dir, modelcat, modelname, task_id)
+        #ret, msg = init_htmlvideo(
+        #    logger,
+        #    project_dir,
+        #    resolution=aspect,
+        #    content=content,
+        #    message=message,
+        #    aspect=aspect,
+        #    duration=duration,
+        #    language=language,
+        #    audience=audience,
+        #    angle=angle,
+        #    summary=summary,
+        #    customization=customization,
+        #    notes=notes,
+        #    style_preset=style,
+        #    task_id=task_id,
+        #)
         #if ret != 0:
-        #    logger.error(f"tts_generate task_id:{task_id} {msg}")
+        #    logger.error(f'task_id:{task_id} Failed to initialize htmlvideo: {msg}')
         #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         #    return gen_res_dict(1, msg)
-        #
-        #cost_audio = time.time() - step_start
+        #cost_init = time.time() - step_start
         #logger.info(
-        #    f"task_id:{task_id}  generated, project_dir:{project_dir} "
-        #    f"cost:{cost_tts:.1f}s"
+        #    f'task_id:{task_id} htmlvideo initialized, project_dir:{project_dir} '
+        #    f'cost:{cost_init:.1f}s'
         #)
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_TTSED, payload_msg=TaskStatus.VIDEO_TTSED)
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INITED, payload_msg=TaskStatus.VIDEO_INITED)
 
         #step_start = time.time()
         #try:
-        #    frame_visual_path = build_frame_visual(project_dir, logger)
+        #    storyboard_path = build_storyboard(project_dir, logger)
         #except Exception as e:
-        #    msg = f'Failed to build frame visual: {e}'
+        #    msg = f'Failed to build storyboard: {e}'
         #    logger.error(f'task_id:{task_id} {msg}')
         #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
         #    return gen_res_dict(1, msg)
-        #cost_visual = time.time() - step_start
+        #cost_storyboard = time.time() - step_start
         #logger.info(
-        #    f'task_id:{task_id} frame visual built, frame_visual_path:{frame_visual_path}, '
-        #    f'project_dir:{project_dir} cost:{cost_visual:.1f}s'
+        #    f'task_id:{task_id} storyboard built, storyboard_path:{storyboard_path}, '
+        #    f'project_dir:{project_dir} cost:{cost_storyboard:.1f}s'
         #)
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VISUALED, payload_msg=TaskStatus.VIDEO_VISUALED)
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_STORIED, payload_msg=TaskStatus.VIDEO_STORIED)
 
-        #step_start = time.time()
-        #ret, msg = sync_duration(logger, project_dir, task_id)
-        #if ret != 0:
-        #    logger.error(f"sync_duration task_id:{task_id} {msg}")
-        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-        #    return gen_res_dict(1, msg)
-        #ret, msg = caption_generate(logger, project_dir, task_id)
-        #if ret != 0:
-        #    logger.error(f"caption_generate task_id:{task_id} {msg}")
-        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-        #    return gen_res_dict(1, msg)
-        #cost_caption = time.time() - step_start
-        #logger.info(
-        #    f"task_id:{task_id} caption generated, project_dir:{project_dir} "
-        #    f"cost:{cost_caption:.1f}s"
-        #)
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_CAPTIONED, payload_msg=TaskStatus.VIDEO_CAPTIONED)
+        step_start = time.time()
+        ret, msg = tts_generate(logger, project_dir, modelcat, modelname, task_id)
+        if ret != 0:
+            logger.error(f"tts_generate task_id:{task_id} {msg}")
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        
+        cost_audio = time.time() - step_start
+        logger.info(
+            f"task_id:{task_id}  generated, project_dir:{project_dir} "
+            f"cost:{cost_tts:.1f}s"
+        )
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_TTSED, payload_msg=TaskStatus.VIDEO_TTSED)
+
+        step_start = time.time()
+        try:
+            frame_visual_path = build_frame_visual(project_dir, logger)
+        except Exception as e:
+            msg = f'Failed to build frame visual: {e}'
+            logger.error(f'task_id:{task_id} {msg}')
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        cost_visual = time.time() - step_start
+        logger.info(
+            f'task_id:{task_id} frame visual built, frame_visual_path:{frame_visual_path}, '
+            f'project_dir:{project_dir} cost:{cost_visual:.1f}s'
+        )
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VISUALED, payload_msg=TaskStatus.VIDEO_VISUALED)
+
+        step_start = time.time()
+        ret, msg = sync_duration(logger, project_dir, task_id)
+        if ret != 0:
+            logger.error(f"sync_duration task_id:{task_id} {msg}")
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        ret, msg = caption_generate(logger, project_dir, task_id)
+        if ret != 0:
+            logger.error(f"caption_generate task_id:{task_id} {msg}")
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        cost_caption = time.time() - step_start
+        logger.info(
+            f"task_id:{task_id} caption generated, project_dir:{project_dir} "
+            f"cost:{cost_caption:.1f}s"
+        )
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_CAPTIONED, payload_msg=TaskStatus.VIDEO_CAPTIONED)
 
         #step_start = time.time()
         #ret, msg = build_frame_packets(logger, project_dir, task_id)
