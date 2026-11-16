@@ -324,78 +324,78 @@ def video_create(payload):
         #)
         #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_CAPTIONED, payload_msg=TaskStatus.VIDEO_CAPTIONED)
 
-        step_start = time.time()
-        ret, msg = build_frame_packets(logger, project_dir, task_id)
-        if ret != 0:
-            logger.error(f"build_frame_packets task_id:{task_id} {msg}")
-            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-            return gen_res_dict(1, msg)
-        cost_packets = time.time() - step_start
-        logger.info(
-            f"task_id:{task_id} frame packets built, project_dir:{project_dir} "
-            f"cost:{cost_packets:.1f}s"
-        )
-        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAME_PACKETED, payload_msg=TaskStatus.VIDEO_FRAME_PACKETED)
+        #step_start = time.time()
+        #ret, msg = build_frame_packets(logger, project_dir, task_id)
+        #if ret != 0:
+        #    logger.error(f"build_frame_packets task_id:{task_id} {msg}")
+        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+        #    return gen_res_dict(1, msg)
+        #cost_packets = time.time() - step_start
+        #logger.info(
+        #    f"task_id:{task_id} frame packets built, project_dir:{project_dir} "
+        #    f"cost:{cost_packets:.1f}s"
+        #)
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAME_PACKETED, payload_msg=TaskStatus.VIDEO_FRAME_PACKETED)
+
+        #step_start = time.time()
+        #try:
+        #    frame_html_path = build_frame_html(project_dir, logger)
+        #except Exception as e:
+        #    msg = f'Failed to build frame html: {e}'
+        #    logger.error(f'task_id:{task_id} {msg}')
+        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+        #    return gen_res_dict(1, msg)
+        #cost_frame_html = time.time() - step_start
+        #logger.info(
+        #    f'task_id:{task_id} frame html built, frame_html_path:{frame_html_path}, '
+        #    f'project_dir:{project_dir} cost:{cost_frame_html:.1f}s'
+        #)
+        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAMED_HTML, payload_msg=TaskStatus.VIDEO_FRAMED_HTML)
 
         step_start = time.time()
         try:
-            frame_html_path = build_frame_html(project_dir, logger)
+            index_html_path = build_index_html(project_dir, logger)
         except Exception as e:
-            msg = f'Failed to build frame html: {e}'
+            msg = f'Failed to build index html: {e}'
             logger.error(f'task_id:{task_id} {msg}')
             update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
             return gen_res_dict(1, msg)
-        cost_frame_html = time.time() - step_start
+        cost_index_html = time.time() - step_start
         logger.info(
-            f'task_id:{task_id} frame html built, frame_html_path:{frame_html_path}, '
-            f'project_dir:{project_dir} cost:{cost_frame_html:.1f}s'
+            f'task_id:{task_id} index html built, index_html_path:{index_html_path}, '
+            f'project_dir:{project_dir} cost:{cost_index_html:.1f}s'
         )
-        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAMED_HTML, payload_msg=TaskStatus.VIDEO_FRAMED_HTML)
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INDEXED, payload_msg=TaskStatus.VIDEO_INDEXED)
 
-        #step_start = time.time()
-        #try:
-        #    index_html_path = build_index_html(project_dir, logger)
-        #except Exception as e:
-        #    msg = f'Failed to build index html: {e}'
-        #    logger.error(f'task_id:{task_id} {msg}')
-        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-        #    return gen_res_dict(1, msg)
-        #cost_index_html = time.time() - step_start
-        #logger.info(
-        #    f'task_id:{task_id} index html built, index_html_path:{index_html_path}, '
-        #    f'project_dir:{project_dir} cost:{cost_index_html:.1f}s'
-        #)
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INDEXED, payload_msg=TaskStatus.VIDEO_INDEXED)
+        step_start = time.time()
+        try:
+            contact_sheet_path = verify_frame(project_dir, logger)
+        except Exception as e:
+            msg = f'Failed to verify frame: {e}'
+            logger.error(f'task_id:{task_id} {msg}')
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        cost_verify = time.time() - step_start
+        logger.info(
+            f'task_id:{task_id} frame verified, contact_sheet_path:{contact_sheet_path}, '
+            f'project_dir:{project_dir} cost:{cost_verify:.1f}s'
+        )
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VERIFIED, payload_msg=TaskStatus.VIDEO_VERIFIED)
 
-        #step_start = time.time()
-        #try:
-        #    contact_sheet_path = verify_frame(project_dir, logger)
-        #except Exception as e:
-        #    msg = f'Failed to verify frame: {e}'
-        #    logger.error(f'task_id:{task_id} {msg}')
-        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-        #    return gen_res_dict(1, msg)
-        #cost_verify = time.time() - step_start
-        #logger.info(
-        #    f'task_id:{task_id} frame verified, contact_sheet_path:{contact_sheet_path}, '
-        #    f'project_dir:{project_dir} cost:{cost_verify:.1f}s'
-        #)
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_VERIFIED, payload_msg=TaskStatus.VIDEO_VERIFIED)
-
-        #step_start = time.time()
-        #try:
-        #    render_video(logger, project_dir, video_name, task_id)
-        #except Exception as e:
-        #    msg = f'Failed to render video: {e}'
-        #    logger.error(f'task_id:{task_id} {msg}')
-        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-        #    return gen_res_dict(1, msg)
-        #cost_render = time.time() - step_start
-        #logger.info(
-        #    f'task_id:{task_id} video rendered, video_name:{video_name}, '
-        #    f'project_dir:{project_dir} cost:{cost_render:.1f}s'
-        #)
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_RENDERED, payload_msg=TaskStatus.VIDEO_RENDERED)
+        step_start = time.time()
+        try:
+            render_video(logger, project_dir, video_name, task_id)
+        except Exception as e:
+            msg = f'Failed to render video: {e}'
+            logger.error(f'task_id:{task_id} {msg}')
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        cost_render = time.time() - step_start
+        logger.info(
+            f'task_id:{task_id} video rendered, video_name:{video_name}, '
+            f'project_dir:{project_dir} cost:{cost_render:.1f}s'
+        )
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_RENDERED, payload_msg=TaskStatus.VIDEO_RENDERED)
 
         output_file = '6af6699ac7c3bba6_20261113013627_056.mp4'
         output_path = f'{video_dir}/2026-11-11/userclm17919893695531772/6af47d10f984844e/{output_file}'
