@@ -211,6 +211,17 @@ def video_create(payload):
         datetime_str = time.strftime("%Y%m%d%H%M%S", localtime)
         random_number = random.randint(1, 1000)
         start_time = time.time()
+        # 入口预置耗时，跳过/注释某步时收尾日志仍可安全引用
+        cost_init = 0.0
+        cost_storyboard = 0.0
+        cost_audio = 0.0
+        cost_visual = 0.0
+        cost_caption = 0.0
+        cost_packets = 0.0
+        cost_frame_html = 0.0
+        cost_index_html = 0.0
+        cost_verify = 0.0
+        cost_render = 0.0
         content_length = len(content)
 
         video_dir = f'/app/videos'
@@ -445,11 +456,10 @@ def video_create(payload):
         cost_total = time.time() - start_time
         logger.info(
             f'task_id:{task_id}, htmlvideo finish, sync enqueued, transport:{delivery_transport} '
-            f'time[verify:{cost_verify:.1f}s total:{cost_total:.1f}s]'
-            # 全链路恢复后可改为:
-            # f'time[init:{cost_init:.1f}s storyboard:{cost_storyboard:.1f}s audio:{cost_audio:.1f}s '
-            # f'visual:{cost_visual:.1f}s packets:{cost_packets:.1f}s frame_html:{cost_frame_html:.1f}s '
-            # f'index:{cost_index_html:.1f}s verify:{cost_verify:.1f}s total:{cost_total:.1f}s]'
+            f'time[init:{cost_init:.1f}s storyboard:{cost_storyboard:.1f}s audio:{cost_audio:.1f}s '
+            f'visual:{cost_visual:.1f}s packets:{cost_packets:.1f}s frame_html:{cost_frame_html:.1f}s '
+            f'index:{cost_index_html:.1f}s verify:{cost_verify:.1f}s render:{cost_render:.1f}s '
+            f'total:{cost_total:.1f}s]'
         )
 
         result = f"Processed: {task_id}"
