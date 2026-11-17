@@ -73,7 +73,7 @@ def build_frame_visual(
         raise ValueError(f"STORYBOARD.md is empty: {storyboard_path}")
 
     prompt = _build_frame_visual_prompt()
-    rc = run_claude(project_dir, prompt, logger)
+    rc = run_claude(project_dir, prompt, logger, skill="visual")
     if rc != 0:
         raise RuntimeError(f"claude build-frame-visual failed rc:{rc}")
 
