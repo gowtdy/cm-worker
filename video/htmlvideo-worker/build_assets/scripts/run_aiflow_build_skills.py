@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shutil
 import subprocess
 import sys
@@ -182,7 +183,18 @@ def require_claude() -> int | None:
     return None
 
 
-def run_claude(project_dir: Path, prompt: str) -> int:
+def _script_logger() -> logging.Logger:
+    logger = logging.getLogger("aiflow_build_skills")
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+    return logger
+
+
+def _run_claude_legacy(project_dir: Path, prompt: str) -> int:
     cmd = [
         "claude",
         "--print",
@@ -201,6 +213,32 @@ def run_claude(project_dir: Path, prompt: str) -> int:
     )
     proc = subprocess.run(cmd, cwd=str(project_dir))
     return proc.returncode
+
+
+def run_claude(
+    project_dir: Path,
+    prompt: str,
+    skill: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> int:
+    """Invoke Claude. Prefer html_utility.claude_cli; fall back if it cannot be imported."""
+    try:
+        sys.path.insert(0, "/app")
+        from html_utility.claude_cli import run_claude as _rc
+    except Exception as exc:  # pragma: no cover - deployment fallback
+        print(
+            f"warning: html_utility.claude_cli unavailable ({exc}); "
+            "using legacy claude invocation",
+            file=sys.stderr,
+        )
+        return _run_claude_legacy(project_dir, prompt)
+    return _rc(
+        str(project_dir),
+        prompt,
+        _script_logger(),
+        extra_env=extra_env,
+        skill=skill,
+    )
 
 
 def build_storyboard_prompt(project_dir: Path) -> str:
@@ -248,7 +286,7 @@ def run_aiflow_build_storyboard(project_dir: Path) -> int:
         },
         flush=True,
     )
-    rc = run_claude(project_dir, build_storyboard_prompt(project_dir))
+    rc = run_claude(project_dir, build_storyboard_prompt(project_dir), skill="storyboard")
     if rc != 0:
         return rc
 
@@ -294,7 +332,7 @@ def run_aiflow_build_frame_visual(project_dir: Path) -> int:
         },
         flush=True,
     )
-    rc = run_claude(project_dir, FRAME_VISUAL_PROMPT)
+    rc = run_claude(project_dir, FRAME_VISUAL_PROMPT, skill="visual")
     if rc != 0:
         return rc
 
@@ -350,7 +388,12 @@ def run_aiflow_build_frame_html(project_dir: Path) -> int:
         },
         flush=True,
     )
-    rc = run_claude(project_dir, FRAME_HTML_PROMPT)
+    rc = run_claude(
+        project_dir,
+        FRAME_HTML_PROMPT,
+        skill="frame_html",
+        extra_env={"CLAUDE_CODE_SUBAGENT_EFFORT": "high"},
+    )
     if rc != 0:
         return rc
 
@@ -415,7 +458,7 @@ def run_aiflow_verify_frame(project_dir: Path) -> int:
         },
         flush=True,
     )
-    rc = run_claude(project_dir, VERIFY_PROMPT)
+    rc = run_claude(project_dir, VERIFY_PROMPT, skill="verify")
     if rc != 0:
         return rc
 
