@@ -44,7 +44,7 @@ from html_utility.intent import INTENT_FILENAME, identify_intent
 from html_utility.init_htmlvideo import init_htmlvideo
 from html_utility.storyboard import build_storyboard
 from html_utility.visual import build_frame_visual
-from html_utility.frame_html import build_frame_packets, build_frame_html, build_index_html
+from html_utility.frame_html import build_frame_packets, build_frame_html, build_index_html, INDEX_FILENAME
 from html_utility.audio import tts_generate, sync_duration, caption_generate
 from html_utility.verify import verify_frame
 from html_utility.render import render_video
@@ -211,11 +211,24 @@ def video_create(payload):
         datetime_str = time.strftime("%Y%m%d%H%M%S", localtime)
         random_number = random.randint(1, 1000)
         start_time = time.time()
+        # 入口预置耗时，跳过/注释某步时收尾日志仍可安全引用
+        cost_init = 0.0
+        cost_storyboard = 0.0
+        cost_audio = 0.0
+        cost_visual = 0.0
+        cost_caption = 0.0
+        cost_packets = 0.0
+        cost_frame_html = 0.0
+        cost_index_html = 0.0
+        cost_verify = 0.0
+        cost_render = 0.0
         content_length = len(content)
 
         video_dir = f'/app/videos'
-        #project_dir = f'{video_dir}/{today}/user{uid}/{task_id}'
-        project_dir = f'{video_dir}/2026-11-11/userclm17919893695531772/6af47d10f984844e'
+        today = "2026-11-16"
+        task_id = "6afb004009d47552"
+        project_dir = f'{video_dir}/{today}/user{uid}/{task_id}'
+        #project_dir = f'{video_dir}/2026-11-11/userclm17919893695531772/6af47d10f984844e'
         video_name = f'{task_id}_{datetime_str}_{random_number:03d}.mp4'
         os.makedirs(project_dir, exist_ok=True)
         
@@ -274,8 +287,8 @@ def video_create(payload):
         #
         #cost_audio = time.time() - step_start
         #logger.info(
-        #    f"task_id:{task_id}  generated, project_dir:{project_dir} "
-        #    f"cost:{cost_tts:.1f}s"
+        #    f"task_id:{task_id} tts generated, project_dir:{project_dir} "
+        #    f"cost:{cost_audio:.1f}s"
         #)
         #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_TTSED, payload_msg=TaskStatus.VIDEO_TTSED)
 
@@ -340,20 +353,19 @@ def video_create(payload):
         #)
         #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_FRAMED_HTML, payload_msg=TaskStatus.VIDEO_FRAMED_HTML)
 
-        #step_start = time.time()
-        #try:
-        #    index_html_path = build_index_html(project_dir, logger)
-        #except Exception as e:
-        #    msg = f'Failed to build index html: {e}'
-        #    logger.error(f'task_id:{task_id} {msg}')
-        #    update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
-        #    return gen_res_dict(1, msg)
-        #cost_index_html = time.time() - step_start
-        #logger.info(
-        #    f'task_id:{task_id} index html built, index_html_path:{index_html_path}, '
-        #    f'project_dir:{project_dir} cost:{cost_index_html:.1f}s'
-        #)
-        #update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INDEXED, payload_msg=TaskStatus.VIDEO_INDEXED)
+        step_start = time.time()
+        ret, msg = build_index_html(logger, project_dir, task_id)
+        if ret != 0:
+            logger.error(f'build_index_html task_id:{task_id} {msg}')
+            update_task_status(logger, task_id, domain, TaskStatus.FAILED, payload_msg=msg)
+            return gen_res_dict(1, msg)
+        cost_index_html = time.time() - step_start
+        index_html_path = os.path.join(project_dir, INDEX_FILENAME)
+        logger.info(
+            f'task_id:{task_id} index html built, index_html_path:{index_html_path}, '
+            f'project_dir:{project_dir} cost:{cost_index_html:.1f}s'
+        )
+        update_task_status(logger, task_id, domain, TaskStatus.VIDEO_INDEXED, payload_msg=TaskStatus.VIDEO_INDEXED)
 
         step_start = time.time()
         try:
@@ -385,10 +397,10 @@ def video_create(payload):
         )
         update_task_status(logger, task_id, domain, TaskStatus.VIDEO_RENDERED, payload_msg=TaskStatus.VIDEO_RENDERED)
 
-        #output_file = 'fourth-video.mp4'
-        #output_path = f'{video_dir}/2026-11-08/userclm17919893695531772/6aefce31f79c496b/{output_file}'
-        output_file = video_name
-        output_path = f'{project_dir}/{output_file}'
+        output_file = '6af6699ac7c3bba6_20261113013627_056.mp4'
+        output_path = f'{video_dir}/2026-11-11/userclm17919893695531772/6af47d10f984844e/{output_file}'
+        #output_file = video_name
+        #output_path = f'{project_dir}/{output_file}'
         try:
             delivery_transport = resolve_delivery_transport(email)
             proxies = get_socat_proxy_configs() if delivery_transport == "rsync" else []
@@ -445,11 +457,10 @@ def video_create(payload):
         cost_total = time.time() - start_time
         logger.info(
             f'task_id:{task_id}, htmlvideo finish, sync enqueued, transport:{delivery_transport} '
-            f'time[verify:{cost_verify:.1f}s total:{cost_total:.1f}s]'
-            # 全链路恢复后可改为:
-            # f'time[init:{cost_init:.1f}s storyboard:{cost_storyboard:.1f}s audio:{cost_audio:.1f}s '
-            # f'visual:{cost_visual:.1f}s packets:{cost_packets:.1f}s frame_html:{cost_frame_html:.1f}s '
-            # f'index:{cost_index_html:.1f}s verify:{cost_verify:.1f}s total:{cost_total:.1f}s]'
+            f'time[init:{cost_init:.1f}s storyboard:{cost_storyboard:.1f}s audio:{cost_audio:.1f}s '
+            f'visual:{cost_visual:.1f}s packets:{cost_packets:.1f}s frame_html:{cost_frame_html:.1f}s '
+            f'index:{cost_index_html:.1f}s verify:{cost_verify:.1f}s render:{cost_render:.1f}s '
+            f'total:{cost_total:.1f}s]'
         )
 
         result = f"Processed: {task_id}"

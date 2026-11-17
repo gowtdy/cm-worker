@@ -5,31 +5,23 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from html_utility.claude_cli import run_claude
+from html_utility.storyboard_contract import build_storyboard_prompt
 
 STORYBOARD_FILENAME = "STORYBOARD.md"
 SCRIPT_FILENAME = "SCRIPT.md"
 BRIEF_FILENAME = "BRIEF.md"
 FRAME_FILENAME = "frame.md"
 
+# `- voiceover: "..."` on its own line; the quoted value is the spoken guide.
+_VOICEOVER_RE = re.compile(r'^\s*-\s+voiceover:\s*"([^"]*)"', re.MULTILINE)
 
-def _build_storyboard_prompt() -> str:
-    return (
-        "/aiflow-build-storyboard\n\n"
-        "Work in this HyperFrames project root. BRIEF.md, frame.md, and\n"
-        "capture/extracted/visible-text.txt already exist — the brief is settled;\n"
-        "do not re-init, re-interrogate, invent a brief, or run build-frame / audio / render.\n\n"
-        "Follow the aiflow-build-storyboard skill: narrative planning only. Read BRIEF.md\n"
-        "(message + intent), visible-text.txt, and frame.md; write outline-stage\n"
-        "STORYBOARD.md (status: outline, required narrative fields filled) and SCRIPT.md\n"
-        "when narration is needed. Do not write ## Video direction or time-coded Scene\n"
-        "shot sequences — those belong to /aiflow-build-frame-visual.\n\n"
-        "flow is automation → autonomous: post a short frame-sequence summary as a\n"
-        "heads-up and proceed without waiting for approval. Stop when the skill gate\n"
-        "passes (STORYBOARD.md exists with required narrative fields per frame;\n"
-        "SCRIPT.md when narration is needed).\n"
-    )
+
+def _has_spoken_frames(storyboard_text: str) -> bool:
+    """True when any frame carries a non-empty voiceover (narration exists)."""
+    return any(value.strip() for value in _VOICEOVER_RE.findall(storyboard_text))
 
 
 def _validate_storyboard_outputs(project_dir: str) -> str:
@@ -38,6 +30,19 @@ def _validate_storyboard_outputs(project_dir: str) -> str:
         raise FileNotFoundError(f"STORYBOARD.md missing: {storyboard_path}")
     if os.path.getsize(storyboard_path) == 0:
         raise ValueError(f"STORYBOARD.md is empty: {storyboard_path}")
+
+    # Gate on the dual-write contract: narration (any spoken frame) requires
+    # SCRIPT.md from the same run; a narration-free video has none.
+    with open(storyboard_path, encoding="utf-8") as f:
+        storyboard_text = f.read()
+    script_path = os.path.join(project_dir, SCRIPT_FILENAME)
+    if _has_spoken_frames(storyboard_text) and not os.path.isfile(script_path):
+        raise FileNotFoundError(
+            f"SCRIPT.md missing but STORYBOARD.md has spoken voiceover "
+            f"frames (dual-write gate failed): {script_path}"
+        )
+    if os.path.isfile(script_path) and os.path.getsize(script_path) == 0:
+        raise ValueError(f"SCRIPT.md is empty: {script_path}")
     return storyboard_path
 
 
@@ -68,7 +73,7 @@ def build_storyboard(
         if os.path.isfile(path):
             os.remove(path)
 
-    prompt = _build_storyboard_prompt()
+    prompt = build_storyboard_prompt(project_dir, logger)
     rc = run_claude(project_dir, prompt, logger)
     if rc != 0:
         raise RuntimeError(f"claude build-storyboard failed rc:{rc}")
