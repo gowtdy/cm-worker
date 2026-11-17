@@ -14,7 +14,7 @@ import {
   downloadAudio,
   downloadTranscribeJson,
   flattenAsrWords,
-} from "/app/util/caluma.mjs";
+} from "/app/node_utility/caluma.mjs";
 import { config as aiflowConfig } from "/app/config/config.js";
 
 export { flattenAsrWords };
