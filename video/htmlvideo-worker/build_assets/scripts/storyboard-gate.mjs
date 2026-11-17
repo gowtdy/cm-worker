@@ -73,8 +73,8 @@ if (frameBlocks.every((f) => !scenesRe.test(f.text))) {
 }
 
 /* ── vocabulary for motion-name review ─────────────────────────────────── */
-const rulesDir = "/app/.claude/skills/hyperframes-animation/rules";
-const bpDir = "/app/.claude/skills/hyperframes-animation/blueprints";
+const rulesDir = "/app/skills/hyperframes-animation/rules";
+const bpDir = "/app/skills/hyperframes-animation/blueprints";
 const namesOf = (d) => {
   try { return readdirSync(d).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3)); } catch { return []; }
 };
