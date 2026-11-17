@@ -74,7 +74,7 @@ def build_storyboard(
             os.remove(path)
 
     prompt = build_storyboard_prompt(project_dir, logger)
-    rc = run_claude(project_dir, prompt, logger)
+    rc = run_claude(project_dir, prompt, logger, skill="storyboard")
     if rc != 0:
         raise RuntimeError(f"claude build-storyboard failed rc:{rc}")
 
