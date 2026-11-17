@@ -58,7 +58,7 @@ const videoDirArg = flag("videodir", null);
 if (!videoDirArg) die("--videodir <dir> is required");
 const hyperframesDir = resolve(videoDirArg);
 const presetDir = resolve(
-  flag("preset-dir", "/app/hyperframes/skills/hyperframes-creative/frame-presets"),
+  flag("preset-dir", "/app/skills/hyperframes-creative/frame-presets"),
 );
 const tokensPath = resolve(flag("tokens", join(hyperframesDir, "capture/extracted/tokens.json")));
 
