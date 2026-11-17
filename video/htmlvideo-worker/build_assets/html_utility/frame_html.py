@@ -19,6 +19,41 @@ FRAME_PACKETS_DIR = os.path.join(".hyperframes", "frame-packets")
 FRAME_PACKETS_ROLE = "_role.md"
 STATUS_RE = re.compile(r"^- status:\s*(\w+)", re.MULTILINE)
 
+# Project-local worker agent definition. The orchestrator must dispatch frame
+# workers as this agent type (never the built-in catch-all): on CLI >= 2.1.325
+# the built-in agent path skips the CLAUDE_CODE_SUBAGENT_EFFORT default
+# (binary: $cs() early-returns on source "built-in"), so the cap only holds
+# for a non-built-in definition. The frontmatter effort pin is the primary
+# lever; the env injection in build_frame_html() is the fallback (it applies
+# to any non-built-in agent without an explicit effort).
+FRAME_WORKER_AGENT_NAME = "frame-html-worker"
+FRAME_WORKER_AGENT_MARKDOWN = """---
+name: frame-html-worker
+description: Per-frame worker for the aiflow-build-frame-html skill. Writes exactly one compositions/frames/<frame_id>.html from its dispatch packet (role file + frame packet + dispatch context), runs the frame-selfcheck gate, replies `done OK <frame_id>` or `fail <frame_id>: <reason>`. Never edits STORYBOARD.md, never touches other frames.
+effort: high
+---
+
+You are one per-frame HTML worker. Your dispatch prompt is authoritative — read it fully, then build. The aiflow role document (`_role.md` in your packet) carries the complete contract.
+"""
+
+
+def _ensure_frame_worker_agent(project_dir: str) -> str:
+    """Write the project-local worker agent definition (idempotent,
+    content-checked) so the orchestrator dispatches a non-built-in agent with
+    pinned effort. Returns the agent file path.
+    """
+    agents_dir = os.path.join(project_dir, ".claude", "agents")
+    os.makedirs(agents_dir, exist_ok=True)
+    agent_path = os.path.join(agents_dir, f"{FRAME_WORKER_AGENT_NAME}.md")
+    needs_write = True
+    if os.path.isfile(agent_path):
+        with open(agent_path, "r", encoding="utf-8") as f:
+            needs_write = f.read() != FRAME_WORKER_AGENT_MARKDOWN
+    if needs_write:
+        with open(agent_path, "w", encoding="utf-8") as f:
+            f.write(FRAME_WORKER_AGENT_MARKDOWN)
+    return agent_path
+
 
 def _build_frame_html_prompt() -> str:
     return (
@@ -50,6 +85,10 @@ Hard constraints (do not violate):
    and report.
 5. After each worker lands its HTML, mark that frame animated in
    STORYBOARD.md (you own storyboard status; workers never edit it).
+6. Every frame-worker dispatch must use subagent_type "frame-html-worker" —
+   the project-local agent definition (.claude/agents/frame-html-worker.md,
+   effort pinned). Never dispatch frame workers as the built-in catch-all
+   agent: built-ins bypass the per-worker effort cap on this CLI.
 
 flow is automation → autonomous: proceed without waiting for confirmation.
 Stop when the skill gate passes (every frame has compositions/frames/*.html
@@ -121,10 +160,13 @@ def build_frame_html(
         )
 
     prompt = _build_frame_html_prompt()
-    # Cap the effort of this skill's per-frame worker subagents at "high"
-    # (the model's own default tier; the env-level max drives 32k-token
-    # deliberation stalls on ambiguous frames). The orchestrator session
-    # keeps its own effort; other skills are untouched.
+    # Effort cap for this skill's per-frame workers (the default "high" tier;
+    # the env-level max drives 32k-token deliberation stalls on ambiguous
+    # frames). Two layers: the project-local agent definition pins it
+    # (primary), and this env var is the fallback — on CLI >= 2.1.325 the
+    # built-in catch-all agent bypasses it, so the orchestrator is instructed
+    # to dispatch the non-built-in "frame-html-worker" agent above.
+    _ensure_frame_worker_agent(project_dir)
     rc = run_claude(
         project_dir,
         prompt,
