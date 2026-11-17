@@ -4,7 +4,7 @@ import hashlib
 import secrets
 import time
 
-from utility.voice_config import get_hmac_secret_key
+from config.settings import get_hmac_secret_key
 
 def gen_reqid(uid=None, timestamp=None):
     """秒级时间戳 hex + 8 hex 随机（约 16 字符，字符集 [0-9a-f]）。"""
