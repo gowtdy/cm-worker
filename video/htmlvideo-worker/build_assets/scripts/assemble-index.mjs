@@ -55,7 +55,7 @@ import { parseStoryboard } from "./lib/storyboard.mjs";
 import { parseFormat } from "./lib/dimensions.mjs";
 import { stageAssets } from "./lib/assets.mjs";
 import { parseColors, semanticColors } from "./lib/tokens.mjs";
-import { bgmDefaultVolume } from "/app/hyperframes/skills/media-use/audio/scripts/lib/bgm.mjs";
+import { bgmDefaultVolume } from "/app/skills/media-use/audio/scripts/lib/bgm.mjs";
 // ---------- argv ----------
 const argv = process.argv.slice(2);
 const flag = (name, def) => {
