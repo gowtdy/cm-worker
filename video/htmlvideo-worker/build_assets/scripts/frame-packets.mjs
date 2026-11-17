@@ -6,9 +6,9 @@
 // ../../hyperframes-core/scripts/lib/frame-packets-core.mjs
 
 import { resolve } from "node:path";
-import * as core from "/app/hyperframes/skills/hyperframes-core/scripts/lib/frame-packets-core.mjs";
+import * as core from "/app/skills/hyperframes-core/scripts/lib/frame-packets-core.mjs";
 // gowtd-mod: frame-packets paths
-const SKILL_DIR = "/app/hyperframes/skills/aiflow-build-frame-html";
+const SKILL_DIR = "/app/skills/aiflow-build-frame-html";
 const CONFIG = {
   animationDir: resolve(SKILL_DIR, "../hyperframes-animation"),
   corePath: resolve(SKILL_DIR, "../hyperframes-core/references/frame-worker-core.md"),
