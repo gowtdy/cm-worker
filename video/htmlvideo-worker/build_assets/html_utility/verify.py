@@ -111,7 +111,7 @@ def verify_frame(
     _validate_prerequisites(project_dir)
 
     prompt = _build_verify_frame_prompt()
-    rc = run_claude(project_dir, prompt, logger)
+    rc = run_claude(project_dir, prompt, logger, skill="verify")
     if rc != 0:
         raise RuntimeError(f"claude verify-frame failed rc:{rc}")
 
