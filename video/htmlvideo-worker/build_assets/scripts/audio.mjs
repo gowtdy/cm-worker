@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import { parseStoryboard } from "./lib/storyboard.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_ENGINE = "/app/hyperframes/skills/media-use/audio/scripts/audio_aiflow.mjs";
+const DEFAULT_ENGINE = "/app/skills/media-use/audio/scripts/audio_aiflow.mjs";
 const flag = (argv, name, def) => {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] : def;
