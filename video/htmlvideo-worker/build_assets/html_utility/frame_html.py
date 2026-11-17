@@ -172,6 +172,7 @@ def build_frame_html(
         prompt,
         logger,
         extra_env={"CLAUDE_CODE_SUBAGENT_EFFORT": "high"},
+        skill="frame_html",
     )
     if rc != 0:
         raise RuntimeError(f"claude build-frame-html failed rc:{rc}")
