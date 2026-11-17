@@ -66,7 +66,7 @@ def identify_intent(
         os.remove(output_file)
 
     prompt = _build_identify_intent_prompt(output_file, content)
-    rc = run_claude(work_dir, prompt, logger)
+    rc = run_claude(work_dir, prompt, logger, skill="intent")
     if rc != 0:
         raise RuntimeError(f"claude identify-intent failed rc:{rc}")
 
