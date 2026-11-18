@@ -24,6 +24,7 @@ FRAME_PACKETS_DIR = os.path.join(".hyperframes", "frame-packets")
 FRAME_PACKETS_ROLE = "_role.md"
 STATUS_RE = re.compile(r"^- status:\s*(\w+)", re.MULTILINE)
 
+# legacy path — only used when HTMLVIDEO_FRAME_HTML_DRIVER=0.
 # Project-local worker agent definition. The orchestrator must dispatch frame
 # workers as this agent type (never the built-in catch-all): on CLI >= 2.1.325
 # the built-in agent path skips the CLAUDE_CODE_SUBAGENT_EFFORT default
@@ -42,6 +43,7 @@ You are one per-frame HTML worker. Your dispatch prompt is authoritative — rea
 """
 
 
+# legacy path — only used when HTMLVIDEO_FRAME_HTML_DRIVER=0.
 def _ensure_frame_worker_agent(project_dir: str) -> str:
     """Write the project-local worker agent definition (idempotent,
     content-checked) so the orchestrator dispatches a non-built-in agent with
@@ -60,6 +62,7 @@ def _ensure_frame_worker_agent(project_dir: str) -> str:
     return agent_path
 
 
+# legacy path — only used when HTMLVIDEO_FRAME_HTML_DRIVER=0.
 def _build_frame_html_prompt() -> str:
     return (
         """

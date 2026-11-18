@@ -31,7 +31,7 @@
 | effort | 子进程 env 写 `CLAUDE_CODE_EFFORT_LEVEL` | 只加 `--effort`（会被 env 覆盖） |
 | 思考预算 | 子进程 env 写 `MAX_THINKING_TOKENS` | `CLAUDE_CODE_MAX_THINKING_TOKENS`（CLI 不读） |
 | thinking 语义 | `>0` → `{type:"enabled", budgetTokens:N}`；`=0` → `{type:"disabled"}` | 改动前为 adaptive，长度不受控 |
-| effort + thinking=0 | 可能触发 CLI `effort_requires_thinking` 400 | intent 默认用小正数预算（1024），不用 0 |
+| effort + thinking=0 | 可能触发 CLI `effort_requires_thinking` 400 | intent 默认走 32000 档，不用 0 |
 
 注意：
 
@@ -58,17 +58,18 @@ flowchart TD
 
 ## 4. Profile 表与取值理由
 
-| skill | effort | thinking | max_turns | timeout(s) | deny Agent/Task | 理由 |
-|---|---|---|---|---|---|---|
-| intent | low | 1024 | 6 | 600 | 是 | 五字段抽取；小预算规避 effort+thinking=0 冲突 |
-| storyboard | medium | 8000 | 12 | 1200 | 是 | 契约卡已内联，属填表；上游质量敏感，未直接用 low |
-| visual | high | 16000 | 40 | 2400 | 是 | 创作量大，保留 high，截掉单块 96k 跑飞 |
-| frame_html | high | 16000 | 120 | 7200 | 否 | 与 worker `effort: high` 一致；16000&lt;32000 治死区；需 Agent |
-| verify | medium | 6000 | 150 | 3600 | 是 | 脚本驱动 + playbook；思考 cap 是剩余最大杠杆 |
+| skill | effort | thinking | max_output | max_turns | timeout(s) | deny Agent/Task | 理由 |
+|---|---|---|---|---|---|---|---|
+| intent | high | 32000 | 32000 | 100 | 1800 | 是 | 2026-11-18 cap A/B 实证地板（16.7s 历史最优），显式固化 |
+| storyboard | high | 64000 | 32000 | 100 | 1800 | 是 | 同上（3.0m 近地板） |
+| visual | high | 64000 | 32000 | 100 | 1800 | 是 | 同上（7.1m 历史最优） |
+| frame_html | high | 64000 | 64000 | 60 | 720 | 是 | 每帧一个进程：64000 防截断档；720s 杀马拉松断电闸；B 架构无需 Agent |
+| repair | high | 40000 | 16000 | 40 | 600 | 是 | 仅 assemble 失败的一次性修复会话 |
+| verify | medium | 32000 | 32000 | 100 | 1800 | 是 | 固化 |
 
-`frame_html` 另由调用方注入 `CLAUDE_CODE_SUBAGENT_EFFORT=high`（`frame_html.py` 与脚本 `--skill html` 一致）。
+`frame_html` 另由调用方注入 `CLAUDE_CODE_SUBAGENT_EFFORT=high`（`frame_html.py` 与脚本 `--skill html` 一致；B 架构下仅 legacy 回退路径有意义，见 §9.7）。
 
-基准禁用工具：`WebFetch`、`WebSearch`、`NotebookEdit`、`TodoWrite`；非 html skill 再禁 `Agent`、`Task`（工具名按 CLI 2.1.316；版本漂移时未知名通常为空操作）。
+基准禁用工具：`WebFetch`、`WebSearch`、`NotebookEdit`、`TodoWrite`；六个 profile 再禁 `Agent`、`Task`（B 架构下无 stage 派生子代理；工具名按 CLI 2.1.316；版本漂移时未知名通常为空操作）。
 
 ## 5. 命令与 env 组装
 
@@ -89,19 +90,21 @@ claude --print --dangerously-skip-permissions --permission-mode bypassPermission
 
 ```mermaid
 flowchart LR
-  osEnv[os.environ] --> profileEnv[profile effort thinking]
-  profileEnv --> extraEnv[extra_env]
-  extraEnv --> clamp[clamp MAX_THINKING_TOKENS]
-  clamp --> child[claude child process]
+  osEnv[os.environ + extra_env] --> profileEnv[profile effort / thinking 注入]
+  profileEnv --> extraEnv[extra_env 再覆盖 effort / thinking]
+  extraEnv --> clamp[clamp MAX_THINKING_TOKENS，对标注入前输出 cap]
+  clamp --> capInject[profile max_output 注入 CLAUDE_CODE_MAX_OUTPUT_TOKENS]
+  capInject --> extraCap[extra_env 输出 cap 再应用（最后赢家）]
+  extraCap --> child[claude child process]
 ```
 
-Clamp 规则：
+Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行，对的是调用方继承或 `extra_env` 给的 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`，缺省按 128000 计）：
 
 - `0`：关闭思考，保留。
-- 非法 / 负数：回退 profile 默认（负数按 0）。
-- 值 ≥ 默认输出上限 32000：压到 30000。
-- 值 ≥ 当前 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`：压到 `max_output - 1`。
-- 当 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` 大于 32000 时，thinking 仍可能被压到 30000（有意保守）。
+- 非法值：回退 profile 默认；负数按 `0`。
+- 值 < 该输出 cap 且 < 128000：原样保留。
+- 值 ≥ 该输出 cap：cap > 127000 时压到 127000，否则压到 `cap - 1`。
+- profile `max_output` 注入在 clamp 之后，`extra_env` 里的输出 cap 最后再应用（最后赢家）；注入后 thinking 可能仍 ≥ 子进程最终输出 cap——本后端 adaptive 剥 budget_tokens，此项 inert。
 
 超时：`Popen(start_new_session=True)` + `communicate(timeout=)`；超时对进程组 `SIGTERM` → 宽限 → `SIGKILL`，返回 **124**。
 
@@ -112,6 +115,7 @@ Clamp 规则：
 | `HTMLVIDEO_CLAUDE_PROFILE=off` | 一键回滚到 legacy 命令与环境 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_EFFORT` | 覆盖 effort；白名单 `low\|medium\|high\|xhigh\|max` |
 | `HTMLVIDEO_CLAUDE_<SKILL>_THINKING_TOKENS` | 覆盖思考预算 |
+| `HTMLVIDEO_CLAUDE_<SKILL>_MAX_OUTPUT_TOKENS` | 覆盖输出上限（max_output）；未设置用 profile 默认，设空则不注入（沿用父进程 cap） |
 | `HTMLVIDEO_CLAUDE_<SKILL>_MAX_TURNS` | 覆盖轮数；≤0 回退默认 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_TIMEOUT` | 覆盖超时秒；≤0 回退默认 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_MODEL` | 设置则追加 `--model`；默认不设 |
@@ -142,29 +146,31 @@ Clamp 规则：
 
 **出站抓包**（`/app/log/api-bodies/*.request.json` 或等价捕获器）：
 
-1. `output_config.effort`：intent=low；storyboard/verify=medium；visual/frame_html=high。
-2. `thinking`：enabled + `budget_tokens`（intent≈1024）；确认非 adaptive。
-3. 工具列表无 WebFetch/WebSearch；非 html 无 Agent。
+1. `output_config.effort`：intent/storyboard/visual/frame_html/repair=high；verify=medium。
+2. `thinking`：enabled + `budget_tokens`（各 profile 32000–64000 档）；确认非 adaptive。
+3. 工具列表无 WebFetch/WebSearch/Agent/Task。
 
 **耗时预期**（相对 **profile 上线前** 基线；skill 侧优化已计入的用最新闭环，其余先用事故基线作对照，质量门禁不降）：
 
 - verify（最新闭环）：17.0m → ≤13m（吃掉 ~3.2m 思考尖峰）
 - storyboard（事故基线 5.7m；契约卡后尚无新墙钟）：对照 ≤2.5m，以用量日志 `num_turns`/`output` 闭环为准
-- frame-html：不再出现 `output≈32000` + `end_turn` 且无工具调用的空烧回合
+- frame-html：不再出现 `output≈64000` + `end_turn` 且无工具调用的空烧回合（128k 回退时按 ≈128000 核对）
 - visual / intent：对照事故旁证或 ≤1m（intent），以新跑用量日志补齐，勿把 13.6m 当「当前常态」
 
 **质量门槛**：各阶段确定性 gate 一次通过率不降；frame-html 重派帧数不增；`verify-report` 终态通过。回退只调对应 skill 的 env，不改代码。
 
-**单测**：`python3 -m unittest html_utility.test_claude_cli -v`。
+**单测**：`python3 -m unittest test.test_claude_cli test.test_frame_html_driver -v`；`node test/test_frame_packets.mjs`。
 
 ## 9. 已知限制
 
 1. 千帆是否尊重 `budgetTokens` 以抓包为准；忽略时只靠 effort。
 2. `--disallowedTools` 名依赖 CLI 版本；未知名通常无害。
-3. thinking clamp 对「输出上限 &gt; 32000」仍可能压到 30000。
+3. thinking clamp 对「输出上限 &gt; 127000」仍可能压到 127000（有意保守）。
 4. profile 模式 stdout 被 JSON 解析占用，外部若依赖 text stdout 需改看 worker 日志里的 result 行。
 5. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` 为降低遥测/更新检查的附加项，与 profile 正交。
 6. `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`：去掉内置 git/PR 工作流说明与 git status 快照。`run_claude` 会注入到子进程；本流水线 skills 不依赖 git。视频项目 cwd 勿放大型 `CLAUDE.md` / 多余 MCP（工具 schema 会进 system）。
+7. worker 会话不再经子代理（B 架构）；CLAUDE_CODE_SUBAGENT_EFFORT 仅 legacy 回退路径有意义。
+8. profile 开启时，ambient env 里父进程设置的 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` 会被每个 profile 的显式 `max_output` 覆盖（与 profile effort 覆盖 ambient effort 一致）；如需定制输出上限，走 `HTMLVIDEO_CLAUDE_<SKILL>_*` 覆盖变量或 `extra_env`。
 
 ## 10. 回滚
 

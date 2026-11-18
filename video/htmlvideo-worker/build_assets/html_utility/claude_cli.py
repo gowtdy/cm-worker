@@ -472,6 +472,8 @@ def _run_profile(
             proc.communicate(timeout=_TIMEOUT_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
             pass
+        # Timeout: rc 124 and result text "" — the partially captured stdout
+        # is discarded (nothing parseable survives the kill).
         return 124, ""
     return _log_parsed_result(logger, skill, proc.returncode or 0, stdout or "")
 
@@ -488,6 +490,10 @@ def run_claude_result(
     Frame workers gate on their final reply (`done OK <frame_id>`), which the
     CLI surfaces in the JSON stdout's `result` field — callers that need that
     text (driver collect/retry logic) use this; everyone else keeps run_claude.
+
+    The result text is ``""`` whenever it cannot be produced: JSON parse
+    failure, the legacy (profile-off) path, or a wall-clock timeout (which
+    yields ``(124, "")``). Callers must gate on the exit code for those cases.
     """
     if shutil.which("claude") is None:
         raise RuntimeError("claude CLI not found on PATH")
@@ -507,11 +513,15 @@ def run_claude(
 ) -> int:
     """Invoke Claude Code non-interactively.
 
-    ``skill`` selects a per-skill effort, thinking budget, turn cap, and
-    wall-clock timeout. ``skill=None`` or ``HTMLVIDEO_CLAUDE_PROFILE=off``
-    keeps the legacy command and environment. ``extra_env`` is applied last
-    on top of the inherited environment; the thinking budget is then clamped
-    so it stays under ``CLAUDE_CODE_MAX_OUTPUT_TOKENS``.
+    ``skill`` selects a per-skill effort, thinking budget, output cap, turn
+    cap, and wall-clock timeout. ``skill=None`` or
+    ``HTMLVIDEO_CLAUDE_PROFILE=off`` keeps the legacy command and environment.
+    ``extra_env`` is applied last on top of the inherited environment. The
+    thinking budget is clamped against the *pre-injection* output ceiling —
+    the ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` value inherited or injected via
+    ``extra_env`` — before the profile's own ``max_output`` is applied. On
+    this backend the thinking budget is inert anyway (adaptive thinking
+    strips budget_tokens; the output cap is the effective lever).
     """
     rc, _result = run_claude_result(project_dir, prompt, logger, extra_env, skill)
     return rc
