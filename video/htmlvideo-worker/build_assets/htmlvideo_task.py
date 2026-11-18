@@ -289,23 +289,15 @@ def video_create(payload):
             f'project_dir:{project_dir} cost:{cost_storyboard:.1f}s',
         )
 
-        tv = parallel_tts_visual(logger, project_dir, modelcat, modelname, task_id)
+        tv = parallel_tts_visual(
+            logger, project_dir, modelcat, modelname, task_id, domain,
+        )
         cost_audio = tv.tts.cost
         cost_visual = tv.visual.cost
         if tv.tts.ret != 0:
             return _fail(logger, task_id, domain, tv.tts.msg)
         if tv.visual.ret != 0:
             return _fail(logger, task_id, domain, tv.visual.msg)
-        _ok(
-            logger, task_id, domain, TaskStatus.VIDEO_TTSED,
-            f"task_id:{task_id} tts generated, project_dir:{project_dir} "
-            f"cost:{cost_audio:.1f}s",
-        )
-        _ok(
-            logger, task_id, domain, TaskStatus.VIDEO_VISUALED,
-            f'task_id:{task_id} frame visual built, frame_visual_path:{tv.visual.path}, '
-            f'project_dir:{project_dir} cost:{cost_visual:.1f}s',
-        )
 
         r = step_sync_duration(logger, project_dir, task_id)
         if r.ret != 0:
@@ -319,16 +311,6 @@ def video_create(payload):
             return _fail(logger, task_id, domain, cf.caption.msg)
         if cf.frames.ret != 0:
             return _fail(logger, task_id, domain, cf.frames.msg)
-        _ok(
-            logger, task_id, domain, TaskStatus.VIDEO_CAPTIONED,
-            f"task_id:{task_id} caption generated, project_dir:{project_dir} "
-            f"cost:{cost_caption:.1f}s",
-        )
-        _ok(
-            logger, task_id, domain, TaskStatus.VIDEO_FRAMED_HTML,
-            f'task_id:{task_id} frame html built, frame_html_path:{cf.frames.path}, '
-            f'project_dir:{project_dir} cost:{cost_frame_html:.1f}s',
-        )
 
         r = step_index_html(logger, project_dir, task_id)
         cost_index_html = r.cost
