@@ -147,11 +147,21 @@ def _clamp_thinking(
     max_output: int,
     logger: logging.Logger,
 ) -> str:
-    """Keep the thinking budget strictly under the output-token limit.
+    """Clamp thinking against the *pre-injection* output-token ceiling.
 
-    A value that meets or exceeds the assumed/default output cap is lowered
-    to ``_THINKING_SAFE_CAP`` when that cap still fits, otherwise to
+    ``_run_profile`` calls this BEFORE the per-skill ``max_output`` is
+    injected, so the ceiling seen here is the caller-inherited or
+    ``extra_env`` value of ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` (default 128000)
+    — not the profile cap. A value that meets or exceeds that ceiling is
+    lowered to ``_THINKING_SAFE_CAP`` when it still fits, otherwise to
     ``max_output - 1``. ``0`` disables thinking and is kept.
+
+    The profile value is applied afterwards (and ``extra_env`` re-applies
+    ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` on top, else the profile wins), so a
+    profile-default thinking budget may meet or exceed the final child output
+    cap. That is inert on this backend: the gateway strips thinking
+    budget_tokens (adaptive thinking), so only the output cap reaches the
+    request.
     """
     try:
         n = int(str(thinking).strip())
@@ -259,7 +269,7 @@ def _log_parsed_result(
     skill: str,
     rc: int,
     stdout: str,
-) -> int:
+) -> tuple[int, str]:
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError:
@@ -271,7 +281,7 @@ def _log_parsed_result(
             rc,
             (stdout or "")[-_LOG_LIMIT:],
         )
-        return rc
+        return rc, ""
 
     usage = payload.get("usage")
     if not isinstance(usage, dict):
@@ -303,8 +313,8 @@ def _log_parsed_result(
             "claude skill max turns skill=%s subtype=%s", skill, subtype
         )
     if rc == 0 and is_error is True:
-        return 1
-    return rc
+        return 1, result
+    return rc, result
 
 
 def _kill_process_group(proc: subprocess.Popen[str], logger: logging.Logger) -> None:
@@ -393,7 +403,7 @@ def _run_profile(
     logger: logging.Logger,
     extra_env: dict[str, str] | None,
     skill: str,
-) -> int:
+) -> tuple[int, str]:
     profile = _resolve_profile(skill, logger)
     env = _child_env(extra_env)
     env["CLAUDE_CODE_EFFORT_LEVEL"] = str(profile["effort"])
@@ -462,8 +472,30 @@ def _run_profile(
             proc.communicate(timeout=_TIMEOUT_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
             pass
-        return 124
+        return 124, ""
     return _log_parsed_result(logger, skill, proc.returncode or 0, stdout or "")
+
+
+def run_claude_result(
+    project_dir: str,
+    prompt: str,
+    logger: logging.Logger,
+    extra_env: dict[str, str] | None = None,
+    skill: str | None = None,
+) -> tuple[int, str]:
+    """run_claude + the parsed terminal 'result' text.
+
+    Frame workers gate on their final reply (`done OK <frame_id>`), which the
+    CLI surfaces in the JSON stdout's `result` field — callers that need that
+    text (driver collect/retry logic) use this; everyone else keeps run_claude.
+    """
+    if shutil.which("claude") is None:
+        raise RuntimeError("claude CLI not found on PATH")
+    if skill is None or _profile_off():
+        return _run_legacy(project_dir, prompt, logger, extra_env), ""
+    if skill not in _PROFILES:
+        raise ValueError(f"unknown claude skill profile: {skill}")
+    return _run_profile(project_dir, prompt, logger, extra_env, skill)
 
 
 def run_claude(
@@ -481,10 +513,5 @@ def run_claude(
     on top of the inherited environment; the thinking budget is then clamped
     so it stays under ``CLAUDE_CODE_MAX_OUTPUT_TOKENS``.
     """
-    if shutil.which("claude") is None:
-        raise RuntimeError("claude CLI not found on PATH")
-    if skill is None or _profile_off():
-        return _run_legacy(project_dir, prompt, logger, extra_env)
-    if skill not in _PROFILES:
-        raise ValueError(f"unknown claude skill profile: {skill}")
-    return _run_profile(project_dir, prompt, logger, extra_env, skill)
+    rc, _result = run_claude_result(project_dir, prompt, logger, extra_env, skill)
+    return rc

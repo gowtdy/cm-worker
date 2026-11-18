@@ -555,6 +555,27 @@ class RunClaudeTests(unittest.TestCase):
         )
         self.assertIn("result=only", "\n".join(logs.output))
 
+    def test_run_claude_result_returns_parsed_result(self):
+        from html_utility.claude_cli import run_claude_result
+
+        logger = logging.getLogger("t")
+        with mock.patch("subprocess.Popen") as popen_mock:
+            popen_mock.return_value.communicate.return_value = (
+                _result_json(result="done OK 01-hook"), "")
+            popen_mock.return_value.returncode = 0
+            rc, text = run_claude_result(CWD, PROMPT, logger, skill="frame_html")
+            self.assertEqual(rc, 0)
+            self.assertIn("done OK 01-hook", text)
+
+    def test_extra_env_max_output_override_wins_in_child_env(self) -> None:
+        _, _, _, kwargs = self._invoke(
+            skill="frame_html",
+            extra_env={"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"},
+        )
+        env = kwargs["env"]
+        self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "128000")
+        self.assertEqual(env["CLAUDE_CODE_EFFORT_LEVEL"], "high")
+
 
 if __name__ == "__main__":
     unittest.main()
