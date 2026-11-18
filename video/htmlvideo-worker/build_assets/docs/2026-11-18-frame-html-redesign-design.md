@@ -277,3 +277,9 @@ skill 的角色转变：**从「orchestrator 的思维流」变成「可执行�
 3. worker 输出预算：**64000 默认、128k 回退**（每 worker 进程精度）。
 4. 骨架预生成：**确定性脚本、零 LLM**。
 5. 本设计文档路径：`build_assets/docs/`（跟随仓库 docs 约定，替代 superpowers 默认路径）。
+
+---
+
+## 实施记录
+
+- 2026-11-18: M0 注入链路验证与 M1 止血 A/B 记为**待部署后执行**（本仓库无部署环境，无法真实 run；runbook 如下，部署后执行并把结论回填本节）。**M0**：对真实视频项目跑一轮 frame-html（仍走 A 架构 orchestrator 路径），env：`HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS=64000`；跑完核对 worker 子会话 SDK result：`grep -r '"maxOutputTokens":64000' /app/log/claude/projects/*/subagents/ 2>/dev/null | head -5`（/app 路径为部署环境特定，以实际部署日志路径为准）。结论三者取一：a) 64000 到达 worker（继承成立）→ 继续；b) worker 仍是旧值（32000/128000）→ env 不在子代理继承链，改在 frame_html profile 的 max_output 上直接调，并回写本结论到 spec §3.1；c) api-bodies 显示 max_tokens 与 SDK 不一致 → 抓包模式复现并记录。**M1**：同一次 run 记录 A/B 测量——skill-timing `--group`（frame-html 墙钟 + 各 worker 回合）、截断迹象（worker result 无 `done OK` 且 outputTokens≈cap）、阶段 cost 字段；预期对照 M1 里程碑：截断消失（SDK maxOutputTokens=64000 达 worker）、墙钟回 ~24m 档。
