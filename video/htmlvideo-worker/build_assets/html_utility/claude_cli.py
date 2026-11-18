@@ -78,6 +78,13 @@ _LEGACY_CMD_LOG = (
     "--output-format text <prompt>"
 )
 
+# Bun-compiled Claude binary preload: expand util.inspect so ANTHROPIC_LOG=debug
+# prints full messages/system/tools instead of [Object ...].
+_INSPECT_PRELOAD = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "claude_inspect_full.js"
+)
+_DEBUG_REQUEST_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
 
 def _profile_off() -> bool:
     return os.environ.get("HTMLVIDEO_CLAUDE_PROFILE", "").strip().lower() == "off"
@@ -324,11 +331,32 @@ def _kill_process_group(proc: subprocess.Popen[str], logger: logging.Logger) -> 
         )
 
 
+def _apply_debug_request_env(env: dict[str, str]) -> None:
+    """When HTMLVIDEO_CLAUDE_DEBUG_REQUEST is on, dump full Anthropic request bodies.
+
+    Claude Code is a Bun-compiled binary, so we set BUN_OPTIONS=--preload=...
+    (equals form) rather than NODE_OPTIONS=--require.
+    """
+    raw = env.get("HTMLVIDEO_CLAUDE_DEBUG_REQUEST", "")
+    if raw.strip().lower() not in _DEBUG_REQUEST_TRUTHY:
+        return
+    env["ANTHROPIC_LOG"] = "debug"
+    preload_flag = f"--preload={_INSPECT_PRELOAD}"
+    existing = env.get("BUN_OPTIONS", "").strip()
+    if preload_flag in existing.split():
+        return
+    env["BUN_OPTIONS"] = (
+        f"{existing} {preload_flag}".strip() if existing else preload_flag
+    )
+
+
 def _child_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
     """Build the Claude child environment.
 
     Always drops built-in git/PR workflow text from the system prompt for this
-    non-interactive pipeline. ``extra_env`` wins last.
+    non-interactive pipeline. ``extra_env`` wins last, then debug-request
+    expansion runs so the flag can come from either the parent env or
+    ``extra_env``.
     """
     env = {
         **os.environ,
@@ -336,6 +364,7 @@ def _child_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
     }
     if extra_env:
         env.update(extra_env)
+    _apply_debug_request_env(env)
     return env
 
 
@@ -368,6 +397,8 @@ def _run_profile(
     # Re-apply extra_env so caller overrides still beat profile defaults.
     if extra_env:
         env.update(extra_env)
+    # Re-run after the second extra_env merge so BUN_OPTIONS is not wiped.
+    _apply_debug_request_env(env)
     env["MAX_THINKING_TOKENS"] = _clamp_thinking(
         str(env.get("MAX_THINKING_TOKENS", profile["thinking"])),
         str(profile["thinking_fallback"]),
