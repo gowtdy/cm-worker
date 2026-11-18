@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -388,6 +389,15 @@ def run_aiflow_build_frame_html(project_dir: Path) -> int:
         },
         flush=True,
     )
+    if os.environ.get("HTMLVIDEO_FRAME_HTML_DRIVER", "1") != "0":
+        try:
+            sys.path.insert(0, "/app")
+            from html_utility.frame_html import build_frame_html as _b
+            _b(str(project_dir), _script_logger())
+            return 0
+        except Exception as exc:  # pragma: no cover - deployment fallback
+            print(f"warning: frame-html driver unavailable ({exc}); "
+                  "falling back to orchestrator path", file=sys.stderr)
     rc = run_claude(
         project_dir,
         FRAME_HTML_PROMPT,
