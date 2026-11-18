@@ -11,7 +11,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from html_utility.claude_cli import run_claude
+from html_utility.claude_cli import _INSPECT_PRELOAD, run_claude
 
 PROMPT = "PROMPT_SECRET_DO_NOT_LOG"
 CWD = "/tmp/htmlvideo-proj"
@@ -41,6 +41,8 @@ _CLEAR_ENV = (
     "CLAUDE_CODE_SUBAGENT_EFFORT",
     "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
     "CLAUDE_CODE_MAX_THINKING_TOKENS",
+    "ANTHROPIC_LOG",
+    "BUN_OPTIONS",
 )
 
 
@@ -269,6 +271,36 @@ class RunClaudeTests(unittest.TestCase):
                     "claude skill result skill=%s result=visible result" % skill,
                     joined,
                 )
+
+    def test_debug_request_env_sets_anthropic_log_and_bun_preload(self) -> None:
+        os.environ["HTMLVIDEO_CLAUDE_DEBUG_REQUEST"] = "1"
+        _, _, _, kwargs = self._invoke(skill="intent")
+        env = kwargs["env"]
+        self.assertEqual(env["ANTHROPIC_LOG"], "debug")
+        self.assertEqual(
+            env["BUN_OPTIONS"], f"--preload={_INSPECT_PRELOAD}"
+        )
+        self.assertTrue(os.path.isfile(_INSPECT_PRELOAD))
+
+    def test_debug_request_via_extra_env_appends_existing_bun_options(self) -> None:
+        _, _, _, kwargs = self._invoke(
+            skill="intent",
+            extra_env={
+                "HTMLVIDEO_CLAUDE_DEBUG_REQUEST": "yes",
+                "BUN_OPTIONS": "--smol",
+            },
+        )
+        env = kwargs["env"]
+        self.assertEqual(env["ANTHROPIC_LOG"], "debug")
+        self.assertEqual(
+            env["BUN_OPTIONS"], f"--smol --preload={_INSPECT_PRELOAD}"
+        )
+
+    def test_debug_request_off_by_default(self) -> None:
+        _, _, _, kwargs = self._invoke(skill="intent")
+        env = kwargs["env"]
+        self.assertNotEqual(env.get("ANTHROPIC_LOG"), "debug")
+        self.assertNotIn("--preload=", env.get("BUN_OPTIONS", ""))
 
     def test_env_overrides_and_model_flag(self) -> None:
         os.environ["HTMLVIDEO_CLAUDE_VISUAL_EFFORT"] = "low"
