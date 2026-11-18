@@ -31,22 +31,22 @@ _PROFILES: dict[str, dict[str, object]] = {
         "deny_agent": True,
     },
     "storyboard": {
-        "effort": "medium",
-        "thinking": "127000",
+        "effort": "high",
+        "thinking": "64000",
         "max_turns": 100,
         "timeout": 3600,
         "deny_agent": True,
     },
     "visual": {
         "effort": "high",
-        "thinking": "127000",
+        "thinking": "64000",
         "max_turns": 100,
         "timeout": 3600,
         "deny_agent": True,
     },
     "frame_html": {
         "effort": "high",
-        "thinking": "127000",
+        "thinking": "64000",
         # The only lever that actually caps the 8–16m marathon-thinking turns
         # (request body shows thinking:{type:adaptive}, budget_tokens stripped).
         # 16000 ≈ ~5m/turn at ~50 tok/s; A/B via HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS.
