@@ -9,7 +9,7 @@ already exists on disk.
 
 ## INPUT — aiflow fields
 
-The shared contract's INPUT applies in full. Your packet carries everything selected upstream — the frame's exact `## Frame N` block (`## Assigned storyboard block`), the inlined blueprint body (`## Selected blueprint: <id>`), every cited rule recipe (`## Selected motion rule: <id>`), and `RULES_DIR` in the packet header — **never open `STORYBOARD.md` or the skill documents**. The one sanctioned exception is the cut catalog: your dispatch context carries its file path — open **only** that file, and only when a Scene seam is a within-scene swap / scene-to-scene cut / text-to-text line change (on the shared contract's terms). The aiflow-specific fields:
+The shared contract's INPUT applies in full. Your packet carries everything selected upstream — the frame's exact `## Frame N` block (`## Assigned storyboard block`), the inlined blueprint body (`## Selected blueprint: <id>`), a rule INDEX (`## Rule index`: each cited motion's path under `RULES_DIR/`) — open a recipe file only while authoring its phase; no recipe bodies are inlined — **never open `STORYBOARD.md` or the skill documents**. The one sanctioned exception is the cut catalog: your dispatch context carries its file path — open **only** that file, and only when a Scene seam is a within-scene swap / scene-to-scene cut / text-to-text line change (on the shared contract's terms). The aiflow-specific fields:
 
   **Your dispatch document is the single required input**
 (`.hyperframes/frame-packets/<frame_id>.dispatch.md`): it inlines the rule
@@ -32,7 +32,7 @@ pre-writes a valid skeleton (`<!-- skeleton-v1 -->`, passes frame-selfcheck)
 to `compositions/frames/<frame_id>.html` before you start — fill it with
 chunked Edits (style → body → script); you may add/remove nodes or rewrite
 the file wholly (last write wins). A file on disk is therefore your working
-document, never proof of completion — your `done OK` reply is. The artifact itself follows the shared contract exactly (one bare `<template>…</template>` at `compositions/frames/<frame_id>.html`). (Sketches do not occur in this pipeline — the visual skill skips the sketch pass — so the shared contract's sketch section never applies; a file already on disk at dispatch is your own output from a retry.)
+document, never proof of completion — your `done OK` reply is. The artifact itself follows the shared contract exactly (one bare `<template>…</template>` at `compositions/frames/<frame_id>.html`). (Sketches do not occur in this pipeline — the visual skill skips the sketch pass — so the shared contract's sketch section never applies; a file already on disk at dispatch is the skeleton — plus your own edits if this is a retry.)
 
 ## You do NOT decide — addition
 
@@ -105,7 +105,7 @@ The shared contract's constraints apply in full; these are the aiflow-specific o
 
 ## Workflow (shared steps apply — aiflow changes)
 
-1. **Read** — the shared step applies; read from your **packet**, not the skill files: frame block under `## Assigned storyboard block`, blueprint body under `## Selected blueprint: <id>` (absent when `compose`), each cited motion's recipe under `## Selected motion rule: <id>`. Open `RULES_DIR/<id>.md` only when a cited recipe is missing from the packet (the shared fallback). The structural law is restated in the shared contract above — do **not** open `hyperframes-core/SKILL.md` or the skill catalog.
+1. **Read** — the shared step applies; read from your **packet**, not the skill files: frame block under `## Assigned storyboard block`, blueprint body under `## Selected blueprint: <id>` (absent when `compose`), each cited motion's recipe path — open the recipe at `RULES_DIR/<id>.md` (the dispatch's Rule index lists them) while you author that phase. The structural law is restated in the shared contract above — do **not** open `hyperframes-core/SKILL.md` or the skill catalog.
 2. **Design** — the shared step applies; it is this workflow's job to **invent** the visual elements the Scene lines describe (the diagram, the hero word, the metaphor) — a visual idea that reinforces the beat, not a literal restyle of the words.
 3. **Author** — the shared step applies, with one change: the root also carries **`data-duration="<duration>"`** (packet `duration` verbatim — see Frame constraints above).  (the root already carries `data-duration` — the skeleton stamped it; keep it).
 4. **Self-check, then finish** — shared step applies, plus the script gate and delta additions below; **replying `done OK <frame_id>`** (or `fail …`) is your terminal action.
