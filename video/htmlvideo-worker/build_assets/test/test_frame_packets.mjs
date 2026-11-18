@@ -3,7 +3,6 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
-  readdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -79,13 +78,13 @@ function fixtureProject() {
 }
 
 export function testDispatchDocs() {
-  const { dir, card, frameMd, anim } = fixtureProject();
+  const { dir, card, frameMd } = fixtureProject();
   const storyboard = readFileSync(join(dir, "STORYBOARD.md"), "utf8");
   const frames = core.splitFrames(storyboard).map((f) =>
     ({ ...f, frameId: core.frameId(f) }));
   const outDir = join(dir, ".hyperframes", "frame-packets");
   const docs = core.buildDispatchDocs({
-    projectDir: dir, frames, outDir, animationDir: anim,
+    projectDir: dir, frames, outDir, animationDir: dir,
     cardPath: card, frameMdPath: frameMd,
   });
   assert.strictEqual(docs.length, 2);
@@ -93,6 +92,7 @@ export function testDispatchDocs() {
     const text = readFileSync(d.path, "utf8");
     assert.ok(d.bytes <= 40000, `dispatch ${d.frameId} over budget`);
     assert.ok(text.includes("## Role"), "has role section");
+    assert.ok(text.includes("role card text"), "card must be inlined into the doc");
     assert.ok(text.includes("## Assigned storyboard block"), "has block");
     assert.ok(text.includes("## Rule index"), "has rule index");
     assert.ok(text.includes("recipe body") === false,
@@ -102,10 +102,16 @@ export function testDispatchDocs() {
     assert.ok(text.includes("No invented stats"), "hard-rule section included");
     assert.ok(!text.includes("big catalog section"), "treatment catalog excluded");
   }
+  // positive path: frame 1 cites `rules: punch-in` → index cites the rule by path
+  const hookText = readFileSync(
+    docs.find((d) => d.frameId === "01-hook").path, "utf8");
+  assert.ok(hookText.includes("punch-in"), "rule index must cite cited rules by path");
+  assert.ok(hookText.includes("rules/punch-in.md"),
+    "rule index line must carry the rules/<id>.md path");
   // determinism
   const again = core.buildDispatchDocs({
     projectDir: dir, frames: core.splitFrames(readFileSync(join(dir, "STORYBOARD.md"), "utf8")).map((f) => ({ ...f, frameId: core.frameId(f) })),
-    outDir: join(dir, "second"), animationDir: anim,
+    outDir: join(dir, "second"), animationDir: dir,
     cardPath: card, frameMdPath: frameMd,
   });
   for (let i = 0; i < docs.length; i++)
