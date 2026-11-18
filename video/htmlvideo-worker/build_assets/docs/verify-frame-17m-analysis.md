@@ -48,12 +48,12 @@
 ## 四、超预期的 ~5–7m 去哪了(按大小)
 
 1. **check 环境故障诊断 ~4.5m(一次性)**:钉版 registry 副本静默死掉是 11-14 落地的 report 脚本没覆盖到的环境断点(脚本本体内部用本地 CLI 不受影响,是元组的 `npm run check` 入口坏)。这次交了学费并把结论写进项目 memory;建议下次若再触雷直接跳过钉版入口(→ SKILL.md 加一行预案)。**本次属于"新知识获取"而非退步。**
-2. **两次深思考尖峰 ~3.2m(结构性,与 other 阶段同族)**:读单帧后 101s 一次性归因 18 条 overlap(结论正确、走 #4,但要价高);94s 手工推演 WCAG 相对亮度公式给 sticker 选色(checker 已给出 verified 4.51:1 建议,模型选择重算并取了更暗的 #1A1A1A——严格上正确但属于 over-verification)。与 storyboard 65%、identify-intent 63–86% 的 adaptive-thinking 特征完全同族。`CLAUDE_CODE_MAX_THINKING_TOKENS`(thinking cap)在记忆中仍是"待做/待 A/B"——**它是 verify 阶段剩余的最大杠杆**(预期直接吃掉尖峰 ~3m,长尾回合再压 ~2m)。
+2. **两次深思考尖峰 ~3.2m(结构性,与 other 阶段同族)**:读单帧后 101s 一次性归因 18 条 overlap(结论正确、走 #4,但要价高);94s 手工推演 WCAG 相对亮度公式给 sticker 选色(checker 已给出 verified 4.51:1 建议,模型选择重算并取了更暗的 #1A1A1A——严格上正确但属于 over-verification)。与 storyboard 65%、identify-intent 63–86% 的 adaptive-thinking 特征完全同族。`CLAUDE_CODE_MAX_OUTPUT_TOKENS`(thinking cap;`MAX_THINKING_TOKENS` budget_tokens 在 adaptive 后端被剥除、本部署实测无效)在记忆中仍是"待做/待 A/B"——**它是 verify 阶段剩余的最大杠杆**(预期直接吃掉尖峰 ~3m,长尾回合再压 ~2m)。
 3. **零批量 ~1m(税已降,不再痛)**:8 帧文件 8 个回合、22 处 Edit 22 个回合。旧 CLI 单价 20–30s 时这是 30m 级主税;现在缓存命中+快速首字节下单价 ~3–4s,批量纪律收益优先级大幅下移——**不建议再为 batching 改 skill,先做 thinking cap。**
 
 ## 五、下一步(优先级)
 
-1. **thinking cap A/B(与 storyboard/identify-intent 的 ① 合并做)**:`CLAUDE_CODE_MAX_THINKING_TOKENS`(如 4000)+ run_claude 注入,验证本部署是否生效;若生效,verify 预期 17m → 12–13m(与 10–12m 预期带对齐)。
+1. **thinking cap A/B(与 storyboard/identify-intent 的 ① 合并做)**:`CLAUDE_CODE_MAX_OUTPUT_TOKENS`(如 16000)+ run_claude 注入,封 max_tokens;若生效,verify 预期 17m → 12–13m(与 10–12m 预期带对齐)。
 2. **check 入口预案进 SKILL.md**:`npm run check` 钉版入口失败 → 直接 `npx hyperframes check .`(本地 symlink),免 16 回合诊断。
 3. P3 回合预算口径更新:≤12 的旧口径按"逻辑阶段"计(本次逻辑阶段 ≈7,达标);"工具回合"口径应在新 CLI 下重估为 ≤40(单价低)。
 
@@ -61,7 +61,3 @@
 
 - 项目级 memory(aiflow-verify-pitfalls 系,会话收尾 2×Write):check 钉版入口环境断点已记录,下次同一项目/同类环境直接命中。
 - 修复明细:字体 @import ×9(#3)、`data-layout-allow-overlap` ×18(#4 设计分层)、对比度 ×4(01 pillow 墙词/03 sticker);28 条 `id_requires_css_escape` warning 确认为 tell-only(结构门干净),9 条 google_fonts_import warning 为已知非阻断。
-
-## 实施记录(2026-11-17: Claude CLI 调参)
-
-上文的 `CLAUDE_CODE_MAX_THINKING_TOKENS` 应为 `MAX_THINKING_TOKENS`（CLI 2.1.316 不读取前者）。effort 由子进程环境变量 `CLAUDE_CODE_EFFORT_LEVEL` 按 skill 覆盖；`HTMLVIDEO_CLAUDE_PROFILE=off` 恢复改动前的命令与环境。
