@@ -34,14 +34,14 @@ _PROFILES: dict[str, dict[str, object]] = {
         "effort": "high",
         "thinking": "64000",
         "max_turns": 100,
-        "timeout": 3600,
+        "timeout": 1800,
         "deny_agent": True,
     },
     "visual": {
         "effort": "high",
         "thinking": "64000",
         "max_turns": 100,
-        "timeout": 3600,
+        "timeout": 1800,
         "deny_agent": True,
     },
     "frame_html": {
@@ -52,14 +52,14 @@ _PROFILES: dict[str, dict[str, object]] = {
         # 16000 ≈ ~5m/turn at ~50 tok/s; A/B via HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS.
         "max_output": "16000",
         "max_turns": 150,
-        "timeout": 3600,
+        "timeout": 1800,
         "deny_agent": False,
     },
     "verify": {
         "effort": "medium",
         "thinking": "32000",
         "max_turns": 100,
-        "timeout": 3600,
+        "timeout": 1800,
         "deny_agent": True,
     },
 }
