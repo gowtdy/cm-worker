@@ -61,3 +61,7 @@
 
 - 项目级 memory(aiflow-verify-pitfalls 系,会话收尾 2×Write):check 钉版入口环境断点已记录,下次同一项目/同类环境直接命中。
 - 修复明细:字体 @import ×9(#3)、`data-layout-allow-overlap` ×18(#4 设计分层)、对比度 ×4(01 pillow 墙词/03 sticker);28 条 `id_requires_css_escape` warning 确认为 tell-only(结构门干净),9 条 google_fonts_import warning 为已知非阻断。
+
+## 实施记录(2026-11-17: Claude CLI 调参)
+
+上文的 `CLAUDE_CODE_MAX_THINKING_TOKENS` 应为 `MAX_THINKING_TOKENS`（CLI 2.1.316 不读取前者）。effort 由子进程环境变量 `CLAUDE_CODE_EFFORT_LEVEL` 按 skill 覆盖；`HTMLVIDEO_CLAUDE_PROFILE=off` 恢复改动前的命令与环境。

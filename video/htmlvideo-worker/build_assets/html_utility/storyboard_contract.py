@@ -17,8 +17,8 @@ import os
 # Canonical card lives in the hyperframes skills copy and is synced (cp -a)
 # to the .claude skills copy -- same dual-copy convention as SKILL.md edits.
 _CONTRACT_CARD_CANDIDATES = (
-    "/app/.claude/skills/aiflow-build-storyboard/references/contract-card.md",
-    "/app/hyperframes/skills/aiflow-build-storyboard/references/contract-card.md",
+    "/app/skills/aiflow-build-storyboard/references/contract-card.md",
+    "/app/skills/aiflow-build-storyboard/references/contract-card.md",
 )
 
 

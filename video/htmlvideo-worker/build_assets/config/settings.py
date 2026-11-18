@@ -48,6 +48,17 @@ def get_gpu_numbers() :
 def get_hmac_secret_key() :
     return "0x4AAAAAABL7dEKVA5-OlS1S"
 
+def get_remote_htmlvideosave_dir():
+    """Remote aioutput base for htmlvideo sync (no trailing slash).
+
+    Override via REMOTE_HTMLVIDEO_SAVE_DIR in .env_htmlvideo.
+    Final target_dir is: {base}/{YYYY-MM-DD}/user{uid}
+    """
+    default = "/home/aigc/data/aioutput/video"
+    value = os.environ.get("REMOTE_HTMLVIDEO_SAVE_DIR", default)
+    cleaned = (value or "").strip().rstrip("/")
+    return cleaned or default
+
 def get_fasttext_modelpath() :
     return "/app/models/fasttext_models/lid.176.bin"
 
