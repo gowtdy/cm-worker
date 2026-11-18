@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -92,6 +93,18 @@ def step_storyboard(logger: Any, project_dir: str) -> StepResult:
         )
 
 
+def _report_progress(logger: Any, task_id: str, domain: str, status, info_msg: str) -> None:
+    """过程态上报不阻塞并行：先打 info，再 daemon 线程更新状态。"""
+    logger.info(info_msg)
+    threading.Thread(
+        target=update_task_status,
+        args=(logger, task_id, domain, status),
+        kwargs={"payload_msg": status},
+        daemon=True,
+        name=f"update-status-{task_id}-{status}",
+    ).start()
+
+
 def _run_tts(
     logger: Any,
     project_dir: str,
@@ -123,11 +136,38 @@ def parallel_tts_visual(
     modelcat: str,
     modelname: str,
     task_id: str,
+    domain: str,
 ) -> TtsVisualResult:
     with ThreadPoolExecutor(max_workers=2) as ex:
         fut_tts = ex.submit(_run_tts, logger, project_dir, modelcat, modelname, task_id)
         fut_visual = ex.submit(_run_visual, logger, project_dir)
-        return TtsVisualResult(tts=fut_tts.result(), visual=fut_visual.result())
+        pending = {fut_tts: "tts", fut_visual: "visual"}
+        done: dict[str, StepResult] = {}
+        for fut in as_completed(pending):
+            kind = pending[fut]
+            result = fut.result()
+            done[kind] = result
+            if result.ret != 0:
+                continue
+            if kind == "tts":
+                _report_progress(
+                    logger,
+                    task_id,
+                    domain,
+                    TaskStatus.VIDEO_TTSED,
+                    f"task_id:{task_id} tts generated, project_dir:{project_dir} "
+                    f"cost:{result.cost:.1f}s",
+                )
+            else:
+                _report_progress(
+                    logger,
+                    task_id,
+                    domain,
+                    TaskStatus.VIDEO_VISUALED,
+                    f"task_id:{task_id} frame visual built, frame_visual_path:{result.path}, "
+                    f"project_dir:{project_dir} cost:{result.cost:.1f}s",
+                )
+        return TtsVisualResult(tts=done["tts"], visual=done["visual"])
 
 
 def step_sync_duration(logger: Any, project_dir: str, task_id: str) -> StepResult:
@@ -202,10 +242,34 @@ def parallel_caption_frames(
         fut_frames = ex.submit(
             _run_packets_and_html, logger, project_dir, task_id, domain
         )
-        return CaptionFramesResult(
-            caption=fut_caption.result(),
-            frames=fut_frames.result(),
-        )
+        pending = {fut_caption: "caption", fut_frames: "frames"}
+        done: dict[str, StepResult] = {}
+        for fut in as_completed(pending):
+            kind = pending[fut]
+            result = fut.result()
+            done[kind] = result
+            if result.ret != 0:
+                continue
+            if kind == "caption":
+                _report_progress(
+                    logger,
+                    task_id,
+                    domain,
+                    TaskStatus.VIDEO_CAPTIONED,
+                    f"task_id:{task_id} caption generated, project_dir:{project_dir} "
+                    f"cost:{result.cost:.1f}s",
+                )
+            else:
+                cost_frame_html = result.extra_costs.get("frame_html", 0.0)
+                _report_progress(
+                    logger,
+                    task_id,
+                    domain,
+                    TaskStatus.VIDEO_FRAMED_HTML,
+                    f"task_id:{task_id} frame html built, frame_html_path:{result.path}, "
+                    f"project_dir:{project_dir} cost:{cost_frame_html:.1f}s",
+                )
+        return CaptionFramesResult(caption=done["caption"], frames=done["frames"])
 
 
 def step_index_html(logger: Any, project_dir: str, task_id: str) -> StepResult:
