@@ -23,6 +23,7 @@ VIDEO_DIRECTION_HEADING = "## Video direction"
 FRAME_PACKETS_DIR = os.path.join(".hyperframes", "frame-packets")
 FRAME_PACKETS_ROLE = "_role.md"
 STATUS_RE = re.compile(r"^- status:\s*(\w+)", re.MULTILINE)
+_LOGGER = logging.getLogger(__name__)
 
 # legacy path — only used when HTMLVIDEO_FRAME_HTML_DRIVER=0.
 # Project-local worker agent definition. The orchestrator must dispatch frame
@@ -281,7 +282,6 @@ SKELETON_ENV = "HTMLVIDEO_FRAME_HTML_SKELETON"
 DISPATCH_SUFFIX = ".dispatch.md"
 MAX_RETRY_ROUNDS = 2
 DEFAULT_MAX_WORKERS = 8
-DONE_OK_RE = re.compile(r"\bdone\s+OK\b")
 CUT_CATALOG_PATH = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "skills",
     "aiflow-build-frame-html", "references", "cut-catalog.md"))
@@ -364,6 +364,7 @@ def _mark_animated_storyboard(project_dir, frame_id):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text[:m.start(1)] + new_block + text[m.end(1):])
             return True
+        _LOGGER.warning("status bullet not found/updated for frame id=%s", frame_id)
     return False
 
 
@@ -426,7 +427,8 @@ def _build_frame_html_driver(project_dir, logger):
         failures = {}
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             for fid, rc, text in pool.map(run_one, remaining):
-                ok = rc == 0 and DONE_OK_RE.search(text or "") and fid in (text or "")
+                ok_re = re.compile(rf"\bdone\s+OK\s+{re.escape(fid)}\b")
+                ok = rc == 0 and bool(ok_re.search(text or ""))
                 if (not skeleton_mode) and ok and not os.path.isfile(
                         os.path.join(project_dir, "compositions", "frames", f"{fid}.html")):
                     ok = False
@@ -442,13 +444,17 @@ def _build_frame_html_driver(project_dir, logger):
         notes = {fid: _dispatch_note(*t) for fid, t in failures.items()}
         log("retry round %s pending=%s", round_no + 1, remaining)
     if remaining:
+        reasons = ", ".join(
+            f"{fid}: {notes[fid]}" for fid in sorted(remaining))
         raise RuntimeError(
-            f"frames still broken after {1 + MAX_RETRY_ROUNDS} rounds: {sorted(remaining)}")
+            f"frames still broken after {1 + MAX_RETRY_ROUNDS} rounds: {reasons}")
 
     ret, msg = build_index_html(logger, project_dir)
-    if ret != 0:
+    if ret != 0 and "script_path" not in (msg or ""):
         repair_rc = run_claude(project_dir, _repair_prompt(msg), logger, skill="repair")
         log("assemble repair session rc=%s", repair_rc)
         ret, msg = build_index_html(logger, project_dir)
         if ret != 0:
             raise RuntimeError(f"assemble failed even after repair: {msg}")
+    elif ret != 0:
+        raise RuntimeError(f"assemble failed: {msg}")

@@ -42,4 +42,4 @@
 - **Self-check, then reply** — run `node /app/scripts/frame-selfcheck.mjs compositions/frames/<frame_id>.html` — enforces the gates on your unwired frame (assembled-project `hyperframes lint`/`check` is a false green); fix every FAIL, re-read this card, reply `done OK <frame_id>` — terminal action. No PASS → `fail <frame_id>: <what is still broken>`, never silent.
 - **Not yours** — prefix authored ids & reusable classes with `<frame_id>-` (`#root` / `.clip` excepted); you don't decide narration, duration, between-frame transitions, audio, tokens, or motions/assets.
 
-Escape hatches — open only when unclear: full `_role.md` — authoritative; `RULES_DIR/<id>.md` if a cited recipe is missing from your packet; `frame.md` (project root) = design truth; cut catalog (path in dispatch) for Scene-seam swaps / scene cuts / text-to-text changes.
+Escape hatches — open only when unclear: full `_role.md` — authoritative; `RULES_DIR/<id>.md` if a cited recipe is missing from your packet; `frame.md` (project root) = design truth; cut catalog (path in your dispatch prompt) for Scene-seam swaps / scene cuts / text-to-text changes.

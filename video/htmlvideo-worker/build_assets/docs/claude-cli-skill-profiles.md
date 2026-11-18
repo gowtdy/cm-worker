@@ -120,7 +120,7 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 | `HTMLVIDEO_CLAUDE_<SKILL>_TIMEOUT` | 覆盖超时秒；≤0 回退默认 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_MODEL` | 设置则追加 `--model`；默认不设 |
 
-`<SKILL>`：`INTENT` / `STORYBOARD` / `VISUAL` / `FRAME_HTML` / `VERIFY`。
+`<SKILL>`：`INTENT` / `STORYBOARD` / `VISUAL` / `FRAME_HTML` / `VERIFY` / `REPAIR`。
 
 全局 `CLAUDE_CODE_EFFORT_LEVEL=max`（见 `conf/env_htmlvideo_example`）在 **profile 开启时被各 skill 覆盖**；仅 `PROFILE=off` 或未传 `skill` 时作为兜底。
 

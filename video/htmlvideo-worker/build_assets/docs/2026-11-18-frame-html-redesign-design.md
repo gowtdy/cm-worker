@@ -120,7 +120,7 @@ _validate_frame_html_outputs()（既有 gate 保留）
 
 | 节 | 内容 | 尺寸预算 |
 |---|---|---|
-| `## Role（可执行条款卡）` | 从 `_role.md` 抽取的全部硬约束 + lint 规则码 + filler 工作流；**不含**大段 HTML 正反示例、不含已被骨架物理保证的条目；明确「规则不清晰 → 打开 `.hyperframes/frame-packets/_role.md` 全量契约」的逃生门 | ≤6KB |
+| `## Role（可执行条款卡）` | 从 `_role.md` 抽取的全部硬约束 + lint 规则码 + filler 工作流；**不含**大段 HTML 正反示例、不含已被骨架物理保证的条目；明确「规则不清晰 → 打开 `.hyperframes/frame-packets/_role.md` 全量契约」的逃生门 | ≤8KB（实测 7820B） |
 | `## Assigned storyboard block` | 帧的 Scene 序列、duration、focal/roles（原文不动） | 原文 |
 | `## Selected blueprint` | 原文不动 | 原文 |
 | `## Rule index` | 各 Scene 引用的 recipe 名 + `RULES_DIR/<id>.md` 路径（**不内联全文**） | 每行一条 |

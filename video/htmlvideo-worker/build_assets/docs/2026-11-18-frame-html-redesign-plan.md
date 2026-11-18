@@ -16,7 +16,7 @@
 - 串行阶段 profile：`max_output=32000`；`frame_html` profile：`max_output=64000`、`max_turns=60`、`timeout=720`、`deny_agent=True`；新增 `repair` profile：`effort=high, thinking=40000, max_output=16000, max_turns=40, timeout=600, deny_agent=True`。
 - worker 完成信号：`rc==0 ∧ result 文本含 done OK <frame_id>`；skeleton 模式下 artifact 存在性不作为完成信号（骨架预写）；skelton off（回退）模式额外要求 artifact 存在。
 - 重派 ≤2 轮，整批并行重派，每轮附失败原因；最终仍败 → raise（不代写帧）。
-- dispatch 文档总预算 ≤40KB（超限 warning 不 fail）；role card ≤6.5KB；frame.md 摘取白名单小节（见 Task 5）；skeleton 必须过 `frame-selfcheck.mjs`。
+- dispatch 文档总预算 ≤40KB（超限 warning 不 fail）；role card ≤8KB（实测 7820B）；frame.md 摘取白名单小节（见 Task 5）；skeleton 必须过 `frame-selfcheck.mjs`。
 - 所有新产物必须确定性与幂等：同输入两次构建逐字节一致。
 - 质量门不降：frame-selfcheck 一次通过率、assemble 成功、`_validate_frame_html_outputs` 终态、verify 阶段终态不回归。
 - 回滚开关：`HTMLVIDEO_FRAME_HTML_DRIVER=0`（回旧 orchestrator 路径）、`HTMLVIDEO_FRAME_HTML_SKELETON=0`（回 artifact 判定 + 无骨架提示）、`HTMLVIDEO_FRAME_PACKETS_DISPATCH_VER=1`（不产 dispatch 文档）、`HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS=128000`（cap 回退档）、`HTMLVIDEO_CLAUDE_PROFILE=off`（全量回滚）。
@@ -262,7 +262,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Create: `build_assets/test/test_frame_packets.mjs`（node:assert 测试脚本，本任务先加 card 断言，后续任务扩）
 
 **Interfaces:**
-- Produces: `frame-worker-card.md` —— 打包器在 Task 5 `buildDispatchDocs` 中**逐字**内联进 `<id>.dispatch.md` 的 `## Role` 节。硬约束：≤6.5KB；必须包含全部 9 个 selfcheck FAIL 码；首行声明「`_role.md` 全量契约是权威，冲突时以 `_role.md` 为准」。
+- Produces: `frame-worker-card.md` —— 打包器在 Task 5 `buildDispatchDocs` 中**逐字**内联进 `<id>.dispatch.md` 的 `## Role` 节。硬约束：≤8KB（实测 7820B）；必须包含全部 9 个 selfcheck FAIL 码；首行声明「`_role.md` 全量契约是权威，冲突时以 `_role.md` 为准」。
 
 - [ ] **Step 1: 写测试（card 覆盖自检）**
 

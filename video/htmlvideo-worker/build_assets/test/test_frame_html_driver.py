@@ -56,7 +56,11 @@ class DriverTest(unittest.TestCase):
         assemble_results: build_index_html return values in call order."""
         calls = {k: list(v) for k, v in results.items()}
         def fake(project_dir, prompt, logger, extra_env=None, skill=None):
-            fid = next(rid for rid in calls if rid in prompt)
+            # Match on the frame-specific path tokens every worker prompt
+            # carries (dispatch doc + frame file) — a bare fid substring also
+            # matches another frame's id inside a re-dispatch note tail.
+            fid = next(rid for rid in calls
+                       if f"{rid}.dispatch.md" in prompt or f"{rid}.html" in prompt)
             return calls[fid].pop(0)
         p1 = mock.patch.object(fh, "run_claude_result", side_effect=fake)
         p2 = mock.patch.object(fh, "build_index_html", side_effect=list(assemble_results))
@@ -67,7 +71,8 @@ class DriverTest(unittest.TestCase):
         d = make_project(skeleton=True)
         self._patch_dispatch({k: [(0, f"done OK {k}")] for k in ("01-hook", "02-answer")})
         fh.build_frame_html(d, None)
-        text = open(os.path.join(d, "STORYBOARD.md")).read()
+        with open(os.path.join(d, "STORYBOARD.md")) as f:
+            text = f.read()
         self.assertIn("- status: animated", text)
 
     def test_retry_then_converge(self):
@@ -78,12 +83,28 @@ class DriverTest(unittest.TestCase):
         })
         fh.build_frame_html(d, None)
 
+    def test_done_ok_for_other_frame_rejected(self):
+        d = make_project(skeleton=True)
+        self._patch_dispatch({
+            "01-hook": [(0, "done OK 01-hook")],
+            "02-answer": [(0, "done OK 01-hook"), (0, "done OK 02-answer")],
+        })
+        seen = []
+        orig = fh.run_claude_result
+        def counting(project_dir, prompt, logger, extra_env=None, skill=None):
+            seen.append(prompt)
+            return orig(project_dir, prompt, logger, extra_env=extra_env, skill=skill)
+        with mock.patch.object(fh, "run_claude_result", side_effect=counting):
+            fh.build_frame_html(d, None)
+        self.assertEqual(sum("02-answer" in p for p in seen), 2)
+
     def test_two_rounds_then_raise(self):
         d = make_project(skeleton=True)
         self._patch_dispatch({"01-hook": [(0, "done OK 01-hook")],
                               "02-answer": [(0, ""), (0, ""), (0, "")]})
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(RuntimeError) as ctx:
             fh.build_frame_html(d, None)
+        self.assertIn("02-answer: prior attempt", str(ctx.exception))
 
     def test_timeout_signal_embedded_in_retry_note(self):
         d = make_project(skeleton=True)

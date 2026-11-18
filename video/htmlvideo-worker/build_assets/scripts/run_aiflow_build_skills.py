@@ -393,11 +393,12 @@ def run_aiflow_build_frame_html(project_dir: Path) -> int:
         try:
             sys.path.insert(0, "/app")
             from html_utility.frame_html import build_frame_html as _b
-            _b(str(project_dir), _script_logger())
-            return 0
-        except Exception as exc:  # pragma: no cover - deployment fallback
+        except (ImportError, OSError) as exc:  # pragma: no cover - deployment fallback
             print(f"warning: frame-html driver unavailable ({exc}); "
                   "falling back to orchestrator path", file=sys.stderr)
+        else:
+            _b(str(project_dir), _script_logger())
+            return 0
     rc = run_claude(
         project_dir,
         FRAME_HTML_PROMPT,
