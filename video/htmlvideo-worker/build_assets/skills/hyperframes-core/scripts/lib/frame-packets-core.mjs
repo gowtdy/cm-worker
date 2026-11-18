@@ -186,23 +186,31 @@ ${excerpt}
   });
 }
 
-// Pre-built per-frame skeleton files (Task 8 drives the content contract; this
-// lands the plumbing now): minimal valid `<template>` + #root attrs + comment,
-// written only when the file does not exist so a worker's in-flight file is
-// never clobbered.
+// Pre-built per-frame skeleton files: minimal valid `<template>` + #root attrs
+// + marker comment, deterministic and selfcheck-clean ("last write wins" — the
+// filler worker path rewrites them; packets are fair game to refresh).
 export function buildSkeletons({ projectDir, frames, canvas }) {
-  const framesDir = join(projectDir, "compositions", "frames");
+  const framesDir = resolve(projectDir, "compositions", "frames");
   mkdirSync(framesDir, { recursive: true });
-  const width = canvas?.width ?? 1920;
-  const height = canvas?.height ?? 1080;
+  const dims = canvas && canvas.width && canvas.height
+    ? ` data-width="${canvas.width}" data-height="${canvas.height}"` : "";
   return frames.map((frame) => {
-    const id = frameId(frame);
-    const duration = field(frame.block, "duration") ?? "0s";
-    const path = join(framesDir, `${id}.html`);
-    if (!existsSync(path)) {
-      writeFileSync(path, `<template>\n<!-- ${id} skeleton — pre-built by frame-packets; flesh out with the composed frame -->\n<div id="root" data-composition-id="${id}" data-width="${width}" data-height="${height}" data-duration="${duration}"></div>\n</template>\n`);
-    }
-    return { frameId: id, path };
+    const dur = field(frame.block, "duration") ?? field(frame.block, "durationSeconds");
+    if (!dur) throw new Error(`${frame.frameId}: skeleton needs a - duration field on the storyboard block`);
+    const skeleton = `<!-- skeleton-v1: fill style/body/script per .hyperframes/frame-packets/${frame.frameId}.dispatch.md — last write wins -->
+<template>
+<div id="root" data-composition-id="${frame.frameId}"${dims} data-duration="${dur}"></div>
+<style>/* fill: frame styles */</style>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<script>
+window.__timelines = window.__timelines || {};
+window.__timelines["${frame.frameId}"] = gsap.timeline({ paused: true });
+</script>
+</template>
+`;
+    const path = join(framesDir, `${frame.frameId}.html`);
+    writeFileSync(path, skeleton);
+    return { frameId: frame.frameId, path };
   });
 }
 

@@ -4,6 +4,7 @@ import {
   writeFileSync,
   readFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -120,6 +121,25 @@ export function testDispatchDocs() {
   console.log("dispatch docs OK", docs.map((d) => `${d.frameId}:${d.bytes}`).join(" "));
 }
 
+export function testSkeletons() {
+  const { dir, card, frameMd, anim } = fixtureProject();
+  const storyboard = readFileSync(join(dir, "STORYBOARD.md"), "utf8");
+  const frames = core.splitFrames(storyboard).map((f) => ({ ...f, frameId: core.frameId(f) }));
+  const out = core.buildSkeletons({ projectDir: dir, frames, canvas: { width: 1920, height: 1080 } });
+  assert.strictEqual(out.length, 2);
+  const selfcheck = join(ROOT, "scripts", "frame-selfcheck.mjs");
+  for (const { frameId, path } of out) {
+    const html = readFileSync(path, "utf8");
+    assert.ok(html.includes("skeleton-v1"), "marker present");
+    assert.ok(html.includes(`data-composition-id="${frameId}"`), "comp id");
+    assert.ok(html.includes("data-width=\"1920\""), "canvas dims");
+    assert.ok(html.includes("data-duration=\"4s\"") || html.includes("data-duration=\"5s\""), "duration stamped");
+    const run = spawnSync("node", [selfcheck, path], { encoding: "utf8" });
+    assert.strictEqual(run.status, 0, `selfcheck FAIL:\n${run.stdout}${run.stderr}`);
+  }
+  console.log("skeletons OK: all pass frame-selfcheck");
+}
+
 if (process.argv[1] && process.argv[1].endsWith("test_frame_packets.mjs")) {
-  testCard(); testDispatchDocs();
+  testCard(); testDispatchDocs(); testSkeletons();
 }
