@@ -81,8 +81,12 @@ Hard constraints (do not violate):
    one worker.
 4. WAIT on disk artifacts, not on harness completion text: a frame is done
    only when compositions/frames/<frame_id>.html exists. Missing file →
-   re-dispatch that worker once with the same prompt; still missing → stop
-   and report.
+   re-dispatch that worker once, but with a convergence note appended (never
+   the bare same prompt): tell it the prior attempt produced no frame — most
+   likely its extended thinking was hard-truncated against the output cap —
+   so it MUST write a minimal skeleton in its first 1–2 turns, then iterate
+   with Edit; forbid single-turn marathon deliberation. Still missing after
+   one re-dispatch → stop and report the failing frame id.
 5. After each worker lands its HTML, mark that frame animated in
    STORYBOARD.md (you own storyboard status; workers never edit it).
 6. Every frame-worker dispatch must use subagent_type "frame-html-worker" —
