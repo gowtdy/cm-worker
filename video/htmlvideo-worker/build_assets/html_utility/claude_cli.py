@@ -13,7 +13,13 @@ import time
 
 # Per-skill effort / thinking budget. CLAUDE_CODE_EFFORT_LEVEL in the child
 # env overrides any --effort flag, and the binary reads MAX_THINKING_TOKENS
-# (not CLAUDE_CODE_MAX_THINKING_TOKENS).
+# (not CLAUDE_CODE_MAX_THINKING_TOKENS). NOTE (2026-11-17, api-bodies): this
+# backend runs the model in adaptive-thinking mode (request body
+# thinking:{"type":"adaptive","display":"omitted"}), so the gateway strips
+# MAX_THINKING_TOKENS budget_tokens — lowering "thinking" below has NO effect.
+# The only lever that reaches the request is CLAUDE_CODE_MAX_OUTPUT_TOKENS
+# (sets max_tokens, hard-caps thinking + visible output). frame_html therefore
+# pins an explicit max_output.
 _PROFILES: dict[str, dict[str, object]] = {
     "intent": {
         "effort": "high",
@@ -25,29 +31,33 @@ _PROFILES: dict[str, dict[str, object]] = {
         "deny_agent": True,
     },
     "storyboard": {
-        "effort": "high",
-        "thinking": "64000",
+        "effort": "medium",
+        "thinking": "127000",
         "max_turns": 100,
         "timeout": 3600,
         "deny_agent": True,
     },
     "visual": {
         "effort": "high",
-        "thinking": "64000",
+        "thinking": "127000",
         "max_turns": 100,
         "timeout": 3600,
         "deny_agent": True,
     },
     "frame_html": {
         "effort": "high",
-        "thinking": "16000",
+        "thinking": "127000",
+        # The only lever that actually caps the 8–16m marathon-thinking turns
+        # (request body shows thinking:{type:adaptive}, budget_tokens stripped).
+        # 16000 ≈ ~5m/turn at ~50 tok/s; A/B via HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS.
+        "max_output": "16000",
         "max_turns": 150,
         "timeout": 3600,
         "deny_agent": False,
     },
     "verify": {
         "effort": "medium",
-        "thinking": "16000",
+        "thinking": "32000",
         "max_turns": 100,
         "timeout": 3600,
         "deny_agent": True,
@@ -169,9 +179,13 @@ def _resolve_profile(skill: str, logger: logging.Logger) -> dict[str, object]:
     if not thinking:
         thinking = str(base["thinking"])
     model = os.environ.get(f"{prefix}_MODEL", "").strip()
+    max_output = os.environ.get(
+        f"{prefix}_MAX_OUTPUT_TOKENS", str(base.get("max_output", ""))
+    ).strip()
     return {
         "effort": effort,
         "thinking": thinking,
+        "max_output": max_output,
         "max_turns": _env_positive_int(
             f"{prefix}_MAX_TURNS", int(base["max_turns"]), logger
         ),
@@ -349,6 +363,8 @@ def _run_profile(
     env = _child_env(extra_env)
     env["CLAUDE_CODE_EFFORT_LEVEL"] = str(profile["effort"])
     env["MAX_THINKING_TOKENS"] = str(profile["thinking"])
+    if profile.get("max_output"):
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(profile["max_output"])
     # Re-apply extra_env so caller overrides still beat profile defaults.
     if extra_env:
         env.update(extra_env)
