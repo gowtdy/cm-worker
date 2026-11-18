@@ -111,6 +111,101 @@ export function buildRolePayload({ corePath, deltaPath, outDir }) {
   return { path, bytes: Buffer.byteLength(role) };
 }
 
+const FRAME_MD_EXCERPT_HEADINGS = [
+  "## Colors", "## Typography", "## Depth & Surface", "## Shapes",
+  "## Components", "## Composition Rules",
+  "## Approved Real Entities", "## Approved Entities",
+  "## Numerals & Claims (hard rule)", "## Pre-Render Self-Audit",
+];
+
+export function frameMdExcerpt(frameMd, maxFallbackBytes = 12000) {
+  if (!frameMd) return "";
+  const headingRe = (h) => new RegExp(`^${escapeRegExp(h)}\\s*$`, "m");
+  const bounds = FRAME_MD_EXCERPT_HEADINGS.map((h) => {
+    const m = headingRe(h).exec(frameMd);
+    return m ? { h, start: m.index } : null;
+  }).filter(Boolean);
+  if (bounds.length === 0) {
+    console.warn("frame-packets: no whitelisted frame.md sections found; falling back to head excerpt");
+    return `> (head-excerpt fallback: whitelisted sections not found)\n\n${frameMd.slice(0, maxFallbackBytes)}`;
+  }
+  const nextHeading = /^##\s/m;
+  let out = "";
+  for (const { h, start } of bounds) {
+    const rest = frameMd.slice(start + h.length);
+    const endM = rest.search(nextHeading);
+    out += `\n${h}\n\n${(endM === -1 ? rest : rest.slice(0, endM)).trim()}\n`;
+  }
+  return out.trim();
+}
+
+export function buildDispatchDocs({ projectDir, frames, outDir, animationDir, cardPath, frameMdPath, maxDispatchBytes = 40000 }) {
+  const card = readFileSync(cardPath, "utf8").trim();
+  const frameMd = frameMdPath && existsSync(frameMdPath) ? readFileSync(frameMdPath, "utf8") : "";
+  const excerpt = frameMdExcerpt(frameMd);
+  const ruleIds = knownRuleIds(animationDir);
+  mkdirSync(outDir, { recursive: true });
+  return frames.map((frame) => {
+    const blueprint = field(frame.block, "blueprint");
+    const blueprintSection = blueprint && blueprint.toLowerCase() !== "compose"
+      ? selectedFile(join(animationDir, "blueprints", `${blueprint}.md`), `Selected blueprint: ${blueprint}`)
+      : "";
+    const rules = citedRules(frame.block, ruleIds);
+    const ruleIndex = rules.length
+      ? rules.map((r) => `- \`${r}\` → ${join(animationDir, "rules", `${r}.md`)}`).join("\n")
+      : "- (no motion rules cited)";
+    const doc = `# Dispatch: ${frame.frameId}
+
+## Project inputs
+
+- Project: ${resolve(projectDir)}
+- RULES_DIR: ${join(animationDir, "rules")}
+
+## Role (executable rule card)
+
+${card}
+
+## Assigned storyboard block
+
+${frame.block}
+${blueprintSection}
+## Rule index (open a recipe file only while authoring its phase)
+
+${ruleIndex}
+
+## frame.md design tokens (excerpt)
+
+${excerpt}
+`;
+    const bytes = Buffer.byteLength(doc);
+    if (bytes > maxDispatchBytes)
+      console.warn(`frame-packets: dispatch ${frame.frameId} is ${bytes} bytes (budget ${maxDispatchBytes})`);
+    const path = join(outDir, `${frame.frameId}.dispatch.md`);
+    writeFileSync(path, doc);
+    return { frameId: frame.frameId, path, bytes };
+  });
+}
+
+// Pre-built per-frame skeleton files (Task 8 drives the content contract; this
+// lands the plumbing now): minimal valid `<template>` + #root attrs + comment,
+// written only when the file does not exist so a worker's in-flight file is
+// never clobbered.
+export function buildSkeletons({ projectDir, frames, canvas }) {
+  const framesDir = join(projectDir, "compositions", "frames");
+  mkdirSync(framesDir, { recursive: true });
+  const width = canvas?.width ?? 1920;
+  const height = canvas?.height ?? 1080;
+  return frames.map((frame) => {
+    const id = frameId(frame);
+    const duration = field(frame.block, "duration") ?? "0s";
+    const path = join(framesDir, `${id}.html`);
+    if (!existsSync(path)) {
+      writeFileSync(path, `<template>\n<!-- ${id} skeleton — pre-built by frame-packets; flesh out with the composed frame -->\n<div id="root" data-composition-id="${id}" data-width="${width}" data-height="${height}" data-duration="${duration}"></div>\n</template>\n`);
+    }
+    return { frameId: id, path };
+  });
+}
+
 export function buildFramePackets({
   projectDir,
   storyboardPath = join(projectDir, "STORYBOARD.md"),
@@ -166,7 +261,7 @@ export function isMainModule(importMetaUrl) {
   }
 }
 
-export function runCli({ buildFramePackets: build, buildRolePayload: buildRole }) {
+export function runCli({ buildFramePackets: build, buildRolePayload: buildRole, buildExtras }) {
   const argv = process.argv.slice(2);
   const projectDir = resolve(flag(argv, "project", "."));
   const outDir = resolve(flag(argv, "out-dir", join(projectDir, ".hyperframes", "frame-packets")));
@@ -177,6 +272,11 @@ export function runCli({ buildFramePackets: build, buildRolePayload: buildRole }
       outDir,
     });
     const role = buildRole({ outDir });
+    if (buildExtras) {
+      const storyboardPath = resolve(flag(argv, "storyboard", join(projectDir, "STORYBOARD.md")));
+      const frames = splitFrames(readFileSync(storyboardPath, "utf8")).map((f) => ({ ...f, frameId: frameId(f) }));
+      buildExtras({ projectDir, storyboardPath, outDir, frames, packets });
+    }
     console.log(`✓ frame packets: ${packets.length} bounded packet(s)`);
     for (const packet of packets)
       console.log(`  ${packet.frameId}: ${packet.bytes} bytes → ${packet.path}`);

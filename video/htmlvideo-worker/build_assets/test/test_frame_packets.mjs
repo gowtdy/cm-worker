@@ -1,7 +1,15 @@
-import { readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import assert from "node:assert";
+import * as core from "../skills/hyperframes-core/scripts/lib/frame-packets-core.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CARD = join(ROOT, "skills", "aiflow-build-frame-html",
@@ -36,6 +44,76 @@ export function testCard() {
   console.log("card OK", Buffer.byteLength(card), "bytes");
 }
 
+const FIX_STORYBOARD = `---
+format: landscape
+---
+## Frame 1 — Hook
+
+- status: outline
+- src: compositions/frames/01-hook.html
+- duration: 4s
+- blueprint: split-panel
+- rules: punch-in
+
+Scene 1 (0.0–4.0s): title pill in.
+
+## Frame 2 — Answer
+
+- status: outline
+- src: compositions/frames/02-answer.html
+- duration: 5s
+- blueprint: compose
+
+Scene 1 (0.0–5.0s): stat grid reveal.
+`;
+const FIX_FRAME_MD = `# Placeholder\n\n## Colors\n\n- ink: #111\n\n## Typography\n\n- display: 9cqw\n\n## Frame Treatments\n\nbig catalog section\n\n## Numerals & Claims (hard rule)\n\nNo invented stats.\n`;
+
+function fixtureProject() {
+  const dir = mkdtempSync(join(tmpdir(), "fh-"));
+  const anim = join(dir, "rules"); mkdirSync(anim, { recursive: true });
+  writeFileSync(join(anim, "punch-in.md"), "recipe body");
+  writeFileSync(join(dir, "STORYBOARD.md"), FIX_STORYBOARD);
+  const card = join(dir, "card.md"); writeFileSync(card, "role card text");
+  const frameMd = join(dir, "frame.md"); writeFileSync(frameMd, FIX_FRAME_MD);
+  return { dir, card, frameMd, anim };
+}
+
+export function testDispatchDocs() {
+  const { dir, card, frameMd, anim } = fixtureProject();
+  const storyboard = readFileSync(join(dir, "STORYBOARD.md"), "utf8");
+  const frames = core.splitFrames(storyboard).map((f) =>
+    ({ ...f, frameId: core.frameId(f) }));
+  const outDir = join(dir, ".hyperframes", "frame-packets");
+  const docs = core.buildDispatchDocs({
+    projectDir: dir, frames, outDir, animationDir: anim,
+    cardPath: card, frameMdPath: frameMd,
+  });
+  assert.strictEqual(docs.length, 2);
+  for (const d of docs) {
+    const text = readFileSync(d.path, "utf8");
+    assert.ok(d.bytes <= 40000, `dispatch ${d.frameId} over budget`);
+    assert.ok(text.includes("## Role"), "has role section");
+    assert.ok(text.includes("## Assigned storyboard block"), "has block");
+    assert.ok(text.includes("## Rule index"), "has rule index");
+    assert.ok(text.includes("recipe body") === false,
+      "rule recipes are indexed, not inlined");
+    assert.ok(text.includes("## frame.md design tokens"), "has excerpt");
+    assert.ok(text.includes("#111") && text.includes("9cqw"), "excerpt has tokens");
+    assert.ok(text.includes("No invented stats"), "hard-rule section included");
+    assert.ok(!text.includes("big catalog section"), "treatment catalog excluded");
+  }
+  // determinism
+  const again = core.buildDispatchDocs({
+    projectDir: dir, frames: core.splitFrames(readFileSync(join(dir, "STORYBOARD.md"), "utf8")).map((f) => ({ ...f, frameId: core.frameId(f) })),
+    outDir: join(dir, "second"), animationDir: anim,
+    cardPath: card, frameMdPath: frameMd,
+  });
+  for (let i = 0; i < docs.length; i++)
+    assert.strictEqual(readFileSync(again[i].path, "utf8"),
+      readFileSync(docs[i].path, "utf8"));
+  console.log("dispatch docs OK", docs.map((d) => `${d.frameId}:${d.bytes}`).join(" "));
+}
+
 if (process.argv[1] && process.argv[1].endsWith("test_frame_packets.mjs")) {
-  testCard();
+  testCard(); testDispatchDocs();
 }
