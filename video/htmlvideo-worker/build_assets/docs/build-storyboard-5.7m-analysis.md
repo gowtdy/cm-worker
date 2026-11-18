@@ -84,7 +84,7 @@
 
 ```python
 rc = run_claude(project_dir, prompt, logger, extra_env={
-    "CLAUDE_CODE_MAX_THINKING_TOKENS": "4000",   # 硬上限思考 token,兜底
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "16000",  # 封 max_tokens(thinking+output);MAX_THINKING_TOKENS budget_tokens 在 adaptive 后端被剥除
     "CLAUDE_CODE_EFFORT_LEVEL": "low",
 })
 ```
@@ -161,7 +161,3 @@ storyboard 是流水线最上游,质量直接决定 build-frame-visual(实测 13
 - **storyboard.py 新增确定性校验**(`_has_spoken_frames` + `_validate_storyboard_outputs` 扩展):任一帧 `voiceover` 非空而 SCRIPT.md 缺失 → `FileNotFoundError`(dual-write gate failed);SCRIPT.md 存在但为空 → `ValueError`。五态测试全过(spoken+script / spoken 缺 script 拦截 / 全静音无 script 放行 / 全静音空 script 拦截 / 全静音正常 script 放行)。
 
 预期回合数:8 轮 → 3 轮(首轮双写 + 工具结果衔接 + heads-up 收尾),T7 独立思考轮(~20s)与 T6/T7 之间的拆写间隙消除。
-
-## 实施记录(2026-11-17: Claude CLI 调参)
-
-上文方案里的 `CLAUDE_CODE_MAX_THINKING_TOKENS` 应为 `MAX_THINKING_TOKENS`（CLI 2.1.316 不读取前者）。effort 由子进程环境变量 `CLAUDE_CODE_EFFORT_LEVEL` 按 skill 覆盖；`HTMLVIDEO_CLAUDE_PROFILE=off` 恢复改动前的命令与环境。
