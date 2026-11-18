@@ -18,11 +18,12 @@ CWD = "/tmp/htmlvideo-proj"
 
 # Mirrors html_utility.claude_cli._PROFILES (post-clamp thinking where needed).
 _PROFILES = {
-    "intent": ("high", "32000", "100", 1800, True),
-    "storyboard": ("medium", "127000", "100", 3600, True),
-    "visual": ("high", "127000", "100", 3600, True),
-    "frame_html": ("high", "127000", "150", 3600, False),
-    "verify": ("medium", "32000", "100", 3600, True),
+    "intent": ("high", "32000", "100", 1800, True, "32000"),
+    "storyboard": ("high", "64000", "100", 1800, True, "32000"),
+    "visual": ("high", "64000", "100", 1800, True, "32000"),
+    "frame_html": ("high", "64000", "60", 720, True, "64000"),
+    "repair": ("high", "40000", "40", 600, True, "16000"),
+    "verify": ("medium", "32000", "100", 1800, True, "32000"),
 }
 _BASE_DENY = ["WebFetch", "WebSearch", "NotebookEdit", "TodoWrite"]
 _AGENT_DENY = ["Agent", "Task"]
@@ -215,7 +216,7 @@ class RunClaudeTests(unittest.TestCase):
 
     def test_each_skill_profile(self) -> None:
         os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
-        for skill, (effort, thinking, turns, timeout, deny_agent) in _PROFILES.items():
+        for skill, (effort, thinking, turns, timeout, deny_agent, max_output) in _PROFILES.items():
             with self.subTest(skill=skill):
                 self.popen_mock.reset_mock()
                 code, logs, cmd, kwargs = self._invoke(skill=skill)
@@ -248,6 +249,7 @@ class RunClaudeTests(unittest.TestCase):
                 self.assertIsNot(env, os.environ)
                 self.assertEqual(env["CLAUDE_CODE_EFFORT_LEVEL"], effort)
                 self.assertEqual(env["MAX_THINKING_TOKENS"], thinking)
+                self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], max_output)
                 self.assertEqual(env["CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"], "1")
                 self.assertNotIn("CLAUDE_CODE_MAX_THINKING_TOKENS", env)
                 self.assertEqual(os.environ["CLAUDE_CODE_EFFORT_LEVEL"], "max")
@@ -271,6 +273,20 @@ class RunClaudeTests(unittest.TestCase):
                     "claude skill result skill=%s result=visible result" % skill,
                     joined,
                 )
+
+    def test_profile_max_output_env(self):
+        from html_utility.claude_cli import _resolve_profile
+        logger = logging.getLogger("t")
+        # frame_html default cap reaches the child env
+        prof = _resolve_profile("frame_html", logger)
+        self.assertEqual(prof["max_output"], "64000")
+        # per-stage override beats the default
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS": "128000"}):
+            prof = _resolve_profile("frame_html", logger)
+            self.assertEqual(prof["max_output"], "128000")
+        # serial stages pinned at 32000
+        for skill in ("intent", "storyboard", "visual", "verify"):
+            self.assertEqual(_resolve_profile(skill, logger)["max_output"], "32000")
 
     def test_debug_request_env_sets_anthropic_log_and_bun_preload(self) -> None:
         os.environ["HTMLVIDEO_CLAUDE_DEBUG_REQUEST"] = "1"
@@ -333,9 +349,9 @@ class RunClaudeTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--max-turns") + 1], "100")
         self.assertEqual(
             self.popen_mock.return_value.communicate.call_args.kwargs["timeout"],
-            3600,
+            1800,
         )
-        self.assertEqual(kwargs["env"]["MAX_THINKING_TOKENS"], "127000")
+        self.assertEqual(kwargs["env"]["MAX_THINKING_TOKENS"], "64000")
         joined = "\n".join(logs.output)
         self.assertIn("invalid HTMLVIDEO_CLAUDE_STORYBOARD_MAX_TURNS", joined)
         self.assertIn("invalid HTMLVIDEO_CLAUDE_STORYBOARD_TIMEOUT", joined)
@@ -349,7 +365,7 @@ class RunClaudeTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--max-turns") + 1], "100")
         self.assertEqual(
             self.popen_mock.return_value.communicate.call_args.kwargs["timeout"],
-            3600,
+            1800,
         )
         joined = "\n".join(logs.output)
         self.assertIn("HTMLVIDEO_CLAUDE_VERIFY_MAX_TURNS=0 <= 0", joined)
@@ -380,15 +396,16 @@ class RunClaudeTests(unittest.TestCase):
         self.assertEqual(env["CLAUDE_CODE_SUBAGENT_EFFORT"], "high")
         self.assertEqual(os.environ["CLAUDE_CODE_EFFORT_LEVEL"], "max")
 
-    def test_frame_html_keeps_subagent_env_and_allows_agent_tools(self) -> None:
+    def test_frame_html_keeps_subagent_env_and_denies_agent_tools(self) -> None:
         _, _, cmd, kwargs = self._invoke(
             skill="frame_html",
             extra_env={"CLAUDE_CODE_SUBAGENT_EFFORT": "high"},
         )
         self.assertEqual(kwargs["env"]["CLAUDE_CODE_SUBAGENT_EFFORT"], "high")
         self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "high")
-        self.assertNotIn("Agent", cmd)
-        self.assertNotIn("Task", cmd)
+        # B architecture: no stage dispatches subagents, frame_html included.
+        self.assertIn("Agent", cmd)
+        self.assertIn("Task", cmd)
         self.assertIn("WebFetch", cmd)
 
     def test_thinking_at_output_cap_clamps_to_safe_cap(self) -> None:

@@ -11,56 +11,60 @@ import signal
 import subprocess
 import time
 
-# Per-skill effort / thinking budget. CLAUDE_CODE_EFFORT_LEVEL in the child
-# env overrides any --effort flag, and the binary reads MAX_THINKING_TOKENS
-# (not CLAUDE_CODE_MAX_THINKING_TOKENS). NOTE (2026-11-17, api-bodies): this
-# backend runs the model in adaptive-thinking mode (request body
-# thinking:{"type":"adaptive","display":"omitted"}), so the gateway strips
-# MAX_THINKING_TOKENS budget_tokens — lowering "thinking" below has NO effect.
-# The only lever that reaches the request is CLAUDE_CODE_MAX_OUTPUT_TOKENS
-# (sets max_tokens, hard-caps thinking + visible output). frame_html therefore
-# pins an explicit max_output.
+# Per-skill effort / thinking / output budget. CLAUDE_CODE_EFFORT_LEVEL in the
+# child env overrides any --effort flag, and the binary reads
+# MAX_THINKING_TOKENS (not CLAUDE_CODE_MAX_THINKING_TOKENS). NOTE
+# (2026-11-17, api-bodies): this backend runs the model in adaptive-thinking
+# mode (request body thinking:{"type":"adaptive","display":"omitted"}), so the
+# gateway strips MAX_THINKING_TOKENS budget_tokens — lowering "thinking" below
+# has NO effect. The only lever that reaches the request is
+# CLAUDE_CODE_MAX_OUTPUT_TOKENS (sets max_tokens, hard-caps thinking + visible
+# output), so every profile below pins an explicit max_output:
+# - serial stages (intent/storyboard/visual/verify): 32000, the 2026-11-18 A/B
+#   floor (intent 16.7s / storyboard 3.0m / visual 7.1m, all historical best).
+# - frame_html: 64000 — enough output budget that a worker reading ~10k tokens
+#   of dispatch + skeleton-Editing never truncates, far enough below 128k that
+#   marathon thinking loses its silent runway. 128000 is the documented
+#   one-line rollback.
+# - repair: 16000 — small budget, reserved for assemble-failure fix-up sessions.
+# NOTE (M0 conclusion fill-in point): the 58m-outage profile showed
+# max_output=16000 while the SDK result read 32000; Task 2 verifies the
+# profile-env -> worker-process injection chain and records the conclusion
+# here.
 _PROFILES: dict[str, dict[str, object]] = {
     "intent": {
-        "effort": "high",
-        # Small positive budget: effort + thinking=0 can raise
-        # effort_requires_thinking (400) on Claude Code.
-        "thinking": "32000",
-        "max_turns": 100,
-        "timeout": 1800,
-        "deny_agent": True,
+        "effort": "high", "thinking": "32000",
+        "max_output": "32000",  # 2026-11-18 A/B 实证的地板档（intent 16.7s 历史最优）
+        "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
     "storyboard": {
-        "effort": "high",
-        "thinking": "64000",
-        "max_turns": 100,
-        "timeout": 1800,
-        "deny_agent": True,
+        "effort": "high", "thinking": "64000",
+        "max_output": "32000",  # 同上（storyboard 3.0m 近地板）
+        "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
     "visual": {
-        "effort": "high",
-        "thinking": "64000",
-        "max_turns": 100,
-        "timeout": 1800,
-        "deny_agent": True,
+        "effort": "high", "thinking": "64000",
+        "max_output": "32000",  # 同上（visual 7.1m 历史最优）
+        "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
     "frame_html": {
-        "effort": "high",
-        "thinking": "64000",
-        # The only lever that actually caps the 8–16m marathon-thinking turns
-        # (request body shows thinking:{type:adaptive}, budget_tokens stripped).
-        # 16000 ≈ ~5m/turn at ~50 tok/s; A/B via HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS.
-        "max_output": "16000",
-        "max_turns": 150,
-        "timeout": 1800,
-        "deny_agent": False,
+        "effort": "high", "thinking": "64000",
+        # Per-worker session cap. 64000: enough output budget that a worker
+        # reading ~10k tokens of dispatch + skeleton-Editing never truncates,
+        # far enough below 128k that marathon thinking loses its silent runway.
+        # 128000 is the documented one-line rollback; serial stages stay 32000.
+        "max_output": "64000",
+        "max_turns": 60,       # per-frame fill: read + ~5 edits + selfcheck fixes
+        "timeout": 720,        # per-worker wall kill-switch (skeleton keeps a valid file on disk)
+        "deny_agent": True,    # B architecture: no stage dispatches subagents anymore
+    },
+    "repair": {
+        "effort": "high", "thinking": "40000",
+        "max_output": "16000", "max_turns": 40, "timeout": 600, "deny_agent": True,
     },
     "verify": {
-        "effort": "medium",
-        "thinking": "32000",
-        "max_turns": 100,
-        "timeout": 1800,
-        "deny_agent": True,
+        "effort": "medium", "thinking": "32000",
+        "max_output": "32000", "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
 }
 _BASE_DENY = ["WebFetch", "WebSearch", "NotebookEdit", "TodoWrite"]
@@ -69,7 +73,9 @@ _ALLOWED_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 _DEFAULT_MAX_OUTPUT_TOKENS = 128000
 _THINKING_SAFE_CAP = 127000
-_LOG_LIMIT = 127000
+# Documented in docs/claude-cli-skill-profiles.md §7: parse-failure stdout tail
+# and parsed result text are both logged truncated to 2000 chars.
+_LOG_LIMIT = 2000
 _TIMEOUT_GRACE_SECONDS = 5
 
 _LEGACY_CMD_LOG = (
@@ -392,19 +398,30 @@ def _run_profile(
     env = _child_env(extra_env)
     env["CLAUDE_CODE_EFFORT_LEVEL"] = str(profile["effort"])
     env["MAX_THINKING_TOKENS"] = str(profile["thinking"])
-    if profile.get("max_output"):
-        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(profile["max_output"])
     # Re-apply extra_env so caller overrides still beat profile defaults.
     if extra_env:
         env.update(extra_env)
-    # Re-run after the second extra_env merge so BUN_OPTIONS is not wiped.
-    _apply_debug_request_env(env)
+    # Clamp the thinking budget against the output limit the caller inherited
+    # or injected (default 128000). The per-skill max_output cap is applied
+    # AFTER the clamp: CLAUDE_CODE_MAX_OUTPUT_TOKENS hard-caps thinking +
+    # visible output at the API layer, so the clamp only needs to keep
+    # MAX_THINKING_TOKENS below that request ceiling (the adaptive backend
+    # strips budget_tokens anyway — see the header note).
     env["MAX_THINKING_TOKENS"] = _clamp_thinking(
         str(env.get("MAX_THINKING_TOKENS", profile["thinking"])),
         str(profile["thinking_fallback"]),
         _output_token_limit(env),
         logger,
     )
+    if profile.get("max_output"):
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(profile["max_output"])
+    # extra_env stays authoritative for the output cap (caller override beats
+    # the profile default). MAX_THINKING_TOKENS is not re-applied here: the
+    # clamp above must stay authoritative for the thinking budget.
+    if extra_env and "CLAUDE_CODE_MAX_OUTPUT_TOKENS" in extra_env:
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"]
+    # Re-run after the last env merge so BUN_OPTIONS is not wiped.
+    _apply_debug_request_env(env)
     max_turns = int(profile["max_turns"])
     timeout = int(profile["timeout"])
     model = str(profile["model"])
