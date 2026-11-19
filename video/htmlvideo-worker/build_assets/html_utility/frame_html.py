@@ -149,9 +149,9 @@ def build_frame_html(
     ``project_dir`` is the HyperFrames project root and must already have
     ``hyperframes.json``, ``frame.md``, and visually designed ``STORYBOARD.md``.
     Runs ``frame-packets.mjs`` first (skill will not), then dispatches frame
-    workers. Assembles ``index.html`` if the skill did not. Raises on missing
-    prerequisites, CLI failure, or gate failure. Returns the path to
-    ``index.html``.
+    workers (driver or legacy orchestrator). Always assembles ``index.html``
+    after either path succeeds. Raises on missing prerequisites, CLI failure,
+    or gate failure. Returns the path to ``index.html``.
     """
     hyperframes_path = os.path.join(project_dir, HYPERFRAMES_JSON)
     frame_path = os.path.join(project_dir, FRAME_FILENAME)
@@ -194,6 +194,7 @@ def build_frame_html(
         if rc != 0:
             raise RuntimeError(f"claude build-frame-html failed rc:{rc}")
 
+    _assemble_index(project_dir, logger)
     return _validate_frame_html_outputs(project_dir)
 
 def build_frame_packets(
@@ -397,6 +398,19 @@ def _repair_prompt(assemble_msg):
             f"edit — the pipeline re-runs assemble itself.")
 
 
+def _assemble_index(project_dir, logger):
+    log = logger.info if logger else (lambda *a, **k: None)
+    ret, msg = build_index_html(logger, project_dir)
+    if ret != 0 and "script_path" not in (msg or ""):
+        repair_rc = run_claude(project_dir, _repair_prompt(msg), logger, skill="repair")
+        log("assemble repair session rc=%s", repair_rc)
+        ret, msg = build_index_html(logger, project_dir)
+        if ret != 0:
+            raise RuntimeError(f"assemble failed even after repair: {msg}")
+    elif ret != 0:
+        raise RuntimeError(f"assemble failed: {msg}")
+
+
 def _build_frame_html_driver(project_dir, logger):
     log = logger.info if logger else lambda *a, **k: None
     frame_ids = _frame_ids(project_dir)
@@ -448,13 +462,3 @@ def _build_frame_html_driver(project_dir, logger):
             f"{fid}: {notes[fid]}" for fid in sorted(remaining))
         raise RuntimeError(
             f"frames still broken after {1 + MAX_RETRY_ROUNDS} rounds: {reasons}")
-
-    ret, msg = build_index_html(logger, project_dir)
-    if ret != 0 and "script_path" not in (msg or ""):
-        repair_rc = run_claude(project_dir, _repair_prompt(msg), logger, skill="repair")
-        log("assemble repair session rc=%s", repair_rc)
-        ret, msg = build_index_html(logger, project_dir)
-        if ret != 0:
-            raise RuntimeError(f"assemble failed even after repair: {msg}")
-    elif ret != 0:
-        raise RuntimeError(f"assemble failed: {msg}")
