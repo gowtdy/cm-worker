@@ -36,6 +36,9 @@ _PROFILES: dict[str, dict[str, object]] = {
         "effort": "high", "thinking": "32000",
         "max_output": "32000",  # 2026-11-18 A/B 实证的地板档（intent 16.7s 历史最优）
         "max_turns": 100, "timeout": 1800, "deny_agent": True,
+        # 免工具模式(P3):intent 只需产出 JSON 文本,禁文件/命令工具 → 单请求 ~4-6s。
+        # 模型只回文本,Python 侧 parse + 落盘 + 校验(详见 intent.py)。
+        "deny_tools": ["Write", "Edit", "Bash", "Read", "Glob", "Grep"],
     },
     "storyboard": {
         "effort": "high", "thinking": "64000",
@@ -232,6 +235,7 @@ def _resolve_profile(skill: str, logger: logging.Logger) -> dict[str, object]:
             f"{prefix}_TIMEOUT", int(base["timeout"]), logger
         ),
         "deny_agent": bool(base["deny_agent"]),
+        "deny_tools": list(base.get("deny_tools", [])),
         "model": model,
         "thinking_fallback": str(base["thinking"]),
     }
@@ -255,10 +259,13 @@ def _profile_cmd(
     max_turns: int,
     deny_agent: bool,
     model: str,
+    extra_deny: list[str] | None = None,
 ) -> list[str]:
     deny = list(_BASE_DENY)
     if deny_agent:
         deny.extend(_AGENT_DENY)
+    if extra_deny:
+        deny.extend(extra_deny)
     cmd = [
         "claude",
         "--print",
@@ -518,6 +525,7 @@ def _run_profile(
         max_turns,
         bool(profile["deny_agent"]),
         model,
+        profile.get("deny_tools"),
     )
     proc = subprocess.Popen(
         cmd,
