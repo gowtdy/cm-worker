@@ -264,17 +264,49 @@ def _profile_cmd(
     return cmd
 
 
+def _extract_result_payload(stdout: str):
+    """Return the CLI terminal result JSON object from ``stdout`` (or None).
+
+    With ``ANTHROPIC_LOG=debug`` inherited by the child CLI process, the CLI
+    interleaves ``console.log`` HTTP-fetch dumps (request/response bodies) into
+    the ``--output-format json`` stream, so a whole-string ``json.loads`` fails
+    even though the real result object is emitted last. Fast-path a clean
+    single-object stdout; otherwise scan back-to-front for the last object that
+    decodes and carries a ``result`` key (debug dumps use non-JSON syntax like
+    ``body: K {`` and unquoted keys, so ``raw_decode`` skips them).
+    """
+    if not stdout:
+        return None
+    # Fast path: clean stdout is exactly one JSON object (the result).
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        return payload
+    # Polluted stdout: the result object is the last JSON value. Scan each
+    # '{' back-to-front; only a dict with a ``result`` key counts.
+    decoder = json.JSONDecoder()
+    for i in range(len(stdout) - 1, -1, -1):
+        if stdout[i] != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(stdout, i)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and "result" in obj:
+            return obj
+    return None
+
+
 def _log_parsed_result(
     logger: logging.Logger,
     skill: str,
     rc: int,
     stdout: str,
 ) -> tuple[int, str]:
-    try:
-        payload = json.loads(stdout)
-    except json.JSONDecodeError:
-        payload = None
-    if not isinstance(payload, dict):
+    payload = _extract_result_payload(stdout)
+    if payload is None:
         logger.info(
             "claude skill stdout skill=%s rc=%s stdout=%s",
             skill,
