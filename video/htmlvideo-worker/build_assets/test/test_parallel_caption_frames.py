@@ -14,11 +14,12 @@ What it exercises (in one call):
             build_frame_html       -> per-frame claude workers (driver + fixed parser)
                                       -> mark animated -> assemble-index.mjs
 
-Usage:
-  python3 /app/scripts/test_parallel_caption_frames.py
-  python3 /app/scripts/test_parallel_caption_frames.py \
-      --videodir /app/videos/2026-11-19/userclm17919893695531772/6afea3068088f914
-  python3 /app/scripts/test_parallel_caption_frames.py --live-status --domain mydomain
+Full chain: see test_step_init.py docstring. This step alone
+(deployed at /app/test/ — Dockerfile copies build_assets/ → /app/):
+  python3 /app/test/test_parallel_caption_frames.py
+  python3 /app/test/test_parallel_caption_frames.py \
+    --videodir /app/videos/2026-11-19/userclm17919893695531772/6afea3068088f914
+  python3 /app/test/test_parallel_caption_frames.py --live-status --domain mydomain
 """
 
 from __future__ import annotations
