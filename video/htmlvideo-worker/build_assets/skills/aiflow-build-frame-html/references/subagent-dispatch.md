@@ -14,8 +14,8 @@ wait, and re-dispatch are implemented by `html_utility/frame_html.py` using
   `HTMLVIDEO_FRAME_HTML_MAX_CONCURRENCY` (default 16), then queued waves.
 - **WAIT** — completion = rc 0 ∧ `done OK <frame_id>` in the session result
   (skeleton-off mode additionally requires the file). Wall-clock cap per worker
-  = the `frame_html` profile timeout (720 s default).
-- **Re-dispatch** — same prompt + failure reason, batch-parallel, ≤2 rounds.
+  = the `frame_html` profile timeout (1500 s default).
+- **Re-dispatch** — same prompt + failure reason, batch-parallel, ≤1 round.
 
 ## Rollback
 
