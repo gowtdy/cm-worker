@@ -15,10 +15,11 @@ Side effects: on the working copy, writes audio assets / ``audio_meta.json``
 and rewrites ``STORYBOARD.md``. ``update_task_status`` is stubbed unless
 ``--live-status`` (the pipeline reports VIDEO_TTSED / VIDEO_VISUALED).
 
-Usage:
-  python3 /app/scripts/test_parallel_tts_visual.py
-  python3 /app/scripts/test_parallel_tts_visual.py --preflight-only
-  python3 /app/scripts/test_parallel_tts_visual.py --modelcat english --modelname ""
+Full chain: see test_step_init.py docstring. This step alone:
+  python3 /app/test/test_parallel_tts_visual.py
+  python3 /app/test/test_parallel_tts_visual.py --preflight-only
+  python3 /app/test/test_parallel_tts_visual.py --in-place --videodir <project> \\
+    --modelcat english --modelname "<voice>"
 """
 
 from __future__ import annotations

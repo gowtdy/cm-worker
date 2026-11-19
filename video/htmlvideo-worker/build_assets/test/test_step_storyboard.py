@@ -12,10 +12,10 @@ Side effects: on the working copy (clone or in-place), removes then rewrites
 ``STORYBOARD.md`` and possibly ``SCRIPT.md``. ``update_task_status`` is stubbed
 unless ``--live-status``.
 
-Usage:
-  python3 /app/scripts/test_step_storyboard.py
-  python3 /app/scripts/test_step_storyboard.py --preflight-only
-  python3 /app/scripts/test_step_storyboard.py --in-place --videodir <project>
+Full chain: see test_step_init.py docstring. This step alone:
+  python3 /app/test/test_step_storyboard.py
+  python3 /app/test/test_step_storyboard.py --preflight-only
+  python3 /app/test/test_step_storyboard.py --in-place --videodir <project>
 """
 
 from __future__ import annotations

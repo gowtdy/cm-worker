@@ -11,10 +11,11 @@ and writes ``snapshots/contact-sheet*.jpg``. Default is ``--in-place`` on the
 Side effects: lint/check/snapshot, possible frame HTML edits, contact sheets
 under ``snapshots/``. ``update_task_status`` is stubbed unless ``--live-status``.
 
-Usage:
-  python3 /app/scripts/test_step_verify.py
-  python3 /app/scripts/test_step_verify.py --preflight-only
-  python3 /app/scripts/test_step_verify.py --clone --videodir <project>
+Full chain: see test_step_init.py docstring. This step alone:
+  python3 /app/test/test_step_verify.py
+  python3 /app/test/test_step_verify.py --preflight-only
+  python3 /app/test/test_step_verify.py --videodir <project>
+  python3 /app/test/test_step_verify.py --clone --videodir <project>
 """
 
 from __future__ import annotations

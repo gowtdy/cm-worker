@@ -10,10 +10,11 @@ omits existing ``*.mp4`` and ``snapshots/``.
 Side effects: long-running render; creates or overwrites the mp4 in the
 working copy. ``update_task_status`` is stubbed unless ``--live-status``.
 
-Usage:
-  python3 /app/scripts/test_step_render.py
-  python3 /app/scripts/test_step_render.py --preflight-only
-  python3 /app/scripts/test_step_render.py --video-name out.mp4 --videodir <project>
+Full chain: see test_step_init.py docstring. This step alone:
+  python3 /app/test/test_step_render.py
+  python3 /app/test/test_step_render.py --preflight-only
+  python3 /app/test/test_step_render.py --videodir <project>
+  python3 /app/test/test_step_render.py --video-name out.mp4 --videodir <project>
 """
 
 from __future__ import annotations

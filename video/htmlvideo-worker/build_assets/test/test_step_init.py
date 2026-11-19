@@ -20,20 +20,29 @@ from ``--seed-from`` (default: the 2026-11-19 failed project):
 ``capture/extracted/visible-text.txt``, ``tokens.json`` title/description, and
 ``BRIEF.md`` frontmatter (line split, no YAML parser).
 
-Usage:
-  python3 /app/scripts/test_step_init.py --preflight-only --content "Hello"
-  python3 /app/scripts/test_step_init.py --content-file /tmp/content.txt
-  python3 /app/scripts/test_step_init.py --seed-from /app/videos/2026-11-19/userclm17919893695531772/6afea3068088f914
+Deploy path: Dockerfile copies build_assets/ → /app/, so these harnesses live
+at /app/test/ (run inside the htmlvideo worker container).
 
-Recommended chain (each step's default project is the previous step's output;
-storyboard and tts clone by default):
-  python3 /app/scripts/test_step_init.py --content-file /tmp/content.txt
-  python3 /app/scripts/test_step_storyboard.py --videodir <project>
-  python3 /app/scripts/test_parallel_tts_visual.py --videodir <project>
-  python3 /app/scripts/test_step_sync_duration.py --videodir <project>
-  python3 /app/scripts/test_parallel_caption_frames.py --videodir <project>
-  python3 /app/scripts/test_step_verify.py --videodir <project>
-  python3 /app/scripts/test_step_render.py --videodir <project>
+Usage:
+  python3 /app/test/test_step_init.py --preflight-only --content "Hello"
+  python3 /app/test/test_step_init.py --content-file /tmp/content.txt
+  python3 /app/test/test_step_init.py --seed-from /app/videos/2026-11-19/userclm17919893695531772/6afea3068088f914
+
+Full pipeline chain (container). After init, copy project= from the log into P.
+storyboard / tts default to --clone; use --in-place so later steps see the same tree.
+  # optional smoke: python3 /app/test/<script>.py --preflight-only ...
+  python3 /app/test/test_step_init.py \\
+    --seed-from /app/videos/2026-11-19/userclm17919893695531772/6afea3068088f914
+  # or: --content-file /tmp/content.txt / --content "..."
+  P=/app/videos/harness/YYYY-MM-DD/init-...   # replace with logged project=
+  python3 /app/test/test_step_storyboard.py --videodir "$P" --in-place
+  python3 /app/test/test_parallel_tts_visual.py --videodir "$P" --in-place \\
+    --modelcat english --modelname "<voice>"
+  python3 /app/test/test_step_sync_duration.py --videodir "$P"
+  python3 /app/test/test_parallel_caption_frames.py --videodir "$P"
+  python3 /app/test/test_step_verify.py --videodir "$P"
+  python3 /app/test/test_step_render.py --videodir "$P"
+  # exit 0 per step before continuing; --live-status --domain <d> for real status POSTs
 """
 
 from __future__ import annotations
