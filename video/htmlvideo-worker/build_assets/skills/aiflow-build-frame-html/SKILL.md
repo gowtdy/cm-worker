@@ -29,12 +29,12 @@ and `../hyperframes-animation/`.
    `*.dispatch.md`).
 2. Fan out one `claude -p` worker per frame, concurrency
    `HTMLVIDEO_FRAME_HTML_MAX_CONCURRENCY` (default 16); per-worker env:
-   cap/turns/timeout from the `frame_html` claude profile (64000/60/720).
+   cap/turns/timeout from the `frame_html` claude profile (64000/60/1500).
 3. A frame is **done** iff rc==0 ∧ result contains `done OK <frame_id>`
    (skeleton off additionally requires the file on disk). Artifact existence
    alone is NOT a completion signal while skeletons pre-exist.
 4. Collect every failure, re-dispatch the whole failing batch in parallel with
-   the failure reason appended, at most 2 rounds. Then raise — never hand-fix.
+   the failure reason appended, at most 1 round. Then raise — never hand-fix.
 5. Mark landed frames `animated` in STORYBOARD (regex, deterministic).
 6. Assemble via `assemble-index.mjs`; on failure run ONE `repair`-profile
    session (cheapest safe structural edit to frame files only), re-assemble
