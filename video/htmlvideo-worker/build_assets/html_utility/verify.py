@@ -6,6 +6,7 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import subprocess
 
 from html_utility.claude_cli import run_claude
 
@@ -19,28 +20,76 @@ CONTACT_SHEET = os.path.join(SNAPSHOTS_DIR, "contact-sheet.jpg")
 # 9 frames are captured; the bare contact-sheet.jpg only exists for a single page.
 CONTACT_SHEET_GLOB = os.path.join(SNAPSHOTS_DIR, "contact-sheet*.jpg")
 
+VERIFY_ALL_SCRIPT = "/app/scripts/verify-all.mjs"
+_MAX_FIX_ROUNDS = 3
 
-def _build_verify_frame_prompt() -> str:
+
+def _run_verify_all(project_dir: str, logger: logging.Logger) -> tuple[int, str]:
+    """Deterministic mechanical scan (no model). Returns ``(rc, output)``.
+
+    ``rc`` mirrors ``verify-all.mjs`` / ``verify-report.mjs``:
+      0 = gate pass + snapshot written (+ pixels clean)
+      1 = findings to fix
+      2 = infrastructure / project blocker
+
+    The model never runs the scan itself — running it here removes the model's
+    per-turn orchestration tax (TTFB + turn latency) and the redundant
+    find/cat/ls exploration turns it spent re-discovering the playbook.
+    """
+    cmd = ["node", VERIFY_ALL_SCRIPT, "--videodir", project_dir]
+    logger.info("verify-all scan: %s", " ".join(cmd))
+    try:
+        proc = subprocess.run(
+            cmd, cwd=project_dir, capture_output=True, text=True, timeout=900
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("verify-all scan timed out")
+        return 2, "verify-all.mjs timed out"
+    out = proc.stdout or ""
+    if out and not out.endswith("\n"):
+        out += "\n"
+    if proc.stderr:
+        out += "\n[stderr]\n" + proc.stderr
+    logger.info("verify-all scan done rc=%d (out %d bytes)", proc.returncode, len(out))
+    return proc.returncode, out
+
+
+# The mechanical fix rules are inlined instead of loading the whole
+# /aiflow-verify-frame skill — the skill's "Verify" section tells the model to
+# run verify-all/lint/check, which is dead weight for the fix role (the harness
+# already did the scan). A ~10KB skill load blew the fix session to ~93K input
+# tokens; this cheatsheet is ~500 tokens and keeps the fix self-contained.
+_FIX_PLAYBOOK = """Mechanical fix rules — apply the matching one, then stop:
+- digit-led selectors (`#07-…`, `.01-…`, `"#06-…"` inside CSS/JS selector strings)
+  → attribute form `[id="…"]` / `[class~="…"]`; leave `getElementById` untouched.
+- `font_family_without_font_face` → drop the dead font name (e.g. Didot); if
+  captions.html lacks the frames' Google `@import`, add that same line.
+- `content_overlap` on a designed overlay → add `data-layout-allow-overlap`; do NOT reposition.
+- caption `text_box_overflow` (~1–4px on `#caption-word-*` / `.caption-line`) → false positive, ignore.
+- `id_requires_css_escape` / `google_fonts_import` warnings → non-blockers, ignore.
+- any finding not listed above → cheapest safe edit, one line of note."""
+
+
+def _build_fix_prompt(scan_output: str) -> str:
+    """Prompt for the one model turn that is still genuinely needed: apply the
+    mechanical fixes the scan already enumerated. The scan output is inlined so
+    the model edits directly instead of re-running the scan / re-investigating,
+    and the playbook cheatsheet replaces the full skill load.
+    """
     return (
-        """
-/aiflow-verify-frame
-
-Work in this HyperFrames project root. hyperframes.json, index.html,
-STORYBOARD.md, and compositions/frames/*.html already exist — do not re-init,
-do not invent a storyboard, do not write HTML frames, do not assemble index,
-do not run preview or final render.
-
-Follow the aiflow-verify-frame skill: inject transitions, run hyperframes
-lint/check, snapshot frame midpoints, glance at the contact sheet. If a
-command fails, surface stderr, make the cheapest safe edit to
-compositions/frames/NN-*.html, then rerun the failed check. Treat caption
-text_box_overflow (~1–4px on #caption-word-* / .caption-line) as expected
-false-positives; only act when overflow names a frame element (#el-NN-*).
-
-flow is automation → autonomous: proceed without waiting for approval.
-Stop when the skill gate passes (lint and check passed, snapshots inspected).
-Do not preview or render.
-        """
+        "Fix the verification findings below in this HyperFrames project root. "
+        "The deterministic scan (`node /app/scripts/verify-all.mjs`) has ALREADY "
+        "run and returned gate findings (exit 1); its output — findings plus a "
+        "ready-to-use «actionable summary» — is appended.\n\n"
+        "Apply the cheapest safe fix to compositions/frames/NN-*.html in ONE "
+        "batched pass, using absolute paths. Do NOT re-run verify-all / lint / "
+        "check / snapshot (the harness re-runs the scan itself); do NOT re-init, "
+        "build, assemble, preview or render.\n\n"
+        + _FIX_PLAYBOOK
+        + "\n\nStop after the fixes are applied, then list — one line each — what you changed.\n\n"
+        "── scan output (already run — do not re-run) ──\n"
+        + scan_output
+        + "\n── end scan output ──\n"
     )
 
 
@@ -99,20 +148,45 @@ def verify_frame(
     logger: logging.Logger,
 ) -> str:
     """
-    Call /aiflow-verify-frame via claude --print.
+    Verify the assembled video via a deterministic scan + model-driven fixes.
 
     ``project_dir`` is the HyperFrames project root and must already have
     ``hyperframes.json``, ``index.html``, ``STORYBOARD.md``, and
-    ``compositions/frames/*.html``. Raises on missing prerequisites, CLI
-    failure, or missing contact sheet. Returns the path to
-    ``snapshots/contact-sheet.jpg``, or a comma-joined list of paths when
-    the sheet was paginated (``contact-sheet-1..N.jpg``). Does not render.
+    ``compositions/frames/*.html``. Raises on missing prerequisites, a blocker,
+    or a missing contact sheet. Returns the path to
+    ``snapshots/contact-sheet.jpg`` (or a comma-joined list when paginated).
+
+    Control flow is Python-driven, not model-driven: ``verify-all.mjs`` runs as
+    a plain subprocess (no claude), so a clean project never invokes the model
+    at all. Only when the scan reports findings (exit 1) does the model get a
+    single batched-fix turn, after which the scan re-runs; this repeats up to
+    ``_MAX_FIX_ROUNDS``.
     """
     _validate_prerequisites(project_dir)
 
-    prompt = _build_verify_frame_prompt()
-    rc = run_claude(project_dir, prompt, logger, skill="verify")
-    if rc != 0:
-        raise RuntimeError(f"claude verify-frame failed rc:{rc}")
+    rc, output = _run_verify_all(project_dir, logger)
+    for round_no in range(1, _MAX_FIX_ROUNDS + 1):
+        if rc == 0:
+            logger.info(
+                "verify-all gate PASS (%s) — snapshots written, no model needed",
+                "first scan" if round_no == 1 else f"round {round_no}",
+            )
+            return _validate_verify_outputs(project_dir)
+        if rc == 2:
+            raise RuntimeError(
+                "verify-all infrastructure failure: " + output[-2000:]
+            )
+        # rc == 1: findings. One model turn applies the mechanical fixes.
+        logger.info(
+            "verify-all findings (round %d) — invoking claude for batched fixes",
+            round_no,
+        )
+        prompt = _build_fix_prompt(output)
+        fix_rc = run_claude(project_dir, prompt, logger, skill="verify")
+        if fix_rc != 0:
+            raise RuntimeError(f"claude verify fix failed rc:{fix_rc}")
+        rc, output = _run_verify_all(project_dir, logger)
 
-    return _validate_verify_outputs(project_dir)
+    raise RuntimeError(
+        f"verify-frame gate still failing after {_MAX_FIX_ROUNDS} fix rounds"
+    )
