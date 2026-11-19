@@ -1,6 +1,6 @@
 ---
 name: aiflow-build-frame-html
-description: "Contract for the deterministic frame fan-out driver: per-frame claude workers fill pre-built compositions/frames/*.html skeletons from a merged .dispatch.md. Use when STORYBOARD.md has time-coded shot sequences and ## Video direction. Not visual design, narrative, audio, transitions inject, or render."
+description: "Contract for the deterministic frame fan-out driver: per-frame workers fill pre-built compositions/frames/*.html skeletons from a merged .dispatch.md. Use when STORYBOARD.md has time-coded shot sequences and ## Video direction. Not visual design, narrative, audio, transitions inject, or render."
 ---
 
 # AIFlow build frame HTML
