@@ -51,7 +51,7 @@
 
 | 维度 | A: orchestrator + 子代理（现状） | **B: Python fan-out（选定）** |
 |---|---|---|
-| worker 并行 | 子代理并行 | Popen 并行池（cap 8，env 可调） |
+| worker 并行 | 子代理并行 | Popen 并行池（cap 16，env 可调） |
 | 每 worker 独立预算 | 仅 env 继承，无已验证的 per-subagent 口 | **每进程精确注入** cap/effort/turns/timeout |
 | 控制回路 | LLM（58m 事故：41 回合、+110s Edit、~9m 轮间思考、~1/3 输出 token） | **零 LLM，确定性状态机** |
 | 失败判定 | 事后凭 artifact 反推（19「completed」5 零产物） | 逐 worker：rc + result 文本 `done OK` + 超时信号 |
@@ -158,7 +158,7 @@ window.__timelines["<frame_id>"] = gsap.timeline({ paused: true });
 
 1. **preflight**：STORYBOARD / frame.md / hyperframes.json 存在性 + 每个 frame packet 都有对应 `.dispatch.md` 与骨架文件（缺 → raise，提示重跑 `build_frame_packets`；不再走「orchestrator 自己补」）。
 2. **worker 枚举**：列出 `.hyperframes/frame-packets/NN-*.md`（排除 `_role.md`）即帧清单——不浅析用户内容，帧 id/duration 等已由打包器固化。
-3. **fan-out**：每个 frame 一个 `claude -p` 进程（`skill="frame_html"` + `extra_env` 注入 per-worker cap/turns/timeout；并发上限 `HTMLVIDEO_FRAME_HTML_MAX_CONCURRENCY` 默认 8，超限分波）。
+3. **fan-out**：每个 frame 一个 `claude -p` 进程（`skill="frame_html"` + `extra_env` 注入 per-worker cap/turns/timeout；并发上限 `HTMLVIDEO_FRAME_HTML_MAX_CONCURRENCY` 默认 16，超限分波）。
    - **worker 提示**（`_worker_prompt(frame_id)`，短而封闭）：`PROJECT_DIR`、`frame_id`、唯一输入 `.dispatch.md` 路径、骨架已存在的事实、chunked Edit 顺序（style→body→script，≤20KB/次）、selfcheck 命令、终态回复 `done OK <frame_id>` / `fail <frame_id>: <reason>`、cut-catalog 例外（Scene seam 属 within-scene cut 时打开）、「规则不清晰才打开 `_role.md` / `frame.md`」。
 4. **collect**：逐 worker 判定 `done = (rc == 0) ∧ (result 文本含 "done OK" + frame_id)`。**artifact 存在性不再是完成信号**（骨架永远在盘上）——这是与 A 架构的根本差异，`SKILL.md` 同 commit 更新。rc==124（墙钟超时）单独归类，重派时附「上轮超时」提示。
 5. **retry**：失败帧**单批并行**重派，≤**2 轮**，附上本轮失败原因；重派提示固定句：「骨架与上次部分内容已在盘上，直接填充，首回合即 Edit，禁止单回合马拉松」。2 轮后仍有败 → raise（带各帧最后失败原因），不兜、不代写。
@@ -255,7 +255,7 @@ skill 的角色转变：**从「orchestrator 的思维流」变成「可执行�
 | R2 `done OK` 判定脆弱（措辞漂移） | 判定 = rc==0 ∧ 含 "done OK" ∧ 含 frame_id；result 尾部计入重派原因日志 |
 | R3 Edit-fill 产出弱于整写 | 骨架零视觉决定 + 契约允许整体重写 + A/B 质量三关把关 |
 | R4 64k 仍截断极端回合（基线有 67k 单回合） | 128k 一键回退；同时对 A/B 中剩余马拉松做 skill-timing 剖析，再决定是否结构性加码 |
-| R5 驱动并发 bug（僵尸进程/IO 死锁） | 复用 `run_claude` 进程组管束；波次上限默认 8；驱动单测覆盖 |
+| R5 驱动并发 bug（僵尸进程/IO 死锁） | 复用 `run_claude` 进程组管束；波次上限默认 16；驱动单测覆盖 |
 | R6 repair 会话越界（大改特改） | 提示限定「最便宜结构性修复」+ repair profile 小预算（16k/40 turns/600s）+ 单次 |
 | R7 文档与驱动漂移 | 驱动是可执行规格；SKILL.md 与代码同 PR（M2/M3 各自） |
 
