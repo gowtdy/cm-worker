@@ -76,7 +76,14 @@ _PROFILES: dict[str, dict[str, object]] = {
         "max_output": "16000", "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
 }
-_BASE_DENY = ["WebFetch", "WebSearch", "NotebookEdit", "TodoWrite"]
+# TodoWrite is the legacy name; task-tracking now lives in TaskCreate/Update/
+# List/Get. All of them are pure turn churn for these short deterministic skill
+# flows — a verify run spent 7 turns (≈34s) just creating/ticking a todo list.
+# Deny the whole family so the model does the work instead of bookkeeping it.
+_BASE_DENY = [
+    "WebFetch", "WebSearch", "NotebookEdit", "TodoWrite",
+    "TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
+]
 _AGENT_DENY = ["Agent", "Task"]
 _ALLOWED_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
