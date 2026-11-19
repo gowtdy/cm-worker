@@ -50,4 +50,4 @@ function buildExtras({ projectDir, storyboardPath, outDir, frames }) {
   }
 }
 
-if (core.isMainModule(import.meta.url)) core.runCli({ buildFramePackets, buildRolePayload, buildExtras });
+if (core.isMainModule(import.meta.url)) core.runCli({ buildFramePackets, buildExtras });
