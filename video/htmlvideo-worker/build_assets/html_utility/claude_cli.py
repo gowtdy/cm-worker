@@ -55,7 +55,12 @@ _PROFILES: dict[str, dict[str, object]] = {
         # 128000 is the documented one-line rollback; serial stages stay 32000.
         "max_output": "64000",
         "max_turns": 60,       # per-frame fill: read + ~5 edits + selfcheck fixes
-        "timeout": 720,        # per-worker wall kill-switch (skeleton keeps a valid file on disk)
+        # Per-worker wall kill-switch (a skeleton keeps a valid file on disk).
+        # 2026-11-19 test: 720s was too short — on the adaptive backend the
+        # thinking cap is stripped (see header note), so a worker burns 20–35k
+        # thinking tokens/turn; content-dense frames need >12 min and 4/6
+        # workers were killed at 720s mid-write. 1500s gives ~25 min headroom.
+        "timeout": 1500,
         "deny_agent": True,    # B architecture: no stage dispatches subagents anymore
     },
     "repair": {
