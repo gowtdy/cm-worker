@@ -248,8 +248,11 @@ export function buildFramePackets({
 
   mkdirSync(outDir, { recursive: true });
   for (const { path, packet } of packets) writeFileSync(path, packet);
-  buildRolePayload({ corePath, deltaPath, outDir });
-  return packets.map(({ packet: _packet, ...result }) => result);
+  const role = buildRolePayload({ corePath, deltaPath, outDir });
+  return {
+    packets: packets.map(({ packet: _packet, ...result }) => result),
+    role,
+  };
 }
 
 export function flag(argv, name, fallback) {
@@ -269,17 +272,16 @@ export function isMainModule(importMetaUrl) {
   }
 }
 
-export function runCli({ buildFramePackets: build, buildRolePayload: buildRole, buildExtras }) {
+export function runCli({ buildFramePackets: build, buildExtras }) {
   const argv = process.argv.slice(2);
   const projectDir = resolve(flag(argv, "project", "."));
   const outDir = resolve(flag(argv, "out-dir", join(projectDir, ".hyperframes", "frame-packets")));
   try {
-    const packets = build({
+    const { packets, role } = build({
       projectDir,
       storyboardPath: resolve(flag(argv, "storyboard", join(projectDir, "STORYBOARD.md"))),
       outDir,
     });
-    const role = buildRole({ outDir });
     if (buildExtras) {
       const storyboardPath = resolve(flag(argv, "storyboard", join(projectDir, "STORYBOARD.md")));
       const frames = splitFrames(readFileSync(storyboardPath, "utf8")).map((f) => ({ ...f, frameId: frameId(f) }));
