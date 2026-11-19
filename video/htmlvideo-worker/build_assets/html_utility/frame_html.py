@@ -435,7 +435,8 @@ def _build_frame_html_driver(project_dir, logger):
             rc, text = run_claude_result(
                 project_dir, prompt, logger,
                 extra_env={"CLAUDE_CODE_SUBAGENT_EFFORT": "high"},
-                skill="frame_html")
+                skill="frame_html",
+                label=fid)
             return fid, rc, text
 
         failures = {}
