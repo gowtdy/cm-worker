@@ -43,11 +43,9 @@ from utility.gpu_util import cuda_error_handler
 
 from html_utility.video_constant import LANGUAGE_MAP
 from html_utility.intent import INTENT_FILENAME, identify_intent
-from html_utility.frame_html import INDEX_FILENAME
 from html_utility.create_pipeline import (
     parallel_caption_frames,
     parallel_tts_visual,
-    step_index_html,
     step_init,
     step_render,
     step_storyboard,
@@ -239,7 +237,6 @@ def video_create(payload):
         cost_caption = 0.0
         cost_packets = 0.0
         cost_frame_html = 0.0
-        cost_index_html = 0.0
         cost_verify = 0.0
         cost_render = 0.0
 
@@ -311,17 +308,6 @@ def video_create(payload):
             return _fail(logger, task_id, domain, cf.caption.msg)
         if cf.frames.ret != 0:
             return _fail(logger, task_id, domain, cf.frames.msg)
-
-        r = step_index_html(logger, project_dir, task_id)
-        cost_index_html = r.cost
-        if r.ret != 0:
-            return _fail(logger, task_id, domain, r.msg)
-        index_html_path = os.path.join(project_dir, INDEX_FILENAME)
-        _ok(
-            logger, task_id, domain, TaskStatus.VIDEO_INDEXED,
-            f'task_id:{task_id} index html built, index_html_path:{index_html_path}, '
-            f'project_dir:{project_dir} cost:{cost_index_html:.1f}s',
-        )
 
         r = step_verify(logger, project_dir)
         cost_verify = r.cost
@@ -405,7 +391,7 @@ def video_create(payload):
             f'task_id:{task_id}, htmlvideo finish, sync enqueued, transport:{delivery_transport} '
             f'time[init:{cost_init:.1f}s storyboard:{cost_storyboard:.1f}s audio:{cost_audio:.1f}s '
             f'visual:{cost_visual:.1f}s packets:{cost_packets:.1f}s frame_html:{cost_frame_html:.1f}s '
-            f'index:{cost_index_html:.1f}s verify:{cost_verify:.1f}s render:{cost_render:.1f}s '
+            f'verify:{cost_verify:.1f}s render:{cost_render:.1f}s '
             f'total:{cost_total:.1f}s]'
         )
 
