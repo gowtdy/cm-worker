@@ -79,7 +79,7 @@ _LOG_LIMIT = 2000
 _TIMEOUT_GRACE_SECONDS = 5
 
 _LEGACY_CMD_LOG = (
-    "claude skill start cwd=%s cmd=claude --print "
+    "claude skill start label=%s cwd=%s cmd=claude --print "
     "--dangerously-skip-permissions --permission-mode bypassPermissions "
     "--output-format text <prompt>"
 )
@@ -299,16 +299,23 @@ def _extract_result_payload(stdout: str):
     return None
 
 
+def _log_label(label: str | None) -> str:
+    return label if label else "-"
+
+
 def _log_parsed_result(
     logger: logging.Logger,
     skill: str,
     rc: int,
     stdout: str,
+    label: str | None = None,
 ) -> tuple[int, str]:
+    tag = _log_label(label)
     payload = _extract_result_payload(stdout)
     if payload is None:
         logger.info(
-            "claude skill stdout skill=%s rc=%s stdout=%s",
+            "claude skill stdout label=%s skill=%s rc=%s stdout=%s",
+            tag,
             skill,
             rc,
             (stdout or "")[-_LOG_LIMIT:],
@@ -321,8 +328,10 @@ def _log_parsed_result(
     subtype = payload.get("subtype")
     is_error = payload.get("is_error")
     logger.info(
-        "claude skill done skill=%s rc=%s subtype=%s is_error=%s num_turns=%s "
-        "duration_ms=%s input=%s output=%s cache_read=%s cache_create=%s",
+        "claude skill done label=%s skill=%s rc=%s subtype=%s is_error=%s "
+        "num_turns=%s duration_ms=%s input=%s output=%s cache_read=%s "
+        "cache_create=%s",
+        tag,
         skill,
         rc,
         subtype,
@@ -338,11 +347,17 @@ def _log_parsed_result(
     if not isinstance(result, str):
         result = json.dumps(result, ensure_ascii=False)
     logger.info(
-        "claude skill result skill=%s result=%s", skill, result[:_LOG_LIMIT]
+        "claude skill result label=%s skill=%s result=%s",
+        tag,
+        skill,
+        result[:_LOG_LIMIT],
     )
     if subtype == "error_max_turns":
         logger.warning(
-            "claude skill max turns skill=%s subtype=%s", skill, subtype
+            "claude skill max turns label=%s skill=%s subtype=%s",
+            tag,
+            skill,
+            subtype,
         )
     if rc == 0 and is_error is True:
         return 1, result
@@ -421,8 +436,9 @@ def _run_legacy(
     prompt: str,
     logger: logging.Logger,
     extra_env: dict[str, str] | None,
+    label: str | None = None,
 ) -> int:
-    logger.info(_LEGACY_CMD_LOG, project_dir)
+    logger.info(_LEGACY_CMD_LOG, _log_label(label), project_dir)
     proc = subprocess.run(
         _legacy_cmd(prompt), cwd=project_dir, env=_child_env(extra_env)
     )
@@ -435,6 +451,7 @@ def _run_profile(
     logger: logging.Logger,
     extra_env: dict[str, str] | None,
     skill: str,
+    label: str | None = None,
 ) -> tuple[int, str]:
     profile = _resolve_profile(skill, logger)
     env = _child_env(extra_env)
@@ -467,9 +484,11 @@ def _run_profile(
     max_turns = int(profile["max_turns"])
     timeout = int(profile["timeout"])
     model = str(profile["model"])
+    tag = _log_label(label)
     logger.info(
-        "claude skill start cwd=%s skill=%s effort=%s thinking=%s "
+        "claude skill start label=%s cwd=%s skill=%s effort=%s thinking=%s "
         "max_turns=%s model=%s timeout=%s",
+        tag,
         project_dir,
         skill,
         env.get("CLAUDE_CODE_EFFORT_LEVEL", profile["effort"]),
@@ -497,7 +516,10 @@ def _run_profile(
         stdout, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         logger.error(
-            "claude skill timeout skill=%s timeout=%s", skill, timeout
+            "claude skill timeout label=%s skill=%s timeout=%s",
+            tag,
+            skill,
+            timeout,
         )
         _kill_process_group(proc, logger)
         try:
@@ -507,7 +529,9 @@ def _run_profile(
         # Timeout: rc 124 and result text "" — the partially captured stdout
         # is discarded (nothing parseable survives the kill).
         return 124, ""
-    return _log_parsed_result(logger, skill, proc.returncode or 0, stdout or "")
+    return _log_parsed_result(
+        logger, skill, proc.returncode or 0, stdout or "", label=label
+    )
 
 
 def run_claude_result(
@@ -516,12 +540,16 @@ def run_claude_result(
     logger: logging.Logger,
     extra_env: dict[str, str] | None = None,
     skill: str | None = None,
+    label: str | None = None,
 ) -> tuple[int, str]:
     """run_claude + the parsed terminal 'result' text.
 
     Frame workers gate on their final reply (`done OK <frame_id>`), which the
     CLI surfaces in the JSON stdout's `result` field — callers that need that
     text (driver collect/retry logic) use this; everyone else keeps run_claude.
+
+    ``label`` is an optional caller tag (e.g. frame id) echoed in every skill
+    log line so concurrent workers stay distinguishable.
 
     The result text is ``""`` whenever it cannot be produced: JSON parse
     failure, the legacy (profile-off) path, or a wall-clock timeout (which
@@ -530,10 +558,10 @@ def run_claude_result(
     if shutil.which("claude") is None:
         raise RuntimeError("claude CLI not found on PATH")
     if skill is None or _profile_off():
-        return _run_legacy(project_dir, prompt, logger, extra_env), ""
+        return _run_legacy(project_dir, prompt, logger, extra_env, label), ""
     if skill not in _PROFILES:
         raise ValueError(f"unknown claude skill profile: {skill}")
-    return _run_profile(project_dir, prompt, logger, extra_env, skill)
+    return _run_profile(project_dir, prompt, logger, extra_env, skill, label)
 
 
 def run_claude(
@@ -542,6 +570,7 @@ def run_claude(
     logger: logging.Logger,
     extra_env: dict[str, str] | None = None,
     skill: str | None = None,
+    label: str | None = None,
 ) -> int:
     """Invoke Claude Code non-interactively.
 
@@ -554,6 +583,9 @@ def run_claude(
     ``extra_env`` — before the profile's own ``max_output`` is applied. On
     this backend the thinking budget is inert anyway (adaptive thinking
     strips budget_tokens; the output cap is the effective lever).
+    ``label`` is forwarded to skill logs (see ``run_claude_result``).
     """
-    rc, _result = run_claude_result(project_dir, prompt, logger, extra_env, skill)
+    rc, _result = run_claude_result(
+        project_dir, prompt, logger, extra_env, skill, label
+    )
     return rc
