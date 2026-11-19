@@ -36,6 +36,8 @@ Goal: Verify the assembled video — inject transitions, pass lint/check, snapsh
 
 **One-command loop (preferred):** `node /app/scripts/verify-all.mjs --videodir ${videodir}` runs the whole mechanical phase — inject guard → full report → (on gate pass) midpoints + snapshot + verify-pixels — and returns one verdict. Use it first; fall back to the individual commands below only when its exit code already says which single step to rerun.
 
+**First command is `verify-all.mjs` — no pre-exploration.** This skill's content is already loaded into context, and `verify-all.mjs` prints every finding, the GATE verdict, and the `verify-pixels` result in one shot. Do not `find`/`cat` the skill files, do not `ls` the frames or project first, do not build a task list (it is blocked by the profile anyway).
+
 ```bash
 node /app/scripts/verify-all.mjs --videodir ${videodir}   # exit 0 = gate+snapshot done; 1 = findings, fix & rerun; 2 = blocker
 node /app/scripts/verify-report.mjs --videodir ${videodir} --preflight   # ~3s: prerequisites, stub check, frames vs STORYBOARD
