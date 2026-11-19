@@ -282,7 +282,7 @@ DRIVER_ENV = "HTMLVIDEO_FRAME_HTML_DRIVER"
 SKELETON_ENV = "HTMLVIDEO_FRAME_HTML_SKELETON"
 DISPATCH_SUFFIX = ".dispatch.md"
 MAX_RETRY_ROUNDS = 2
-DEFAULT_MAX_WORKERS = 8
+DEFAULT_MAX_WORKERS = 16
 CUT_CATALOG_PATH = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "skills",
     "aiflow-build-frame-html", "references", "cut-catalog.md"))
