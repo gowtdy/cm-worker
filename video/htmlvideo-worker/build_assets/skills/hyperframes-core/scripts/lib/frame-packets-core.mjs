@@ -111,6 +111,109 @@ export function buildRolePayload({ corePath, deltaPath, outDir }) {
   return { path, bytes: Buffer.byteLength(role) };
 }
 
+const FRAME_MD_EXCERPT_HEADINGS = [
+  "## Colors", "## Typography", "## Depth & Surface", "## Shapes",
+  "## Components", "## Composition Rules",
+  "## Approved Real Entities", "## Approved Entities",
+  "## Numerals & Claims (hard rule)", "## Pre-Render Self-Audit",
+];
+
+export function frameMdExcerpt(frameMd, maxFallbackBytes = 12000) {
+  if (!frameMd) return "";
+  const headingRe = (h) => new RegExp(`^${escapeRegExp(h)}\\s*$`, "m");
+  const bounds = FRAME_MD_EXCERPT_HEADINGS.map((h) => {
+    const m = headingRe(h).exec(frameMd);
+    return m ? { h, start: m.index } : null;
+  }).filter(Boolean);
+  if (bounds.length === 0) {
+    console.warn("frame-packets: no whitelisted frame.md sections found; falling back to head excerpt");
+    return `> (head-excerpt fallback: whitelisted sections not found)\n\n${frameMd.slice(0, maxFallbackBytes)}`;
+  }
+  const nextHeading = /^##\s/m;
+  let out = "";
+  for (const { h, start } of bounds) {
+    const rest = frameMd.slice(start + h.length);
+    const endM = rest.search(nextHeading);
+    out += `\n${h}\n\n${(endM === -1 ? rest : rest.slice(0, endM)).trim()}\n`;
+  }
+  return out.trim();
+}
+
+export function buildDispatchDocs({ projectDir, frames, outDir, animationDir, cardPath, frameMdPath, maxDispatchBytes = 40000 }) {
+  const card = readFileSync(cardPath, "utf8").trim();
+  const frameMd = frameMdPath && existsSync(frameMdPath) ? readFileSync(frameMdPath, "utf8") : "";
+  const excerpt = frameMdExcerpt(frameMd);
+  const ruleIds = knownRuleIds(animationDir);
+  mkdirSync(outDir, { recursive: true });
+  return frames.map((frame) => {
+    const blueprint = field(frame.block, "blueprint");
+    const blueprintSection = blueprint && blueprint.toLowerCase() !== "compose"
+      ? selectedFile(join(animationDir, "blueprints", `${blueprint}.md`), `Selected blueprint: ${blueprint}`)
+      : "";
+    const rules = citedRules(frame.block, ruleIds);
+    const ruleIndex = rules.length
+      ? rules.map((r) => `- \`${r}\` → ${join(animationDir, "rules", `${r}.md`)}`).join("\n")
+      : "- (no motion rules cited)";
+    const doc = `# Dispatch: ${frame.frameId}
+
+## Project inputs
+
+- Project: ${resolve(projectDir)}
+- RULES_DIR: ${join(animationDir, "rules")}
+
+## Role (executable rule card)
+
+${card}
+
+## Assigned storyboard block
+
+${frame.block}
+${blueprintSection}
+## Rule index (open a recipe file only while authoring its phase)
+
+${ruleIndex}
+
+## frame.md design tokens (excerpt)
+
+${excerpt}
+`;
+    const bytes = Buffer.byteLength(doc);
+    if (bytes > maxDispatchBytes)
+      console.warn(`frame-packets: dispatch ${frame.frameId} is ${bytes} bytes (budget ${maxDispatchBytes})`);
+    const path = join(outDir, `${frame.frameId}.dispatch.md`);
+    writeFileSync(path, doc);
+    return { frameId: frame.frameId, path, bytes };
+  });
+}
+
+// Pre-built per-frame skeleton files: minimal valid `<template>` + #root attrs
+// + marker comment, deterministic and selfcheck-clean ("last write wins" — the
+// filler worker path rewrites them; packets are fair game to refresh).
+export function buildSkeletons({ projectDir, frames, canvas }) {
+  const framesDir = resolve(projectDir, "compositions", "frames");
+  mkdirSync(framesDir, { recursive: true });
+  const dims = canvas && canvas.width && canvas.height
+    ? ` data-width="${canvas.width}" data-height="${canvas.height}"` : "";
+  return frames.map((frame) => {
+    const dur = field(frame.block, "duration") ?? field(frame.block, "durationSeconds");
+    if (!dur) throw new Error(`${frame.frameId}: skeleton needs a - duration field on the storyboard block`);
+    const skeleton = `<!-- skeleton-v1: fill style/body/script per .hyperframes/frame-packets/${frame.frameId}.dispatch.md — last write wins -->
+<template>
+<div id="root" data-composition-id="${frame.frameId}"${dims} data-duration="${dur}"></div>
+<style>/* fill: frame styles */</style>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<script>
+window.__timelines = window.__timelines || {};
+window.__timelines["${frame.frameId}"] = gsap.timeline({ paused: true });
+</script>
+</template>
+`;
+    const path = join(framesDir, `${frame.frameId}.html`);
+    writeFileSync(path, skeleton);
+    return { frameId: frame.frameId, path };
+  });
+}
+
 export function buildFramePackets({
   projectDir,
   storyboardPath = join(projectDir, "STORYBOARD.md"),
@@ -145,8 +248,11 @@ export function buildFramePackets({
 
   mkdirSync(outDir, { recursive: true });
   for (const { path, packet } of packets) writeFileSync(path, packet);
-  buildRolePayload({ corePath, deltaPath, outDir });
-  return packets.map(({ packet: _packet, ...result }) => result);
+  const role = buildRolePayload({ corePath, deltaPath, outDir });
+  return {
+    packets: packets.map(({ packet: _packet, ...result }) => result),
+    role,
+  };
 }
 
 export function flag(argv, name, fallback) {
@@ -166,17 +272,21 @@ export function isMainModule(importMetaUrl) {
   }
 }
 
-export function runCli({ buildFramePackets: build, buildRolePayload: buildRole }) {
+export function runCli({ buildFramePackets: build, buildExtras }) {
   const argv = process.argv.slice(2);
   const projectDir = resolve(flag(argv, "project", "."));
   const outDir = resolve(flag(argv, "out-dir", join(projectDir, ".hyperframes", "frame-packets")));
   try {
-    const packets = build({
+    const { packets, role } = build({
       projectDir,
       storyboardPath: resolve(flag(argv, "storyboard", join(projectDir, "STORYBOARD.md"))),
       outDir,
     });
-    const role = buildRole({ outDir });
+    if (buildExtras) {
+      const storyboardPath = resolve(flag(argv, "storyboard", join(projectDir, "STORYBOARD.md")));
+      const frames = splitFrames(readFileSync(storyboardPath, "utf8")).map((f) => ({ ...f, frameId: frameId(f) }));
+      buildExtras({ projectDir, storyboardPath, outDir, frames, packets });
+    }
     console.log(`✓ frame packets: ${packets.length} bounded packet(s)`);
     for (const packet of packets)
       console.log(`  ${packet.frameId}: ${packet.bytes} bytes → ${packet.path}`);

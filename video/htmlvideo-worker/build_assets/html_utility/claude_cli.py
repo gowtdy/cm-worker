@@ -11,56 +11,65 @@ import signal
 import subprocess
 import time
 
-# Per-skill effort / thinking budget. CLAUDE_CODE_EFFORT_LEVEL in the child
-# env overrides any --effort flag, and the binary reads MAX_THINKING_TOKENS
-# (not CLAUDE_CODE_MAX_THINKING_TOKENS). NOTE (2026-11-17, api-bodies): this
-# backend runs the model in adaptive-thinking mode (request body
-# thinking:{"type":"adaptive","display":"omitted"}), so the gateway strips
-# MAX_THINKING_TOKENS budget_tokens — lowering "thinking" below has NO effect.
-# The only lever that reaches the request is CLAUDE_CODE_MAX_OUTPUT_TOKENS
-# (sets max_tokens, hard-caps thinking + visible output). frame_html therefore
-# pins an explicit max_output.
+# Per-skill effort / thinking / output budget. CLAUDE_CODE_EFFORT_LEVEL in the
+# child env overrides any --effort flag, and the binary reads
+# MAX_THINKING_TOKENS (not CLAUDE_CODE_MAX_THINKING_TOKENS). NOTE
+# (2026-11-17, api-bodies): this backend runs the model in adaptive-thinking
+# mode (request body thinking:{"type":"adaptive","display":"omitted"}), so the
+# gateway strips MAX_THINKING_TOKENS budget_tokens — lowering "thinking" below
+# has NO effect. The only lever that reaches the request is
+# CLAUDE_CODE_MAX_OUTPUT_TOKENS (sets max_tokens, hard-caps thinking + visible
+# output), so every profile below pins an explicit max_output:
+# - serial stages (intent/storyboard/visual/verify): 32000, the 2026-11-18 A/B
+#   floor (intent 16.7s / storyboard 3.0m / visual 7.1m, all historical best).
+# - frame_html: 64000 — enough output budget that a worker reading ~10k tokens
+#   of dispatch + skeleton-Editing never truncates, far enough below 128k that
+#   marathon thinking loses its silent runway. 128000 is the documented
+#   one-line rollback.
+# - repair: 16000 — small budget, reserved for assemble-failure fix-up sessions.
+# NOTE (M0 conclusion fill-in point): the 58m-outage profile showed
+# max_output=16000 while the SDK result read 32000; Task 2 verifies the
+# profile-env -> worker-process injection chain and records the conclusion
+# here.
 _PROFILES: dict[str, dict[str, object]] = {
     "intent": {
-        "effort": "high",
-        # Small positive budget: effort + thinking=0 can raise
-        # effort_requires_thinking (400) on Claude Code.
-        "thinking": "32000",
-        "max_turns": 100,
-        "timeout": 1800,
-        "deny_agent": True,
+        "effort": "high", "thinking": "32000",
+        "max_output": "32000",  # 2026-11-18 A/B 实证的地板档（intent 16.7s 历史最优）
+        "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
     "storyboard": {
-        "effort": "high",
-        "thinking": "64000",
-        "max_turns": 100,
-        "timeout": 1800,
-        "deny_agent": True,
+        "effort": "high", "thinking": "64000",
+        "max_output": "32000",  # 同上（storyboard 3.0m 近地板）
+        "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
     "visual": {
-        "effort": "high",
-        "thinking": "64000",
-        "max_turns": 100,
-        "timeout": 1800,
-        "deny_agent": True,
+        "effort": "high", "thinking": "64000",
+        "max_output": "32000",  # 同上（visual 7.1m 历史最优）
+        "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
     "frame_html": {
-        "effort": "high",
-        "thinking": "64000",
-        # The only lever that actually caps the 8–16m marathon-thinking turns
-        # (request body shows thinking:{type:adaptive}, budget_tokens stripped).
-        # 16000 ≈ ~5m/turn at ~50 tok/s; A/B via HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS.
-        "max_output": "16000",
-        "max_turns": 150,
-        "timeout": 1800,
-        "deny_agent": False,
+        "effort": "high", "thinking": "64000",
+        # Per-worker session cap. 64000: enough output budget that a worker
+        # reading ~10k tokens of dispatch + skeleton-Editing never truncates,
+        # far enough below 128k that marathon thinking loses its silent runway.
+        # 128000 is the documented one-line rollback; serial stages stay 32000.
+        "max_output": "64000",
+        "max_turns": 60,       # per-frame fill: read + ~5 edits + selfcheck fixes
+        # Per-worker wall kill-switch (a skeleton keeps a valid file on disk).
+        # 2026-11-19 test: 720s was too short — on the adaptive backend the
+        # thinking cap is stripped (see header note), so a worker burns 20–35k
+        # thinking tokens/turn; content-dense frames need >12 min and 4/6
+        # workers were killed at 720s mid-write. 1500s gives ~25 min headroom.
+        "timeout": 1500,
+        "deny_agent": True,    # B architecture: no stage dispatches subagents anymore
+    },
+    "repair": {
+        "effort": "high", "thinking": "40000",
+        "max_output": "16000", "max_turns": 40, "timeout": 600, "deny_agent": True,
     },
     "verify": {
-        "effort": "medium",
-        "thinking": "32000",
-        "max_turns": 100,
-        "timeout": 1800,
-        "deny_agent": True,
+        "effort": "medium", "thinking": "32000",
+        "max_output": "32000", "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
 }
 _BASE_DENY = ["WebFetch", "WebSearch", "NotebookEdit", "TodoWrite"]
@@ -69,11 +78,13 @@ _ALLOWED_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 _DEFAULT_MAX_OUTPUT_TOKENS = 128000
 _THINKING_SAFE_CAP = 127000
-_LOG_LIMIT = 127000
+# Documented in docs/claude-cli-skill-profiles.md §7: parse-failure stdout tail
+# and parsed result text are both logged truncated to 2000 chars.
+_LOG_LIMIT = 2000
 _TIMEOUT_GRACE_SECONDS = 5
 
 _LEGACY_CMD_LOG = (
-    "claude skill start cwd=%s cmd=claude --print "
+    "claude skill start label=%s cwd=%s cmd=claude --print "
     "--dangerously-skip-permissions --permission-mode bypassPermissions "
     "--output-format text <prompt>"
 )
@@ -141,11 +152,21 @@ def _clamp_thinking(
     max_output: int,
     logger: logging.Logger,
 ) -> str:
-    """Keep the thinking budget strictly under the output-token limit.
+    """Clamp thinking against the *pre-injection* output-token ceiling.
 
-    A value that meets or exceeds the assumed/default output cap is lowered
-    to ``_THINKING_SAFE_CAP`` when that cap still fits, otherwise to
+    ``_run_profile`` calls this BEFORE the per-skill ``max_output`` is
+    injected, so the ceiling seen here is the caller-inherited or
+    ``extra_env`` value of ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` (default 128000)
+    — not the profile cap. A value that meets or exceeds that ceiling is
+    lowered to ``_THINKING_SAFE_CAP`` when it still fits, otherwise to
     ``max_output - 1``. ``0`` disables thinking and is kept.
+
+    The profile value is applied afterwards (and ``extra_env`` re-applies
+    ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` on top, else the profile wins), so a
+    profile-default thinking budget may meet or exceed the final child output
+    cap. That is inert on this backend: the gateway strips thinking
+    budget_tokens (adaptive thinking), so only the output cap reaches the
+    request.
     """
     try:
         n = int(str(thinking).strip())
@@ -248,24 +269,63 @@ def _profile_cmd(
     return cmd
 
 
+def _extract_result_payload(stdout: str):
+    """Return the CLI terminal result JSON object from ``stdout`` (or None).
+
+    With ``ANTHROPIC_LOG=debug`` inherited by the child CLI process, the CLI
+    interleaves ``console.log`` HTTP-fetch dumps (request/response bodies) into
+    the ``--output-format json`` stream, so a whole-string ``json.loads`` fails
+    even though the real result object is emitted last. Fast-path a clean
+    single-object stdout; otherwise scan back-to-front for the last object that
+    decodes and carries a ``result`` key (debug dumps use non-JSON syntax like
+    ``body: K {`` and unquoted keys, so ``raw_decode`` skips them).
+    """
+    if not stdout:
+        return None
+    # Fast path: clean stdout is exactly one JSON object (the result).
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        return payload
+    # Polluted stdout: the result object is the last JSON value. Scan each
+    # '{' back-to-front; only a dict with a ``result`` key counts.
+    decoder = json.JSONDecoder()
+    for i in range(len(stdout) - 1, -1, -1):
+        if stdout[i] != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(stdout, i)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and "result" in obj:
+            return obj
+    return None
+
+
+def _log_label(label: str | None) -> str:
+    return label if label else "-"
+
+
 def _log_parsed_result(
     logger: logging.Logger,
     skill: str,
     rc: int,
     stdout: str,
-) -> int:
-    try:
-        payload = json.loads(stdout)
-    except json.JSONDecodeError:
-        payload = None
-    if not isinstance(payload, dict):
+    label: str | None = None,
+) -> tuple[int, str]:
+    tag = _log_label(label)
+    payload = _extract_result_payload(stdout)
+    if payload is None:
         logger.info(
-            "claude skill stdout skill=%s rc=%s stdout=%s",
+            "claude skill stdout label=%s skill=%s rc=%s stdout=%s",
+            tag,
             skill,
             rc,
             (stdout or "")[-_LOG_LIMIT:],
         )
-        return rc
+        return rc, ""
 
     usage = payload.get("usage")
     if not isinstance(usage, dict):
@@ -273,8 +333,10 @@ def _log_parsed_result(
     subtype = payload.get("subtype")
     is_error = payload.get("is_error")
     logger.info(
-        "claude skill done skill=%s rc=%s subtype=%s is_error=%s num_turns=%s "
-        "duration_ms=%s input=%s output=%s cache_read=%s cache_create=%s",
+        "claude skill done label=%s skill=%s rc=%s subtype=%s is_error=%s "
+        "num_turns=%s duration_ms=%s input=%s output=%s cache_read=%s "
+        "cache_create=%s",
+        tag,
         skill,
         rc,
         subtype,
@@ -290,15 +352,21 @@ def _log_parsed_result(
     if not isinstance(result, str):
         result = json.dumps(result, ensure_ascii=False)
     logger.info(
-        "claude skill result skill=%s result=%s", skill, result[:_LOG_LIMIT]
+        "claude skill result label=%s skill=%s result=%s",
+        tag,
+        skill,
+        result[:_LOG_LIMIT],
     )
     if subtype == "error_max_turns":
         logger.warning(
-            "claude skill max turns skill=%s subtype=%s", skill, subtype
+            "claude skill max turns label=%s skill=%s subtype=%s",
+            tag,
+            skill,
+            subtype,
         )
     if rc == 0 and is_error is True:
-        return 1
-    return rc
+        return 1, result
+    return rc, result
 
 
 def _kill_process_group(proc: subprocess.Popen[str], logger: logging.Logger) -> None:
@@ -373,8 +441,9 @@ def _run_legacy(
     prompt: str,
     logger: logging.Logger,
     extra_env: dict[str, str] | None,
+    label: str | None = None,
 ) -> int:
-    logger.info(_LEGACY_CMD_LOG, project_dir)
+    logger.info(_LEGACY_CMD_LOG, _log_label(label), project_dir)
     proc = subprocess.run(
         _legacy_cmd(prompt), cwd=project_dir, env=_child_env(extra_env)
     )
@@ -387,30 +456,44 @@ def _run_profile(
     logger: logging.Logger,
     extra_env: dict[str, str] | None,
     skill: str,
-) -> int:
+    label: str | None = None,
+) -> tuple[int, str]:
     profile = _resolve_profile(skill, logger)
     env = _child_env(extra_env)
     env["CLAUDE_CODE_EFFORT_LEVEL"] = str(profile["effort"])
     env["MAX_THINKING_TOKENS"] = str(profile["thinking"])
-    if profile.get("max_output"):
-        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(profile["max_output"])
     # Re-apply extra_env so caller overrides still beat profile defaults.
     if extra_env:
         env.update(extra_env)
-    # Re-run after the second extra_env merge so BUN_OPTIONS is not wiped.
-    _apply_debug_request_env(env)
+    # Clamp the thinking budget against the output limit the caller inherited
+    # or injected (default 128000). The per-skill max_output cap is applied
+    # AFTER the clamp: CLAUDE_CODE_MAX_OUTPUT_TOKENS hard-caps thinking +
+    # visible output at the API layer, so the clamp only needs to keep
+    # MAX_THINKING_TOKENS below that request ceiling (the adaptive backend
+    # strips budget_tokens anyway — see the header note).
     env["MAX_THINKING_TOKENS"] = _clamp_thinking(
         str(env.get("MAX_THINKING_TOKENS", profile["thinking"])),
         str(profile["thinking_fallback"]),
         _output_token_limit(env),
         logger,
     )
+    if profile.get("max_output"):
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(profile["max_output"])
+    # extra_env stays authoritative for the output cap (caller override beats
+    # the profile default). MAX_THINKING_TOKENS is not re-applied here: the
+    # clamp above must stay authoritative for the thinking budget.
+    if extra_env and "CLAUDE_CODE_MAX_OUTPUT_TOKENS" in extra_env:
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"]
+    # Re-run after the last env merge so BUN_OPTIONS is not wiped.
+    _apply_debug_request_env(env)
     max_turns = int(profile["max_turns"])
     timeout = int(profile["timeout"])
     model = str(profile["model"])
+    tag = _log_label(label)
     logger.info(
-        "claude skill start cwd=%s skill=%s effort=%s thinking=%s "
+        "claude skill start label=%s cwd=%s skill=%s effort=%s thinking=%s "
         "max_turns=%s model=%s timeout=%s",
+        tag,
         project_dir,
         skill,
         env.get("CLAUDE_CODE_EFFORT_LEVEL", profile["effort"]),
@@ -438,15 +521,52 @@ def _run_profile(
         stdout, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         logger.error(
-            "claude skill timeout skill=%s timeout=%s", skill, timeout
+            "claude skill timeout label=%s skill=%s timeout=%s",
+            tag,
+            skill,
+            timeout,
         )
         _kill_process_group(proc, logger)
         try:
             proc.communicate(timeout=_TIMEOUT_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
             pass
-        return 124
-    return _log_parsed_result(logger, skill, proc.returncode or 0, stdout or "")
+        # Timeout: rc 124 and result text "" — the partially captured stdout
+        # is discarded (nothing parseable survives the kill).
+        return 124, ""
+    return _log_parsed_result(
+        logger, skill, proc.returncode or 0, stdout or "", label=label
+    )
+
+
+def run_claude_result(
+    project_dir: str,
+    prompt: str,
+    logger: logging.Logger,
+    extra_env: dict[str, str] | None = None,
+    skill: str | None = None,
+    label: str | None = None,
+) -> tuple[int, str]:
+    """run_claude + the parsed terminal 'result' text.
+
+    Frame workers gate on their final reply (`done OK <frame_id>`), which the
+    CLI surfaces in the JSON stdout's `result` field — callers that need that
+    text (driver collect/retry logic) use this; everyone else keeps run_claude.
+
+    ``label`` is an optional caller tag (e.g. frame id) echoed in every skill
+    log line so concurrent workers stay distinguishable.
+
+    The result text is ``""`` whenever it cannot be produced: JSON parse
+    failure, the legacy (profile-off) path, or a wall-clock timeout (which
+    yields ``(124, "")``). Callers must gate on the exit code for those cases.
+    """
+    if shutil.which("claude") is None:
+        raise RuntimeError("claude CLI not found on PATH")
+    if skill is None or _profile_off():
+        return _run_legacy(project_dir, prompt, logger, extra_env, label), ""
+    if skill not in _PROFILES:
+        raise ValueError(f"unknown claude skill profile: {skill}")
+    return _run_profile(project_dir, prompt, logger, extra_env, skill, label)
 
 
 def run_claude(
@@ -455,19 +575,22 @@ def run_claude(
     logger: logging.Logger,
     extra_env: dict[str, str] | None = None,
     skill: str | None = None,
+    label: str | None = None,
 ) -> int:
     """Invoke Claude Code non-interactively.
 
-    ``skill`` selects a per-skill effort, thinking budget, turn cap, and
-    wall-clock timeout. ``skill=None`` or ``HTMLVIDEO_CLAUDE_PROFILE=off``
-    keeps the legacy command and environment. ``extra_env`` is applied last
-    on top of the inherited environment; the thinking budget is then clamped
-    so it stays under ``CLAUDE_CODE_MAX_OUTPUT_TOKENS``.
+    ``skill`` selects a per-skill effort, thinking budget, output cap, turn
+    cap, and wall-clock timeout. ``skill=None`` or
+    ``HTMLVIDEO_CLAUDE_PROFILE=off`` keeps the legacy command and environment.
+    ``extra_env`` is applied last on top of the inherited environment. The
+    thinking budget is clamped against the *pre-injection* output ceiling —
+    the ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` value inherited or injected via
+    ``extra_env`` — before the profile's own ``max_output`` is applied. On
+    this backend the thinking budget is inert anyway (adaptive thinking
+    strips budget_tokens; the output cap is the effective lever).
+    ``label`` is forwarded to skill logs (see ``run_claude_result``).
     """
-    if shutil.which("claude") is None:
-        raise RuntimeError("claude CLI not found on PATH")
-    if skill is None or _profile_off():
-        return _run_legacy(project_dir, prompt, logger, extra_env)
-    if skill not in _PROFILES:
-        raise ValueError(f"unknown claude skill profile: {skill}")
-    return _run_profile(project_dir, prompt, logger, extra_env, skill)
+    rc, _result = run_claude_result(
+        project_dir, prompt, logger, extra_env, skill, label
+    )
+    return rc

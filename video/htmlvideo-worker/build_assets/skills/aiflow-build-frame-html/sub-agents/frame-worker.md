@@ -1,10 +1,22 @@
 # Frame worker — aiflow-build-frame-html delta
 
-> The workflow-specific half of the worker role. The packet builder concatenates this file after the shared contract (`../hyperframes-core/references/frame-worker-core.md`, owned by `hyperframes-core`) to form the dispatched `_role.md`; read the two as **one document** — the shared contract above is authoritative everywhere this delta does not explicitly mark **Override**. This delta carries only what is specific to an aiflow-build-frame-html frame: invented visuals + the user-supplied image, the `done OK` reply protocol, the root `data-duration` requirement, same-track density discipline, and the per-frame script gate. Editing guidance: a rule that applies to any frame worker belongs in the shared contract, **not here**; a rule that applies to every aiflow frame worker belongs here, once.
+> Filler contract for the aiflow frame worker. The packet builder prepends
+the shared contract (`../hyperframes-core/references/frame-worker-core.md`)
+to form the full `_role.md`; the dispatch `.dispatch.md` carries the compact
+rule card. This delta covers what is aiflow-specific: invented visuals, the
+`done OK` reply, root `data-duration`, same-track density, the frame file that
+already exists on disk.
 
 ## INPUT — aiflow fields
 
-The shared contract's INPUT applies in full. Your packet carries everything selected upstream — the frame's exact `## Frame N` block (`## Assigned storyboard block`), the inlined blueprint body (`## Selected blueprint: <id>`), every cited rule recipe (`## Selected motion rule: <id>`), and `RULES_DIR` in the packet header — **never open `STORYBOARD.md` or the skill documents**. The one sanctioned exception is the cut catalog: your dispatch context carries its file path — open **only** that file, and only when a Scene seam is a within-scene swap / scene-to-scene cut / text-to-text line change (on the shared contract's terms). The aiflow-specific fields:
+The shared contract's INPUT applies in full. Your packet carries everything selected upstream — the frame's exact `## Frame N` block (`## Assigned storyboard block`), the inlined blueprint body (`## Selected blueprint: <id>`), a rule INDEX (`## Rule index`: each cited motion's path under `RULES_DIR/`) — open a recipe file only while authoring its phase; no recipe bodies are inlined — **never open `STORYBOARD.md` or the skill documents**. The one sanctioned exception is the cut catalog: your dispatch context carries its file path — open **only** that file, and only when a Scene seam is a within-scene swap / scene-to-scene cut / text-to-text line change (on the shared contract's terms). The aiflow-specific fields:
+
+  **Your dispatch document is the single required input**
+(`.hyperframes/frame-packets/<frame_id>.dispatch.md`): it inlines the rule
+card, your storyboard block, the blueprint, a rule INDEX (recipes are opened
+on demand from `RULES_DIR` while you author each phase), and the frame.md
+design-token excerpt. The full `_role.md` and `frame.md` are escape hatches —
+open them only when a dispatch rule is unclear.
 
 - `focal:` — which **invented** element is the hero.
 - `roles:` — each invented element's role: `foreground subject` / `background` full-bleed / `supporting`. Because the explainer is **faceless, these are elements you design** (a hero word, a diagram node, a chart series, a coined-term card), not captured assets. The **only** real media is a user-supplied image, when present: `public/<basename> — description` (a **`[video]`** tag marks a `.mp4` clip the user provided).
@@ -15,7 +27,12 @@ A re-dispatch in this workflow may also carry `frame-selfcheck` output — the p
 
 ## OUTPUT — `done OK` protocol (Override)
 
-**Override** of the shared contract's "do not report back": after your self-check gate passes and your eyeball re-read is clean, **reply `done OK <frame_id>`** — that reply is your terminal action (the orchestrator trusts the reply plus the artifact on disk; it does **not** re-verify or edit your frame). If you cannot reach PASS after fixing, reply `fail <frame_id>: <what is still broken>` instead of leaving a silent half-state. The artifact itself follows the shared contract exactly (one bare `<template>…</template>` at `compositions/frames/<frame_id>.html`). (Sketches do not occur in this pipeline — the visual skill skips the sketch pass — so the shared contract's sketch section never applies; a file already on disk at dispatch is your own output from a retry.)
+**Override** of the shared contract's "do not report back": after your self-check gate passes and your eyeball re-read is clean, **reply `done OK <frame_id>`** — that reply is your terminal action (the driver trusts the reply — the artifact on disk is not proof — and does **not** re-verify or edit your frame). If you cannot reach PASS after fixing, reply `fail <frame_id>: <what is still broken>` instead of leaving a silent half-state.  **The frame file already exists.** In this workflow the packet builder
+pre-writes a valid skeleton (`<!-- skeleton-v1 -->`, passes frame-selfcheck)
+to `compositions/frames/<frame_id>.html` before you start — fill it with
+chunked Edits (style → body → script); you may add/remove nodes or rewrite
+the file wholly (last write wins). A file on disk is therefore your working
+document, never proof of completion — your `done OK` reply is. The artifact itself follows the shared contract exactly (one bare `<template>…</template>` at `compositions/frames/<frame_id>.html`). (Sketches do not occur in this pipeline — the visual skill skips the sketch pass — so the shared contract's sketch section never applies; a file already on disk at dispatch is the skeleton — plus your own edits if this is a retry.)
 
 ## You do NOT decide — addition
 
@@ -37,7 +54,7 @@ Pre-ruled to stop deliberation stalls (observed: a worker burned two full 32k-to
 - **Template / root shape.** Bare `<template>…</template>`; every data attribute on the root: `<div id="root" data-composition-id="<frame_id>" data-width="1920" data-height="1080" data-duration="<block duration verbatim>">`. Style via the `#root` selector, never a class.
 - **Units.** Primary unit `cqw` / `cqh` — `frame.md`'s entire type ramp is cqw-based (at 1920-wide containers, 1cqw = 19.2px). Fixed-size décor (4/6/8/12px shadows, dots, strokes) uses px. Both pass lint; pick per element and move on — never build conversion tables.
 - **Turn discipline.** Every turn ends with a tool call or visible text; never end a turn with thinking only (a silent turn is discarded and re-run from scratch). If something is not decided upstream, pick the sibling-consistent choice and proceed **within this turn**; do not deliberate for more than ~a minute.
-- **Skeleton first.** Within your first 1–2 turns Write a minimal valid skeleton (`<template>` + `#root` attrs + one comment) to `compositions/frames/<frame_id>.html`, then flesh it out with edits. The file on disk is your heartbeat — even a truncated later turn leaves an artifact.
+- **Skeleton fill (Override).** The skeleton already exists on disk — your FIRST edit must land within your first 1–2 turns, flesh it out with chunked Edits after that. Never burn a turn planning a whole frame before the first edit; the file is your heartbeat, keep it valid at every step.
 - **Chunk large writes.** A Write input over ~20 KB gets truncated into an InputValidationError (observed). Author a full frame as: first write style + structure, then append the body, then the script block.
 
 ## Frame constraints (aiflow deltas)
@@ -88,14 +105,16 @@ The shared contract's constraints apply in full; these are the aiflow-specific o
 
 ## Workflow (shared steps apply — aiflow changes)
 
-1. **Read** — the shared step applies; read from your **packet**, not the skill files: frame block under `## Assigned storyboard block`, blueprint body under `## Selected blueprint: <id>` (absent when `compose`), each cited motion's recipe under `## Selected motion rule: <id>`. Open `RULES_DIR/<id>.md` only when a cited recipe is missing from the packet (the shared fallback). The structural law is restated in the shared contract above — do **not** open `hyperframes-core/SKILL.md` or the skill catalog.
+1. **Read** — the shared step applies; read from your **packet**, not the skill files: frame block under `## Assigned storyboard block`, blueprint body under `## Selected blueprint: <id>` (absent when `compose`), each cited motion's recipe path — open the recipe at `RULES_DIR/<id>.md` (the dispatch's Rule index lists them) while you author that phase. The structural law is restated in the shared contract above — do **not** open `hyperframes-core/SKILL.md` or the skill catalog.
 2. **Design** — the shared step applies; it is this workflow's job to **invent** the visual elements the Scene lines describe (the diagram, the hero word, the metaphor) — a visual idea that reinforces the beat, not a literal restyle of the words.
-3. **Author** — the shared step applies, with one change: the root also carries **`data-duration="<duration>"`** (packet `duration` verbatim — see Frame constraints above).
+3. **Author** — the shared step applies, with one change: the root also carries **`data-duration="<duration>"`** (packet `duration` verbatim — see Frame constraints above).  (the root already carries `data-duration` — the skeleton stamped it; keep it).
 4. **Self-check, then finish** — shared step applies, plus the script gate and delta additions below; **replying `done OK <frame_id>`** (or `fail …`) is your terminal action.
 
 ## Self-check (script gate + delta additions)
 
-Run the script gate first: `node /app/scripts/frame-selfcheck.mjs compositions/frames/<frame_id>.html` — it enforces the deterministic structural subset (template wrapper/bounds, root attrs, clip attrs, same-track overlap, paused-registered timeline) with `hyperframes lint`'s rule codes, and fails fast where the assembled-project gate would be a false green. You **can't** meaningfully run `hyperframes lint` / `check` here: they operate on the **assembled project** (the `index.html` graph / bundle), and your frame isn't wired in yet — so they report on *other* files, not yours. (**Override** of the shared contract's runner: in this workflow the orchestrator does not assemble or lint — those gates run downstream after assembly, and a failed frame comes back as a re-dispatch with the finding, same as the shared Retry path.) Re-read your file against the **shared checklist first** (the shared contract's self-check above — every item there applies), then the aiflow additions below; the codes in parens are `hyperframes lint`'s and what a re-dispatch may cite back:
+Run the script gate first: `node /app/scripts/frame-selfcheck.mjs compositions/frames/<frame_id>.html` — it enforces the deterministic structural subset (template wrapper/bounds, root attrs, clip attrs, same-track overlap, paused-registered timeline) with `hyperframes lint`'s rule codes, and fails fast where the assembled-project gate would be a false green. You **can't** meaningfully run `hyperframes lint` / `check` here: they operate on the **assembled project** (the `index.html` graph / bundle), and your frame isn't wired in yet — so they report on *other* files, not yours. (**Override** of the shared contract's runner: in this workflow the driver does not assemble or lint within your session — those gates run downstream after assembly, and a failed frame comes back as a re-dispatch with the finding, same as the shared Retry path.) Re-read your file against the **shared checklist first** (the shared contract's self-check above — every item there applies), then the aiflow additions below; the codes in parens are `hyperframes lint`'s and what a re-dispatch may cite back:
+  The skeleton guaranteed `missing_template_wrapper` / root attrs /
+paused-registered timeline before you started — do not regress them.
 
 - `missing_root_duration` — extends the shared first checklist item: the frame root must carry **all three** of `id="root"`, `data-composition-id="<frame_id>"`, and `data-duration="<duration>"` (the block's `duration` verbatim). Example: `<div id="root" data-composition-id="01-hook" data-width="1920" data-height="1080" data-duration="5">`. The shared contract allows omitting root `data-duration` when a GSAP timeline is present; **this workflow does not** — see Frame constraints (a root without it fails `transitions inject` on outgoing frames).
 - **Full-bleed extension** — the shared full-bleed item applies, extended: the ground is **one** dedicated full-duration `class="clip"` background element on the lowest content track; other full-duration ambience (floating pills, stickers, extra grain) goes **inside** that clip or on **higher** tracks — never as sibling clips sharing the same track.

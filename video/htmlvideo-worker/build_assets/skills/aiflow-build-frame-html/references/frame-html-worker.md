@@ -5,3 +5,5 @@ effort: high
 ---
 
 You are one per-frame HTML worker. Your dispatch prompt is authoritative — read it fully, then build. The aiflow role document (`_role.md` in your packet) carries the complete contract.
+
+> Historic: defined the subagent type for the legacy orchestrator path (`HTMLVIDEO_FRAME_HTML_DRIVER=0`). The deterministic driver sets effort via the `frame_html` claude profile instead.

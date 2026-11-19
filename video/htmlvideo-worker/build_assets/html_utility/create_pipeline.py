@@ -12,7 +12,7 @@ from cmwk_common.module_enum import TaskStatus
 from cmwk_common.userserver_worker import update_task_status
 
 from html_utility.audio import caption_generate, sync_duration, tts_generate
-from html_utility.frame_html import build_frame_html, build_frame_packets, build_index_html
+from html_utility.frame_html import build_frame_html, build_frame_packets
 from html_utility.init_htmlvideo import init_htmlvideo
 from html_utility.render import render_video
 from html_utility.storyboard import build_storyboard
@@ -270,12 +270,6 @@ def parallel_caption_frames(
                     f"project_dir:{project_dir} cost:{cost_frame_html:.1f}s",
                 )
         return CaptionFramesResult(caption=done["caption"], frames=done["frames"])
-
-
-def step_index_html(logger: Any, project_dir: str, task_id: str) -> StepResult:
-    t0 = time.time()
-    ret, msg = build_index_html(logger, project_dir, task_id)
-    return StepResult(ret=ret, msg=msg, cost=time.time() - t0)
 
 
 def step_verify(logger: Any, project_dir: str) -> StepResult:
