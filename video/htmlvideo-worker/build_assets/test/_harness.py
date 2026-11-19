@@ -5,6 +5,9 @@ Mirrors the behaviors of ``test_parallel_caption_frames.py`` (logger, status
 stub, preflight file/bin checks, project resolution) and adds clone / env /
 storyboard summaries used by the per-step scripts.
 
+Deployed at ``/app/test/_harness.py`` (Dockerfile: ``build_assets/`` → ``/app/``).
+Full end-to-end invocation chain is documented in ``test_step_init.py`` docstring.
+
 This module must not import ``html_utility`` at import time, so ``--help``
 works on a machine that does not have ``/app`` on ``sys.path``. The status
 stub imports ``html_utility.create_pipeline`` only when a script is about to
