@@ -21,7 +21,7 @@ _PROFILES = {
     "intent": ("high", "32000", "100", 1800, True, "32000"),
     "storyboard": ("high", "64000", "100", 1800, True, "32000"),
     "visual": ("high", "64000", "100", 1800, True, "32000"),
-    "frame_html": ("high", "64000", "60", 720, True, "64000"),
+    "frame_html": ("high", "64000", "60", 1500, True, "64000"),
     "repair": ("high", "40000", "40", 600, True, "16000"),
     "verify": ("medium", "32000", "100", 1800, True, "32000"),
 }
