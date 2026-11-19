@@ -55,7 +55,7 @@ class DriverTest(unittest.TestCase):
         """results: dict frame_id -> list of (rc, text) per attempt.
         assemble_results: build_index_html return values in call order."""
         calls = {k: list(v) for k, v in results.items()}
-        def fake(project_dir, prompt, logger, extra_env=None, skill=None):
+        def fake(project_dir, prompt, logger, extra_env=None, skill=None, label=None):
             # Match on the frame-specific path tokens every worker prompt
             # carries (dispatch doc + frame file) — a bare fid substring also
             # matches another frame's id inside a re-dispatch note tail.
@@ -91,9 +91,9 @@ class DriverTest(unittest.TestCase):
         })
         seen = []
         orig = fh.run_claude_result
-        def counting(project_dir, prompt, logger, extra_env=None, skill=None):
+        def counting(project_dir, prompt, logger, extra_env=None, skill=None, label=None):
             seen.append(prompt)
-            return orig(project_dir, prompt, logger, extra_env=extra_env, skill=skill)
+            return orig(project_dir, prompt, logger, extra_env=extra_env, skill=skill, label=label)
         with mock.patch.object(fh, "run_claude_result", side_effect=counting):
             fh.build_frame_html(d, None)
         self.assertEqual(sum("02-answer" in p for p in seen), 2)
@@ -101,7 +101,7 @@ class DriverTest(unittest.TestCase):
     def test_two_rounds_then_raise(self):
         d = make_project(skeleton=True)
         self._patch_dispatch({"01-hook": [(0, "done OK 01-hook")],
-                              "02-answer": [(0, ""), (0, ""), (0, "")]})
+                              "02-answer": [(0, ""), (0, "")]})
         with self.assertRaises(RuntimeError) as ctx:
             fh.build_frame_html(d, None)
         self.assertIn("02-answer: prior attempt", str(ctx.exception))
@@ -109,7 +109,7 @@ class DriverTest(unittest.TestCase):
     def test_timeout_signal_embedded_in_retry_note(self):
         d = make_project(skeleton=True)
         seen = []
-        def fake(project_dir, prompt, logger, extra_env=None, skill=None):
+        def fake(project_dir, prompt, logger, extra_env=None, skill=None, label=None):
             fid = "01-hook" if "01-hook" in prompt else "02-answer"
             seen.append((fid, prompt))
             if fid == "01-hook" and len([s for s in seen if s[0] == fid]) == 1:
@@ -136,3 +136,10 @@ class DriverTest(unittest.TestCase):
         d = make_project(skeleton=False)
         with self.assertRaises(RuntimeError):
             fh.build_frame_html(d, None)
+
+    def test_worker_prompt_locks_scope_to_single_frame(self):
+        p = fh._worker_prompt("01-hook", skeleton_mode=True)
+        self.assertIn(
+            "Scope is exactly one file: compositions/frames/01-hook.html", p
+        )
+        self.assertIn("Never read, open, or write any other", p)
