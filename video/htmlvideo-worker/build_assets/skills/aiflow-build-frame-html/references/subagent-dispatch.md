@@ -11,7 +11,7 @@ wait, and re-dispatch are implemented by `html_utility/frame_html.py` using
   the selfcheck command, the terminal reply protocol; the full role lives on
   disk as an escape hatch.
 - **Parallel fan-out** — workers are independent; concurrency =
-  `HTMLVIDEO_FRAME_HTML_MAX_CONCURRENCY` (default 8), then queued waves.
+  `HTMLVIDEO_FRAME_HTML_MAX_CONCURRENCY` (default 16), then queued waves.
 - **WAIT** — completion = rc 0 ∧ `done OK <frame_id>` in the session result
   (skeleton-off mode additionally requires the file). Wall-clock cap per worker
   = the `frame_html` profile timeout (720 s default).
