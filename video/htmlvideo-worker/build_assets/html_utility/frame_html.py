@@ -281,7 +281,10 @@ SKELETON_MARK = "skeleton-v1"
 DRIVER_ENV = "HTMLVIDEO_FRAME_HTML_DRIVER"
 SKELETON_ENV = "HTMLVIDEO_FRAME_HTML_SKELETON"
 DISPATCH_SUFFIX = ".dispatch.md"
-MAX_RETRY_ROUNDS = 2
+# One re-dispatch after the initial batch: with the 1500s per-worker timeout
+# this bounds frame-html at 2 rounds (~50 min worst case, was ~75 min at 3
+# rounds). Frames that pass exit the loop before re-entering it.
+MAX_RETRY_ROUNDS = 1
 DEFAULT_MAX_WORKERS = 16
 CUT_CATALOG_PATH = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "skills",
@@ -321,15 +324,21 @@ Your single required input is the merged dispatch document for your frame:
   .hyperframes/frame-packets/{frame_id}.dispatch.md
 Read it fully first, then build. {fill_line}
 
+Scope is exactly one file: {frame_file}. Never read, open, or write any other
+file under compositions/frames/ (sibling workers own those frames), any other
+frame's .dispatch.md / packet, or STORYBOARD.md — exploring sibling frames
+burns turns and cannot help this frame.
+
 Then run the structural gate and fix every FAIL:
   node /app/scripts/frame-selfcheck.mjs {frame_file}
 
 Your terminal reply after the gate passes is exactly: done OK {frame_id}
 On an unrecoverable failure instead reply: fail {frame_id}: <reason>
 
-Escape hatches — open ONLY when a rule in the dispatch is unclear:
+Escape hatches — open ONLY when a rule in the dispatch is genuinely unclear,
+and read at most the one you need:
+  frame.md                                       (design truth: palette/type/tokens)
   .hyperframes/frame-packets/_role.md            (full contract, authoritative)
-  frame.md                                       (full design truth)
   {CUT_CATALOG_PATH}   (only for within-scene cut seams)
 Never edit STORYBOARD.md. Turn discipline: every turn ends with a tool call or
 visible text; your first edit must land within your first 1–2 turns; never burn
