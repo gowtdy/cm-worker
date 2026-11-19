@@ -28,7 +28,7 @@ and `../hyperframes-animation/`.
 1. Enumerate frames from `.hyperframes/frame-packets/*.md` (skip `_role.md`,
    `*.dispatch.md`).
 2. Fan out one `claude -p` worker per frame, concurrency
-   `HTMLVIDEO_FRAME_HTML_MAX_CONCURRENCY` (default 8); per-worker env:
+   `HTMLVIDEO_FRAME_HTML_MAX_CONCURRENCY` (default 16); per-worker env:
    cap/turns/timeout from the `frame_html` claude profile (64000/60/720).
 3. A frame is **done** iff rc==0 ∧ result contains `done OK <frame_id>`
    (skeleton off additionally requires the file on disk). Artifact existence
