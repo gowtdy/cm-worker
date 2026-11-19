@@ -69,7 +69,11 @@ _PROFILES: dict[str, dict[str, object]] = {
     },
     "verify": {
         "effort": "medium", "thinking": "32000",
-        "max_output": "32000", "max_turns": 100, "timeout": 1800, "deny_agent": True,
+        # 2026-11-19: 32000 太宽 — 单回合可烧 ~27k thinking token(≈100s)才触顶,
+        # verify 实测被深思考尖峰拖到 22.7m(76%=思考)。verify 不生成大内容(读报告 +
+        # 小 Edit:改色值/加 data-layout-allow-overlap),16000 足够「思考 + 数个批量
+        # Edit」,把尖峰压到 ~60s。A/B 更激进档 8000 走 HTMLVIDEO_CLAUDE_VERIFY_MAX_OUTPUT_TOKENS。
+        "max_output": "16000", "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
 }
 _BASE_DENY = ["WebFetch", "WebSearch", "NotebookEdit", "TodoWrite"]
