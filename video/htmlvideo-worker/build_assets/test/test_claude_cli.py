@@ -263,14 +263,16 @@ class RunClaudeTests(unittest.TestCase):
                 self.assertIn("model=-", joined)
                 self.assertIn(f"timeout={timeout}", joined)
                 self.assertNotIn(PROMPT, joined)
+                self.assertIn("label=-", joined)
                 self.assertIn(
-                    "claude skill done skill=%s rc=0 subtype=success "
+                    "claude skill done label=- skill=%s rc=0 subtype=success "
                     "is_error=False num_turns=2 duration_ms=1500 "
                     "input=11 output=22 cache_read=33 cache_create=44" % skill,
                     joined,
                 )
                 self.assertIn(
-                    "claude skill result skill=%s result=visible result" % skill,
+                    "claude skill result label=- skill=%s result=visible result"
+                    % skill,
                     joined,
                 )
 
@@ -466,7 +468,7 @@ class RunClaudeTests(unittest.TestCase):
                 code = run_claude(CWD, PROMPT, self.logger, skill="intent")
         self.assertEqual(code, 124)
         self.assertIn(
-            "claude skill timeout skill=intent timeout=1800",
+            "claude skill timeout label=- skill=intent timeout=1800",
             "\n".join(logs.output),
         )
         getpgid.assert_called_with(7777)
@@ -518,7 +520,8 @@ class RunClaudeTests(unittest.TestCase):
         )
         self.assertEqual(code, 1)
         self.assertIn(
-            "claude skill max turns skill=frame_html subtype=error_max_turns",
+            "claude skill max turns label=- skill=frame_html "
+            "subtype=error_max_turns",
             "\n".join(logs.output),
         )
 
@@ -566,6 +569,35 @@ class RunClaudeTests(unittest.TestCase):
             rc, text = run_claude_result(CWD, PROMPT, logger, skill="frame_html")
             self.assertEqual(rc, 0)
             self.assertIn("done OK 01-hook", text)
+
+    def test_label_appears_in_skill_logs(self) -> None:
+        from html_utility.claude_cli import run_claude_result
+
+        self._completed_popen(stdout=_result_json(result="done OK 01-hook"))
+        with self.assertLogs("test.claude_cli", level="INFO") as logs:
+            rc, text = run_claude_result(
+                CWD,
+                PROMPT,
+                self.logger,
+                skill="frame_html",
+                label="01-hook",
+            )
+        self.assertEqual(rc, 0)
+        self.assertIn("done OK 01-hook", text)
+        joined = "\n".join(logs.output)
+        self.assertIn("label=01-hook", joined)
+        self.assertIn(
+            "claude skill start label=01-hook cwd=%s skill=frame_html" % CWD,
+            joined,
+        )
+        self.assertIn(
+            "claude skill done label=01-hook skill=frame_html",
+            joined,
+        )
+        self.assertIn(
+            "claude skill result label=01-hook skill=frame_html",
+            joined,
+        )
 
     def test_extra_env_max_output_override_wins_in_child_env(self) -> None:
         _, _, _, kwargs = self._invoke(
