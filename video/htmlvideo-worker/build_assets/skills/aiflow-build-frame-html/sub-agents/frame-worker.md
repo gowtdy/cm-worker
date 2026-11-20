@@ -15,8 +15,9 @@ The shared contract's INPUT applies in full. Your packet carries everything sele
 (`.hyperframes/frame-packets/<frame_id>.dispatch.md`): it inlines the rule
 card, your storyboard block, the blueprint, a rule INDEX (recipes are opened
 on demand from `RULES_DIR` while you author each phase), and the frame.md
-design-token excerpt. The full `_role.md` and `frame.md` are escape hatches —
-open them only when a dispatch rule is unclear.
+design-token excerpt. Never open `frame.md` or the full `_role.md` — the
+dispatch is self-sufficient. Sanctioned exceptions only: a recipe file at
+`RULES_DIR/<id>.md` (open while authoring its phase) and the cut catalog.
 
 - `focal:` — which **invented** element is the hero.
 - `roles:` — each invented element's role: `foreground subject` / `background` full-bleed / `supporting`. Because the explainer is **faceless, these are elements you design** (a hero word, a diagram node, a chart series, a coined-term card), not captured assets. The **only** real media is a user-supplied image, when present: `public/<basename> — description` (a **`[video]`** tag marks a `.mp4` clip the user provided).
