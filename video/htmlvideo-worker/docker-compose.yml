@@ -22,6 +22,10 @@ services:
       - TZ=Asia/Shanghai
       - FILE_SYNC_TRANSPORT=quic
       - INTENT_MOCK=false
+      # gate repair的尝试次数
+      - HTMLVIDEO_FRAME_VISUAL_REPAIR_ROUNDS=3
+      - HTMLVIDEO_FRAME_HTML_REPAIR_ROUNDS=3
+      - HTMLVIDEO_VERIFY_FIX_ROUNDS=3
     env_file:
       - /home/aigc/data/env/.env_usmqdb
       - /home/aigc/data/env/.env_htmlvideo
