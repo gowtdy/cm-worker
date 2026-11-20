@@ -8,7 +8,7 @@ import logging
 import os
 import subprocess
 
-from html_utility.claude_cli import run_claude
+from html_utility.claude_cli import _env_positive_int, run_claude
 
 HYPERFRAMES_JSON = "hyperframes.json"
 INDEX_FILENAME = "index.html"
@@ -21,7 +21,7 @@ CONTACT_SHEET = os.path.join(SNAPSHOTS_DIR, "contact-sheet.jpg")
 CONTACT_SHEET_GLOB = os.path.join(SNAPSHOTS_DIR, "contact-sheet*.jpg")
 
 VERIFY_ALL_SCRIPT = "/app/scripts/verify-all.mjs"
-_MAX_FIX_ROUNDS = 3
+_MAX_FIX_ROUNDS = 3  # default; HTMLVIDEO_VERIFY_FIX_ROUNDS overrides
 
 
 def _run_verify_all(project_dir: str, logger: logging.Logger) -> tuple[int, str]:
@@ -163,9 +163,10 @@ def verify_frame(
     ``_MAX_FIX_ROUNDS``.
     """
     _validate_prerequisites(project_dir)
+    max_fix = _env_positive_int("HTMLVIDEO_VERIFY_FIX_ROUNDS", _MAX_FIX_ROUNDS, logger)
 
     rc, output = _run_verify_all(project_dir, logger)
-    for round_no in range(1, _MAX_FIX_ROUNDS + 1):
+    for round_no in range(1, max_fix + 1):
         if rc == 0:
             logger.info(
                 "verify-all gate PASS (%s) — snapshots written, no model needed",
