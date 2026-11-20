@@ -143,3 +143,9 @@ class DriverTest(unittest.TestCase):
             "Scope is exactly one file: compositions/frames/01-hook.html", p
         )
         self.assertIn("Never read, open, or write any other", p)
+
+    def test_worker_prompt_dispatch_self_sufficient(self):
+        p = fh._worker_prompt("01-hook", skeleton_mode=True)
+        self.assertNotIn(".hyperframes/frame-packets/_role.md", p)
+        self.assertIn("RULES_DIR", p)
+        self.assertIn("never open frame.md or _role.md", p)
