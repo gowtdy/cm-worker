@@ -118,19 +118,53 @@ const FRAME_MD_EXCERPT_HEADINGS = [
   "## Numerals & Claims (hard rule)", "## Pre-Render Self-Audit",
 ];
 
+function frameMdFrontmatter(frameMd) {
+  const m = /^(?:﻿)?---\r?\n([\s\S]*?)\r?\n---/m.exec(frameMd);
+  return m ? m[1] : "";
+}
+
+// Extract a top-level frontmatter block (`colors:` / `typography:`) verbatim —
+// the key line through its indented entries, up to the next top-level key.
+// These carry the exact hex/font VALUES that the `## Colors` / `## Typography`
+// narrative sections reference only symbolically ({colors.cream}). The worker is
+// told never to open frame.md, so the dispatch must inline these values.
+function frontmatterBlock(fm, key) {
+  if (!fm) return "";
+  const lines = fm.split("\n");
+  let i = lines.findIndex((l) => l.startsWith(`${key}:`));
+  if (i < 0) return "";
+  const out = [lines[i]];
+  for (i += 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() !== "" && !/^[ \t]/.test(line) && /^[A-Za-z][\w .-]*:/.test(line)) break;
+    out.push(line);
+  }
+  return out.join("\n").trim();
+}
+
 export function frameMdExcerpt(frameMd, maxFallbackBytes = 12000) {
   if (!frameMd) return "";
+  const fm = frameMdFrontmatter(frameMd);
+  const tokenBlock = ["colors", "typography"]
+    .map((k) => frontmatterBlock(fm, k))
+    .filter(Boolean)
+    .join("\n\n");
   const headingRe = (h) => new RegExp(`^${escapeRegExp(h)}\\s*$`, "m");
   const bounds = FRAME_MD_EXCERPT_HEADINGS.map((h) => {
     const m = headingRe(h).exec(frameMd);
     return m ? { h, start: m.index } : null;
   }).filter(Boolean);
+  let out = tokenBlock
+    ? `## frame.md tokens (resolved values)\n\n${tokenBlock}\n`
+    : "";
   if (bounds.length === 0) {
-    console.warn("frame-packets: no whitelisted frame.md sections found; falling back to head excerpt");
-    return `> (head-excerpt fallback: whitelisted sections not found)\n\n${frameMd.slice(0, maxFallbackBytes)}`;
+    if (!tokenBlock) {
+      console.warn("frame-packets: no whitelisted frame.md sections found; falling back to head excerpt");
+      return `> (head-excerpt fallback: whitelisted sections not found)\n\n${frameMd.slice(0, maxFallbackBytes)}`;
+    }
+    return out.trim();
   }
   const nextHeading = /^##\s/m;
-  let out = "";
   for (const { h, start } of bounds) {
     const rest = frameMd.slice(start + h.length);
     const endM = rest.search(nextHeading);
@@ -143,6 +177,12 @@ export function buildDispatchDocs({ projectDir, frames, outDir, animationDir, ca
   const card = readFileSync(cardPath, "utf8").trim();
   const frameMd = frameMdPath && existsSync(frameMdPath) ? readFileSync(frameMdPath, "utf8") : "";
   const excerpt = frameMdExcerpt(frameMd);
+  // P2: the frame-visual design-contract phase writes this anchor; when present,
+  // inline it so the frame-html worker translates a recipe instead of re-deriving
+  // the video-wide palette/grammar/negative-list itself. Skip when absent (test
+  // projects built frame-html-first have no _design.md).
+  const designMdPath = join(projectDir, ".hyperframes", "visual", "_design.md");
+  const designContract = existsSync(designMdPath) ? readFileSync(designMdPath, "utf8").trim() : "";
   const ruleIds = knownRuleIds(animationDir);
   mkdirSync(outDir, { recursive: true });
   return frames.map((frame) => {
@@ -176,7 +216,7 @@ ${ruleIndex}
 ## frame.md design tokens (excerpt)
 
 ${excerpt}
-`;
+${designContract ? `\n## Design contract (video-wide)\n\n${designContract}\n` : ""}`;
     const bytes = Buffer.byteLength(doc);
     if (bytes > maxDispatchBytes)
       console.warn(`frame-packets: dispatch ${frame.frameId} is ${bytes} bytes (budget ${maxDispatchBytes})`);
