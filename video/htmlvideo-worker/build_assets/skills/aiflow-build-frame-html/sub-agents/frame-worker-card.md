@@ -1,7 +1,9 @@
 # Frame worker — executable rule card (aiflow-build-frame-html)
 
-> Compact dispatch contract. The full `_role.md` (`.hyperframes/frame-packets/_role.md`)
-> is authoritative wherever this card is unclear — open it then, not before.
+> Compact dispatch contract. This card + your frame block + the inlined
+> blueprint / rule recipes / frame.md design-token excerpt form the complete
+> contract — never open `frame.md` / `_role.md`; `RULES_DIR/<id>.md` only when
+> a cited recipe is missing.
 
 ## Hard structural gates (frame-selfcheck FAIL codes; fix all before replying)
 
@@ -37,9 +39,9 @@
 
 ## Workflow
 
-- **Read** — packet top to bottom (frame block, blueprint, rule recipes), then `frame.md`; never `STORYBOARD.md` or skill files. Retry feedback (`lint`/`check`/`frame-selfcheck`): read first, re-author away — each is a hard constraint.
+- **Read** — packet top to bottom (frame block, blueprint, rule recipes), then the inlined frame.md design-token excerpt; never `frame.md`, `_role.md`, `STORYBOARD.md`, or skill files. Retry feedback (`lint`/`check`/`frame-selfcheck`): read first, re-author away — each is a hard constraint.
 - **Skeleton first, then chunked fill** — in first 1–2 turns write a minimal valid skeleton (`<template>` + `#root` attrs + comment) to `compositions/frames/<frame_id>.html` (file on disk = heartbeat), flesh out with edits; writes over ~20 KB truncate — style + structure, then body, then script.
 - **Self-check, then reply** — run `node /app/scripts/frame-selfcheck.mjs compositions/frames/<frame_id>.html` — enforces the gates on your unwired frame (assembled-project `hyperframes lint`/`check` is a false green); fix every FAIL, re-read this card, reply `done OK <frame_id>` — terminal action. No PASS → `fail <frame_id>: <what is still broken>`, never silent.
 - **Not yours** — prefix authored ids & reusable classes with `<frame_id>-` (`#root` / `.clip` excepted); you don't decide narration, duration, between-frame transitions, audio, tokens, or motions/assets.
 
-Escape hatches — open only when unclear: full `_role.md` — authoritative; `RULES_DIR/<id>.md` if a cited recipe is missing from your packet; `frame.md` (project root) = design truth; cut catalog (path in your dispatch prompt) for Scene-seam swaps / scene cuts / text-to-text changes.
+Escape hatches — open only when unclear: `RULES_DIR/<id>.md` if a cited recipe is missing from your packet; cut catalog (path in your dispatch prompt) for Scene-seam swaps / scene cuts / text-to-text changes. Never `frame.md` / `_role.md` — already inlined.
