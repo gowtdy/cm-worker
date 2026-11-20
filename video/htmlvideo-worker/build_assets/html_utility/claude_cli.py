@@ -42,7 +42,11 @@ _PROFILES: dict[str, dict[str, object]] = {
     },
     "storyboard": {
         "effort": "high", "thinking": "64000",
-        "max_output": "32000",  # 同上（storyboard 3.0m 近地板）
+        # Delivers ~3.8k tokens (STORYBOARD.md ~3.4k + SCRIPT.md ~0.4k), so 16000
+        # leaves ~12k for thinking per turn — tight enough to kill the single-turn
+        # marathon thinking (6.1m run showed a 317s turn), 4x the deliverable so
+        # no truncation. Same rationale as verify's 32000→16000 A/B.
+        "max_output": "16000",
         "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
     "visual": {
@@ -52,11 +56,13 @@ _PROFILES: dict[str, dict[str, object]] = {
     },
     "frame_html": {
         "effort": "high", "thinking": "64000",
-        # Per-worker session cap. 64000: enough output budget that a worker
+        # Per-worker session cap. 48000: enough output budget that a worker
         # reading ~10k tokens of dispatch + skeleton-Editing never truncates,
         # far enough below 128k that marathon thinking loses its silent runway.
-        # 128000 is the documented one-line rollback; serial stages stay 32000.
-        "max_output": "64000",
+        # Tightened from 64000 (2026-11-20 P2 thinking-cap lever) — the 32k
+        # truncation lesson says A/B before going lower; 48000 is the probe.
+        # 64000 is the documented one-line rollback; serial stages stay 32000.
+        "max_output": "48000",
         "max_turns": 60,       # per-frame fill: read + ~5 edits + selfcheck fixes
         # Per-worker wall kill-switch (a skeleton keeps a valid file on disk).
         # 2026-11-19 test: 720s was too short — on the adaptive backend the
