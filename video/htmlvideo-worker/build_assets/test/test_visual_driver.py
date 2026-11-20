@@ -28,8 +28,21 @@ class DesignPromptTest(unittest.TestCase):
     def test_scripted_direction_head_carries_palette_type(self):
         head = vis._scripted_direction_head(_TOKENS)
         self.assertIn("## Video direction", head)
-        self.assertIn('"#F5F5F0"', head)
+        self.assertIn("cream `#F5F5F0`", head)      # readable prose, not YAML
         self.assertIn("do not restate", head)
+        self.assertNotIn("colors:", head)            # raw YAML dropped
+
+    def test_tokens_to_prose_not_yaml(self):
+        prose = vis._tokens_to_prose(_TOKENS)
+        self.assertIn("cream `#F5F5F0`", prose)
+        self.assertIn("Type Space Grotesk", prose)
+        self.assertNotIn("colors:", prose)
+        self.assertNotIn("  cream:", prose)
+
+    def test_repair_prompt_inlines_findings(self):
+        p = vis._visual_repair_prompt("F3 coverage < 90%")
+        self.assertIn("F3 coverage < 90%", p)
+        self.assertIn("Do NOT change narrative fields", p)
 
     def test_validate_design_contract(self):
         self.assertEqual(
@@ -78,6 +91,13 @@ class WorkerPromptTest(unittest.TestCase):
     def test_blueprint_body_omitted_when_empty(self):
         p = vis._build_worker_prompt("7", "block", "design")
         self.assertNotIn("[SELECTED BLUEPRINT", p)
+
+    def test_worker_prompt_locks_to_inlined_inputs(self):
+        p = vis._build_worker_prompt("7", "block", "design")
+        self.assertIn("read the SKILL reference files", p)
+        self.assertIn("do NOT search the filesystem", p)
+        self.assertIn("do NOT run any script or gate", p)
+        self.assertIn("/rules/", p)
 
     def test_split_design(self):
         d = vis._split_design(
