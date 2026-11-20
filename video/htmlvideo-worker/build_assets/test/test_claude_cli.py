@@ -19,9 +19,9 @@ CWD = "/tmp/htmlvideo-proj"
 # Mirrors html_utility.claude_cli._PROFILES (post-clamp thinking where needed).
 _PROFILES = {
     "intent": ("high", "32000", "100", 1800, True, "32000"),
-    "storyboard": ("high", "64000", "100", 1800, True, "32000"),
+    "storyboard": ("high", "64000", "100", 1800, True, "16000"),
     "visual": ("high", "64000", "100", 1800, True, "32000"),
-    "frame_html": ("high", "64000", "60", 1500, True, "64000"),
+    "frame_html": ("high", "64000", "60", 1500, True, "48000"),
     "repair": ("high", "40000", "40", 600, True, "16000"),
     "verify": ("medium", "32000", "100", 1800, True, "32000"),
 }
@@ -281,14 +281,16 @@ class RunClaudeTests(unittest.TestCase):
         logger = logging.getLogger("t")
         # frame_html default cap reaches the child env
         prof = _resolve_profile("frame_html", logger)
-        self.assertEqual(prof["max_output"], "64000")
+        self.assertEqual(prof["max_output"], "48000")
         # per-stage override beats the default
         with mock.patch.dict(os.environ, {"HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS": "128000"}):
             prof = _resolve_profile("frame_html", logger)
             self.assertEqual(prof["max_output"], "128000")
-        # serial stages pinned at 32000
-        for skill in ("intent", "storyboard", "visual", "verify"):
+        # serial stages: intent/visual at 32000; storyboard/verify tightened to 16000
+        for skill in ("intent", "visual"):
             self.assertEqual(_resolve_profile(skill, logger)["max_output"], "32000")
+        for skill in ("storyboard", "verify"):
+            self.assertEqual(_resolve_profile(skill, logger)["max_output"], "16000")
 
     def test_debug_request_env_sets_anthropic_log_and_bun_preload(self) -> None:
         os.environ["HTMLVIDEO_CLAUDE_DEBUG_REQUEST"] = "1"
