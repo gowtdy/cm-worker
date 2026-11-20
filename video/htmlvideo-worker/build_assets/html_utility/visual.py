@@ -26,12 +26,14 @@ VIDEO_DIRECTION_HEADING = "## Video direction"
 
 VISUAL_DRIVER_ENV = "HTMLVIDEO_FRAME_VISUAL_DRIVER"
 VISUAL_CONCURRENCY_ENV = "HTMLVIDEO_FRAME_VISUAL_MAX_CONCURRENCY"
+VISUAL_REPAIR_ROUNDS_ENV = "HTMLVIDEO_FRAME_VISUAL_REPAIR_ROUNDS"
 DEFAULT_MAX_WORKERS = 16
 MAX_RETRY_ROUNDS = 1
+DEFAULT_REPAIR_ROUNDS = 2
 
 DESIGN_FILE = os.path.join(".hyperframes", "visual", "_design.md")
-ANIMATION_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "skills", "hyperframes-animation")
+ANIMATION_DIR = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "skills", "hyperframes-animation"))
 
 _SPLIT_RE = re.compile(r"(?=^## Frame\s+\d+)", re.M)
 _FRAME_HEAD_RE = re.compile(r"^## Frame\s+(\d+)", re.M)
@@ -109,9 +111,11 @@ def _build_design_prompt(preamble: str, frame_nums: list[str], tokens: str = "")
         "You are the GLOBAL design phase only. " + intro + "\n"
         + (f"{tokens}\n" if tokens else "")
         + "Produce ONLY the creative body then the assignment, in this order:\n\n"
-        "<color role-mapping (which candy = which emphasis), motion grammar, "
-        "rhythm/held-frames (name the breather vs reveal-cascade frame numbers), "
-        "caption band, negative list>\n\n"
+        "**Video direction — creative body** (plain prose with **bold** labels, NOT "
+        "`##` headings — it joins the pre-written palette/type under the existing "
+        "`## Video direction` heading): color role-mapping (which candy = which "
+        "emphasis), motion grammar, rhythm/held-frames (name the breather vs "
+        "reveal-cascade frame numbers), caption band, negative list.\n\n"
         "## Blueprint assignment\n"
         f"<one line per frame, frames are: {joined}. Format: `F<num> = <blueprint> "
         "(Adapt|Reproduce)`>\n\n"
@@ -164,11 +168,19 @@ def _build_worker_prompt(
         + blueprint_body
         if blueprint_body else ""
     )
+    rules_dir = os.path.join(ANIMATION_DIR, "rules")
     return (
         "/aiflow-build-frame-visual\n\n"
         "You are ONE per-frame worker for the visual design phase. Your single job is "
         f"to design Frame {frame_num}'s shot sequence and output ONLY the lines to "
         "APPEND after the frame's existing block — never re-type any existing field.\n\n"
+        "Your inputs are FULLY inlined below — the design contract, your frame block, "
+        "and your blueprint. Do NOT read the SKILL reference files (visual-design.md / "
+        "motion-language.md / blueprints-index.md / rules-index.md), do NOT search the "
+        "filesystem (no `ls` / `find` / `grep`), and do NOT run any script or gate. If a "
+        "motion you cite needs its mechanics, open the ONE file at "
+        f"`{rules_dir}/<id>.md` only, then keep going. Output your shot sequence as your "
+        "FINAL message text.\n\n"
         "Output, in this exact order, as your FINAL message text:\n"
         f"  done OK {frame_num}\n"
         "  - blueprint: <blueprint (Adapt|Reproduce)>        (from the assignment below)\n"
@@ -193,15 +205,51 @@ def _build_worker_prompt(
     )
 
 
+def _tokens_to_prose(tokens: str) -> str:
+    """Turn the YAML-ish frame.md tokens (`colors:`/`typography:`) into readable
+    prose — the downstream workers parse prose far better than raw YAML."""
+    colors = []          # [(name, value)]
+    fonts = {}           # family -> [slot + size]
+    section = None
+    for raw in tokens.split("\n"):
+        s = raw.strip()
+        if s == "colors:":
+            section = "colors"
+            continue
+        if s == "typography:":
+            section = "typography"
+            continue
+        if section == "colors":
+            m = re.match(r'^([\w-]+):\s*"([^"]+)"', s)
+            if m:
+                colors.append((m.group(1), m.group(2)))
+        elif section == "typography":
+            m = re.match(r'^([\w-]+):\s*(.*)$', s)
+            if not m:
+                continue
+            fam = re.search(r'fontFamily:\s*"([^"]+)"', m.group(2))
+            size = re.search(r'(?:cqw|px):\s*([\d.]+)', m.group(2))
+            if fam:
+                unit = "cqw" if "cqw" in m.group(2) else "px"
+                sz = f" {size.group(1)}{unit}" if size else ""
+                fonts.setdefault(fam.group(1), []).append(f"{m.group(1)}{sz}".strip())
+    lines = []
+    if colors:
+        lines.append("Colors: " + " · ".join(f"{n} `{v}`" for n, v in colors))
+    for fam, slots in fonts.items():
+        lines.append(f"Type {fam}: " + " / ".join(slots))
+    return (
+        "**Palette & type (verbatim from frame.md — authoritative, do not restate)**\n"
+        + "\n".join(lines)
+    )
+
+
 def _scripted_direction_head(tokens: str) -> str:
     """The deterministic half of `## Video direction`: the palette & type are a
     verbatim restatement of frame.md, so the harness writes them — not the model
-    (原则:确定性的事脚本做,创意的事 LLM 做)."""
-    body = (
-        "**Palette & type (verbatim from frame.md — authoritative, do not restate)**\n\n"
-        + tokens + "\n\n"
-        if tokens else ""
-    )
+    (原则:确定性的事脚本做,创意的事 LLM 做). Rendered as readable prose, not raw
+    YAML, because the per-frame workers consume this."""
+    body = _tokens_to_prose(tokens) + "\n\n" if tokens else ""
     return VIDEO_DIRECTION_HEADING + "\n\n" + body
 
 
@@ -241,6 +289,20 @@ def _dispatch_note(rc: int, text: str) -> str:
         return f"prior attempt exited non-zero (rc={rc})"
     tail = (text or "").strip()[-200:]
     return "(prior attempt produced no valid additions; last words: " + (tail or "∅") + ")"
+
+
+def _visual_repair_prompt(gate_msg: str) -> str:
+    """Fix prompt for a gate failure: the model edits the merged STORYBOARD.md's
+    shot sequences in place (the driver re-runs the gate itself afterward)."""
+    return (
+        "You are repairing a HyperFrames visual design. The storyboard-gate failed "
+        "after the visual merge with:\n"
+        f"{(gate_msg or '')[-3000:]}\n"
+        "Make the CHEAPEST safe edit(s) to STORYBOARD.md's shot sequences that fix "
+        "the reported finding(s). Do NOT change narrative fields (scene/voiceover/"
+        "duration/status/src/transition_in/type/beat). Stop after the edit — the "
+        "pipeline re-runs the gate itself."
+    )
 
 
 def _legacy_build_frame_visual(project_dir: str, logger: logging.Logger) -> str:
@@ -351,16 +413,27 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
         f.write(assembled)
     log("visual driver: merged STORYBOARD (%d chars)", len(assembled))
 
-    # ── Gate: storyboard-gate.mjs (deterministic, ~1s) ────────────────────
-    gate = subprocess.run(
-        ["node", "/app/scripts/storyboard-gate.mjs", "--videodir", project_dir],
-        capture_output=True, text=True, timeout=120,
-    )
-    if gate.returncode != 0:
-        raise RuntimeError(
-            "storyboard-gate failed after visual merge:\n"
-            + (gate.stdout or "") + (gate.stderr or ""))
-    return storyboard_path
+    # ── Gate: storyboard-gate.mjs (deterministic, ~1s) + configurable repair ──
+    max_repair = _env_positive_int(
+        VISUAL_REPAIR_ROUNDS_ENV, DEFAULT_REPAIR_ROUNDS, logger)
+
+    def run_gate():
+        return subprocess.run(
+            ["node", "/app/scripts/storyboard-gate.mjs", "--videodir", project_dir],
+            capture_output=True, text=True, timeout=120,
+        )
+
+    gate_msg = ""
+    for round_no in range(1 + max_repair):
+        gate = run_gate()
+        if gate.returncode == 0:
+            return storyboard_path
+        gate_msg = (gate.stdout or "") + (gate.stderr or "")
+        if round_no < max_repair:
+            log("visual driver: gate FAILED, repair round %d/%d", round_no + 1, max_repair)
+            run_claude(project_dir, _visual_repair_prompt(gate_msg), logger, skill="repair")
+    raise RuntimeError(
+        f"storyboard-gate failed after {max_repair} repair round(s):\n{gate_msg}")
 
 
 def _validate_frame_visual_outputs(project_dir: str) -> str:
