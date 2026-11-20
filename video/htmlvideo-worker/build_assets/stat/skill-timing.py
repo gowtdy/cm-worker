@@ -15,7 +15,7 @@
   detail 额外给 assistant 消息总数(含纯 thinking 轮)与回合墙钟(工具回合→下一工具回合)
   tool_exec = 按 tool_use_id 配对 tool_result 时间戳的 Σ(结果-调用)
   model   = wall - tool_exec(思考+流式+每轮摊薄开销)
-  tokens  = Σ message.usage(input/output/cache_read/cache_creation)
+  tokens  = Σ message.usage(input/output/cache_read/cache_creation); prompt = input+cache_read(跨 run 对比口径)
 
 用法:
   python3 skill-timing.py                  # 全量 list 表格(按时间排序)
@@ -227,6 +227,10 @@ def analyze(path):
     if ttfb is not None and ttfb < 0:  # 续写/无入队的杂项会话,ttfb 无意义
         ttfb = None
 
+    # 对比口径:缓存命中与否是缓存层噪声,单看 input_tokens 会误判方向;
+    # 真实 prompt 负担 = input_tokens + cache_read_input_tokens。
+    toks["prompt"] = toks["input"] + toks["cache_read"]
+
     return {
         "path": path,
         "kind": identity[0],
@@ -329,7 +333,7 @@ def discover(root, since=None, include_agents=False):
 
 LIST_HDR = (
     "time (utc)      │ path                                   │ skill                      │"
-    " ttfb   │ dur     │ ag  │ rounds │ tools │ model   │ in      │ out      │ cread"
+    " ttfb   │ dur     │ ag  │ rounds │ tools │ model   │ in+cread│ out     │ cread"
 )
 
 
@@ -337,13 +341,13 @@ def list_report(stats, full=False, csv=False):
     if not stats:
         print("no sessions found"); return
     if csv:
-        print("time,path,skill,ttfb_s,dur_s,agents,rounds,tools,model_s,in,out,cache_read,wall_s")
+        print("time,path,skill,ttfb_s,dur_s,agents,rounds,tools,model_s,prompt,in,out,cache_read,wall_s")
         for s in stats:
             t = s["start"].strftime("%Y-%m-%d %H:%M:%S") if s["start"] else ""
             print(
                 f'{t},{rel(s["path"], root)},{s["label"]},{s["ttfb"] or ""},{s["wall"]:.0f},'
                 f'{s["agents"]},{s["tool_turns"]},{s["tools"]},{s["model"]:.0f},'
-                f'{s["tokens"]["input"]},{s["tokens"]["output"]},{s["tokens"]["cache_read"]}'
+                f'{s["tokens"]["prompt"]},{s["tokens"]["input"]},{s["tokens"]["output"]},{s["tokens"]["cache_read"]}'
             )
         return
     print(LIST_HDR)
@@ -353,7 +357,7 @@ def list_report(stats, full=False, csv=False):
             f'{t:<19}│ {short_path(rel(s["path"], root), full):<38}│ {s["label"][:27]:<27}│ '
             f'{fmt_dur(s["ttfb"]):<7}│ {fmt_dur(s["wall"]):<7}│ {s["agents"]:<4}│ '
             f'{s["tool_turns"]:<7}│ {s["tools"]:<6}│ {fmt_dur(s["model"]):<7}│ '
-            f'{fmt_count(s["tokens"]["input"]):<8}│ {fmt_count(s["tokens"]["output"]):<8}│ {fmt_count(s["tokens"]["cache_read"]):<8}'
+            f'{fmt_count(s["tokens"]["prompt"]):<8}│ {fmt_count(s["tokens"]["output"]):<8}│ {fmt_count(s["tokens"]["cache_read"]):<8}'
         )
     print(f"\n{len(stats)} sessions, total wall {fmt_dur(sum(s['wall'] for s in stats))}")
 
@@ -378,15 +382,16 @@ def group_report(stats):
             "min": walls[0],
             "max": walls[-1],
             "rounds": sum(s["tool_turns"] for s in gs) // len(gs),
+            "prompt": sum(s["tokens"]["prompt"] for s in gs),
             "out": sum(s["tokens"]["output"] for s in gs),
             "cread": sum(s["tokens"]["cache_read"] for s in gs),
         })
     rows.sort(key=lambda r: -r["avg"])
-    print(f"{'skill':<30}│ runs │ avg    │ med    │ min     │ max     │ rounds │ out      │ cread")
+    print(f"{'skill':<30}│ runs │ avg    │ med    │ min     │ max     │ rounds │ prompt   │ out      │ cread")
     for r in rows:
         print(
             f"{r['label'][:29]:<30}│ {r['n']:<4} │ {fmt_dur(r['avg']):<6} │ {fmt_dur(r['med']):<6} │ "
-            f"{fmt_dur(r['min']):<7} │ {fmt_dur(r['max']):<7} │ {r['rounds']:<6} │ {fmt_count(r['out']):<8} │ {fmt_count(r['cread']):<8}"
+            f"{fmt_dur(r['min']):<7} │ {fmt_dur(r['max']):<7} │ {r['rounds']:<6} │ {fmt_count(r['prompt']):<8} │ {fmt_count(r['out']):<8} │ {fmt_count(r['cread']):<8}"
         )
 
 
@@ -406,8 +411,9 @@ def detail_report(s, timeline=False):
         tws = sorted(tw)
         print(f"       回合墙钟 median {tws[len(tws)//2]:.0f}s mean {sum(tw)/len(tw):.1f}s p90 {tws[min(len(tws)-1,int(len(tw)*0.9))]:.0f}s max {tws[-1]:.0f}s")
     T = s["tokens"]
-    print(f"令牌   in {fmt_count(T['input'])} out {fmt_count(T['output'])} "
-          f"cache_read {fmt_count(T['cache_read'])} cache_write {fmt_count(T['cache_creation'])} (usage msgs {s['usage_msgs']})")
+    print(f"令牌   prompt(in+cread) {fmt_count(T['prompt'])} = in {fmt_count(T['input'])} + "
+          f"cache_read {fmt_count(T['cache_read'])}; out {fmt_count(T['output'])} "
+          f"cache_write {fmt_count(T['cache_creation'])} (usage msgs {s['usage_msgs']})")
     print(f"思考   {s['think_msgs']} blocks / {fmt_count(s['think_chars'])} chars;助手文本 {fmt_count(s['text_chars'])} chars")
 
     print("\n-- 耗时最长的 8 个回合 --")
