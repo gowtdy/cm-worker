@@ -68,6 +68,30 @@ Scene 1 (0.0–5.0s): stat grid reveal.
 `;
 const FIX_FRAME_MD = `# Placeholder\n\n## Colors\n\n- ink: #111\n\n## Typography\n\n- display: 9cqw\n\n## Frame Treatments\n\nbig catalog section\n\n## Numerals & Claims (hard rule)\n\nNo invented stats.\n`;
 
+// Mirrors a real frame.md: the hex/font VALUES live in YAML frontmatter, while
+// the `## Colors` / `## Typography` narrative references them only symbolically
+// ({colors.cream}). The worker is forbidden from opening frame.md (input
+// reduction), so the dispatch must inline these values for exact fidelity.
+const REAL_FRAME_MD = `---
+version: alpha
+colors:
+  cream: "#F5F5F0"
+  ink: "#1A1A1A"
+  coral: "#E85D4E"
+typography:
+  body: { fontFamily: "Space Grotesk", cqw: 0.85, weight: 400 }
+  display: { fontFamily: "Bodoni Moda", cqw: 12.0, weight: 800 }
+---
+
+## Colors
+
+Tokens identical to the source. \`{colors.cream}\` is the ground; \`{colors.ink}\` is type.
+
+## Typography
+
+Two ramps: Space Grotesk body; Bodoni display.
+`;
+
 function fixtureProject() {
   const dir = mkdtempSync(join(tmpdir(), "fh-"));
   const anim = join(dir, "rules"); mkdirSync(anim, { recursive: true });
@@ -121,6 +145,74 @@ export function testDispatchDocs() {
   console.log("dispatch docs OK", docs.map((d) => `${d.frameId}:${d.bytes}`).join(" "));
 }
 
+export function testDispatchInlinesFrontmatterTokens() {
+  const dir = mkdtempSync(join(tmpdir(), "fh-tokens-"));
+  writeFileSync(join(dir, "STORYBOARD.md"), FIX_STORYBOARD);
+  const card = join(dir, "card.md"); writeFileSync(card, "role card text");
+  const frameMd = join(dir, "frame.md"); writeFileSync(frameMd, REAL_FRAME_MD);
+  const anim = join(dir, "rules"); mkdirSync(anim, { recursive: true });
+  writeFileSync(join(anim, "punch-in.md"), "recipe body");
+  const storyboard = readFileSync(join(dir, "STORYBOARD.md"), "utf8");
+  const frames = core.splitFrames(storyboard).map((f) =>
+    ({ ...f, frameId: core.frameId(f) }));
+  const docs = core.buildDispatchDocs({
+    projectDir: dir, frames,
+    outDir: join(dir, ".hyperframes", "frame-packets"),
+    animationDir: dir, cardPath: card, frameMdPath: frameMd,
+  });
+  const text = readFileSync(docs[0].path, "utf8");
+  assert.ok(text.includes('"#F5F5F0"'),
+    "dispatch must inline the exact cream hex from frontmatter colors:");
+  assert.ok(text.includes('"#E85D4E"'),
+    "dispatch must inline the exact coral hex from frontmatter colors:");
+  assert.ok(text.includes('"#1A1A1A"'),
+    "dispatch must inline the exact ink hex from frontmatter colors:");
+  assert.ok(text.includes('"Bodoni Moda"'),
+    "dispatch must inline the exact font family from frontmatter typography:");
+  console.log("dispatch frontmatter tokens OK");
+}
+
+export function testDispatchIngestsDesignContract() {
+  const storyboard = FIX_STORYBOARD;
+  const mk = () => {
+    const dir = mkdtempSync(join(tmpdir(), "fh-design-"));
+    writeFileSync(join(dir, "STORYBOARD.md"), storyboard);
+    const card = join(dir, "card.md"); writeFileSync(card, "role card text");
+    writeFileSync(join(dir, "frame.md"), FIX_FRAME_MD);
+    const anim = join(dir, "rules"); mkdirSync(anim, { recursive: true });
+    writeFileSync(join(anim, "punch-in.md"), "recipe body");
+    return { dir, card };
+  };
+
+  // with _design.md → inlined as "## Design contract (video-wide)"
+  const a = mk();
+  mkdirSync(join(a.dir, ".hyperframes", "visual"), { recursive: true });
+  writeFileSync(join(a.dir, ".hyperframes", "visual", "_design.md"),
+    "## Video direction\npalette candy; negative list: no gradient depth.\n## Blueprint assignment\nF1 = split-panel (Reproduce)\n");
+  const build = (dir, card) => {
+    const sb = readFileSync(join(dir, "STORYBOARD.md"), "utf8");
+    const frames = core.splitFrames(sb).map((f) => ({ ...f, frameId: core.frameId(f) }));
+    return core.buildDispatchDocs({
+      projectDir: dir, frames, outDir: join(dir, ".hyperframes", "frame-packets"),
+      animationDir: dir, cardPath: card, frameMdPath: join(dir, "frame.md"),
+    });
+  };
+  const docsA = build(a.dir, a.card);
+  const textA = readFileSync(docsA[0].path, "utf8");
+  assert.ok(textA.includes("## Design contract (video-wide)"),
+    "dispatch must include the design-contract section when _design.md exists");
+  assert.ok(textA.includes("negative list: no gradient depth"),
+    "design-contract content must be inlined verbatim");
+
+  // without _design.md → no such section (skip gracefully)
+  const b = mk();
+  const docsB = build(b.dir, b.card);
+  const textB = readFileSync(docsB[0].path, "utf8");
+  assert.ok(!textB.includes("## Design contract (video-wide)"),
+    "no design-contract section when _design.md is absent");
+  console.log("design contract ingestion OK");
+}
+
 export function testSkeletons() {
   const { dir, card, frameMd, anim } = fixtureProject();
   const storyboard = readFileSync(join(dir, "STORYBOARD.md"), "utf8");
@@ -142,4 +234,6 @@ export function testSkeletons() {
 
 if (process.argv[1] && process.argv[1].endsWith("test_frame_packets.mjs")) {
   testCard(); testDispatchDocs(); testSkeletons();
+  testDispatchInlinesFrontmatterTokens();
+  testDispatchIngestsDesignContract();
 }
