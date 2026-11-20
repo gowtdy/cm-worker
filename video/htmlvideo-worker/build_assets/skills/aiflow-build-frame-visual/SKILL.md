@@ -9,6 +9,16 @@ Frame visual design only: add time-coded shot sequences and video-wide direction
 
 You are the orchestrator. Work in the HyperFrames project root. Do not put design or motion rules here beyond what this skill cites; those live in `references/` and `../hyperframes-animation/`.
 
+> **Driver fast path (design phase / per-frame worker):** if the invoking prompt
+> identifies you as a *single role* — the **design phase** («You are the GLOBAL design
+> phase only») or a **per-frame worker** («You are ONE per-frame worker», inputs
+> inlined) — then you are **not the orchestrator** and this skill's orchestrator flow
+> (re-run guard, reference reads, full-board Write, gate) does **not** apply. Do NOT
+> read the reference files, do NOT search the filesystem, do NOT write `STORYBOARD.md`,
+> do NOT run `storyboard-gate.mjs` / `caption-pacing.mjs`. Output exactly the requested
+> text (the contract's creative body, or your frame's `blueprint`/`focal`/`roles`/`sfx`/
+> `Scene` lines) as your final reply — the driver merges and gates.
+
 ---
 
 ## Prerequisites
