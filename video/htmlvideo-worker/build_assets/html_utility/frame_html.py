@@ -335,14 +335,19 @@ Then run the structural gate and fix every FAIL:
 Your terminal reply after the gate passes is exactly: done OK {frame_id}
 On an unrecoverable failure instead reply: fail {frame_id}: <reason>
 
-Escape hatches — open ONLY when a rule in the dispatch is genuinely unclear,
-and read at most the one you need:
-  frame.md                                       (design truth: palette/type/tokens)
-  .hyperframes/frame-packets/_role.md            (full contract, authoritative)
+The dispatch is self-sufficient: it already inlines the frame.md design-token
+excerpt, this rule card, your blueprint, and every rule recipe this frame cites.
+Do not re-derive what it states, and never open frame.md or _role.md — open
+those only costs turns and cannot add what the dispatch already carries.
+
+Escape hatches — open ONLY when a specific recipe is genuinely absent from the
+dispatch, and read at most the one you need:
+  RULES_DIR/<id>.md                              (a cited motion recipe missing from your packet)
   {CUT_CATALOG_PATH}   (only for within-scene cut seams)
 Never edit STORYBOARD.md. Turn discipline: every turn ends with a tool call or
-visible text; your first edit must land within your first 1–2 turns; never burn
-a single turn on marathon deliberation.
+visible text; your first edit must land within your first 1–2 turns; keep each
+turn's thinking to at most one short paragraph — never burn a turn on marathon
+deliberation.
 """
 
 
