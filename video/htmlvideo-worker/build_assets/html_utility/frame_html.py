@@ -286,6 +286,7 @@ DISPATCH_SUFFIX = ".dispatch.md"
 # rounds). Frames that pass exit the loop before re-entering it.
 MAX_RETRY_ROUNDS = 1
 DEFAULT_MAX_WORKERS = 16
+DEFAULT_REPAIR_ROUNDS = 1  # assemble repair; HTMLVIDEO_FRAME_HTML_REPAIR_ROUNDS overrides
 CUT_CATALOG_PATH = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "skills",
     "aiflow-build-frame-html", "references", "cut-catalog.md"))
@@ -414,15 +415,21 @@ def _repair_prompt(assemble_msg):
 
 def _assemble_index(project_dir, logger):
     log = logger.info if logger else (lambda *a, **k: None)
-    ret, msg = build_index_html(logger, project_dir)
-    if ret != 0 and "script_path" not in (msg or ""):
-        repair_rc = run_claude(project_dir, _repair_prompt(msg), logger, skill="repair")
-        log("assemble repair session rc=%s", repair_rc)
+    max_repair = _env_positive_int(
+        "HTMLVIDEO_FRAME_HTML_REPAIR_ROUNDS", DEFAULT_REPAIR_ROUNDS,
+        logger or logging.getLogger("frame-html"))
+    ret, msg = 1, ""
+    for round_no in range(1 + max_repair):
         ret, msg = build_index_html(logger, project_dir)
-        if ret != 0:
-            raise RuntimeError(f"assemble failed even after repair: {msg}")
-    elif ret != 0:
-        raise RuntimeError(f"assemble failed: {msg}")
+        if ret == 0:
+            return
+        if "script_path" in (msg or ""):
+            # a script-path error is not repairable by editing frames
+            raise RuntimeError(f"assemble failed: {msg}")
+        if round_no < max_repair:
+            log("assemble FAILED, repair round %d/%d", round_no + 1, max_repair)
+            run_claude(project_dir, _repair_prompt(msg), logger, skill="repair")
+    raise RuntimeError(f"assemble failed after {max_repair} repair round(s): {msg}")
 
 
 def _build_frame_html_driver(project_dir, logger):
