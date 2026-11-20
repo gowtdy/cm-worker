@@ -99,25 +99,24 @@ def _frame_md_tokens(frame_md: str) -> str:
 def _build_design_prompt(preamble: str, frame_nums: list[str], tokens: str = "") -> str:
     joined = ", ".join(frame_nums)
     intro = (
-        "The frame.md design tokens are already inlined below — do NOT read frame.md. "
-        "Use them and the outline below." if tokens else
+        "The frame.md design tokens are inlined below and the harness ALREADY wrote the "
+        "`## Video direction` palette & type — do NOT read frame.md, do NOT restate "
+        "palette/type, and do NOT emit a `## Video direction` header." if tokens else
         "Read frame.md (design truth: palette/type/tokens) and the outline below."
     )
     return (
         "/aiflow-build-frame-visual\n\n"
         "You are the GLOBAL design phase only. " + intro + "\n"
         + (f"{tokens}\n" if tokens else "")
-        + "Produce ONLY two sections, in this order:\n\n"
-        "## Video direction\n"
-        "<the video-wide palette system (from frame.md, never invented), motion grammar, "
-        "rhythm/held-frames (name the SPECIFIC frame numbers that are breathers vs "
-        "reveal cascade), caption band, and negative list>\n\n"
+        + "Produce ONLY the creative body then the assignment, in this order:\n\n"
+        "<color role-mapping (which candy = which emphasis), motion grammar, "
+        "rhythm/held-frames (name the breather vs reveal-cascade frame numbers), "
+        "caption band, negative list>\n\n"
         "## Blueprint assignment\n"
         f"<one line per frame, frames are: {joined}. Format: `F<num> = <blueprint> "
         "(Adapt|Reproduce)`>\n\n"
-        "Output these two sections as your FINAL message text (no tools, no Write, no "
-        "per-frame Scene lines — the per-frame workers do those). flow is automation → "
-        "autonomous.\n\n"
+        "Output this as your FINAL message text (no tools, no Write, no per-frame Scene "
+        "lines — the per-frame workers do those). flow is automation → autonomous.\n\n"
         "── outline preamble ──\n"
         + preamble
         + "\n── end outline ──\n"
@@ -194,19 +193,28 @@ def _build_worker_prompt(
     )
 
 
-def _design_contract_split(design_text: str):
-    """Split the Phase-A reply into (direction_block, rest).
+def _scripted_direction_head(tokens: str) -> str:
+    """The deterministic half of `## Video direction`: the palette & type are a
+    verbatim restatement of frame.md, so the harness writes them — not the model
+    (原则:确定性的事脚本做,创意的事 LLM 做)."""
+    body = (
+        "**Palette & type (verbatim from frame.md — authoritative, do not restate)**\n\n"
+        + tokens + "\n\n"
+        if tokens else ""
+    )
+    return VIDEO_DIRECTION_HEADING + "\n\n" + body
 
-    ``direction_block`` is the `## Video direction` section plus the blueprint
-    assignment — both are inlined verbatim into every worker prompt as the
-    shared design contract (cross-frame consistency anchor).
+
+def _validate_design_contract(design_text: str) -> str:
+    """The model's half of the contract: creative body + `## Blueprint assignment`.
+
+    The `## Video direction` header + palette/type are scripted (see
+    `_scripted_direction_head`); the model supplies the creative body + assignment.
     """
     text = design_text.strip()
-    idx = text.find(VIDEO_DIRECTION_HEADING)
-    if idx == -1:
-        raise RuntimeError("design contract missing ## Video direction")
-    direction_block = text[idx:].strip()
-    return direction_block
+    if "## Blueprint assignment" not in text:
+        raise RuntimeError("design contract missing ## Blueprint assignment")
+    return text
 
 
 def _parse_worker_additions(frame_num: str, text: str) -> str | None:
@@ -272,13 +280,14 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
             frame_md = f.read()
     except OSError:
         pass
-    design_prompt = _build_design_prompt(preamble, order, _frame_md_tokens(frame_md))
+    tokens = _frame_md_tokens(frame_md)
+    design_prompt = _build_design_prompt(preamble, order, tokens)
     drc, design_text = run_claude_result(
         project_dir, design_prompt, logger, skill="visual", label="design"
     )
     if drc != 0:
         raise RuntimeError(f"claude visual design-contract failed rc:{drc}")
-    design = _design_contract_split(design_text)
+    design = _scripted_direction_head(tokens) + "\n" + _validate_design_contract(design_text)
     design_dir = os.path.join(project_dir, ".hyperframes", "visual")
     os.makedirs(design_dir, exist_ok=True)
     with open(os.path.join(design_dir, "_design.md"), "w", encoding="utf-8") as f:
