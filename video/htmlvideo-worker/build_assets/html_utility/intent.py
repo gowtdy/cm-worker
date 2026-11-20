@@ -20,10 +20,11 @@ def _build_identify_intent_prompt(content: str) -> str:
         "Source text is inlined below — nothing to read, no files to create.\n\n"
         f"{content}\n\n"
         "Respond with ONLY the JSON object as your final message text (extract\n"
-        "message, angle, audience, name, summary, and optional customization/notes;\n"
-        "prefer the input language). No markdown code fences, no preamble, no prose,\n"
-        "no tool calls — the caller captures your text reply and writes/validates\n"
-        "intent.json itself. flow is automation → autonomous.\n"
+        "message, angle, audience, name, summary, and — when a clear structure is\n"
+        "implied — an optional `arc` like \"how-to-process (Hook → Thesis → Steps → CTA)\";\n"
+        "plus optional customization/notes; prefer the input language). No markdown\n"
+        "code fences, no preamble, no prose, no tool calls — the caller captures\n"
+        "your text reply and writes/validates intent.json itself. flow is automation → autonomous.\n"
     )
 
 
