@@ -57,6 +57,7 @@ def step_init(
     customization: str,
     notes: str,
     style_preset=None,
+    arc=None,
     task_id: str = "",
 ) -> StepResult:
     t0 = time.time()
@@ -75,6 +76,7 @@ def step_init(
         customization=customization,
         notes=notes,
         style_preset=style_preset,
+        arc=arc,
         task_id=task_id,
     )
     return StepResult(ret=ret, msg=msg, cost=time.time() - t0)
