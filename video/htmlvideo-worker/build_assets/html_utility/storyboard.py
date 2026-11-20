@@ -46,6 +46,40 @@ def _validate_storyboard_outputs(project_dir: str) -> str:
     return storyboard_path
 
 
+def _slugify(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+_FRAME_HEADING_RE = re.compile(
+    r"^## (?:Frame|Beat|Scene)\s+(\d+)\s*[-—–]\s*([^\n]+)", re.MULTILINE)
+_SRC_RE = re.compile(r"^- src:.*$", re.MULTILINE)
+
+
+def _normalize_frame_srcs(project_dir: str) -> None:
+    """Deterministic `src` derivation: rewrite each frame's `- src:` to
+    `compositions/frames/NN-slug(title).html`. The `src` is the loaded field that
+    frame-html's packet builder derives the frame id from, so the harness pins it
+    instead of trusting the model's copy (原则:确定性的事脚本做)."""
+    path = os.path.join(project_dir, STORYBOARD_FILENAME)
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+
+    split_re = re.compile(r"(?=^## (?:Frame|Beat|Scene)\b)", re.MULTILINE)
+    parts = split_re.split(text)
+    out = [parts[0]]
+    for block in parts[1:]:
+        m = _FRAME_HEADING_RE.match(block)
+        if not m:
+            out.append(block)
+            continue
+        num = int(m.group(1))
+        slug = _slugify(m.group(2))
+        new_src = f"- src: compositions/frames/{num:02d}-{slug}.html"
+        out.append(_SRC_RE.sub(new_src, block, count=1))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("".join(out))
+
+
 def build_storyboard(
     project_dir: str,
     logger: logging.Logger,
@@ -78,4 +112,5 @@ def build_storyboard(
     if rc != 0:
         raise RuntimeError(f"claude build-storyboard failed rc:{rc}")
 
+    _normalize_frame_srcs(project_dir)
     return _validate_storyboard_outputs(project_dir)
