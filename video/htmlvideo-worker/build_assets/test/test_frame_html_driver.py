@@ -137,17 +137,39 @@ class DriverTest(unittest.TestCase):
             fh.build_frame_html(d, None)
 
     def test_worker_prompt_locks_scope_to_single_frame(self):
-        p = fh._worker_prompt("01-hook", skeleton_mode=True)
+        p = fh._worker_prompt(
+            "01-hook", skeleton_mode=True, dispatch_text="# Dispatch stub\n")
         self.assertIn(
             "Scope is exactly one file: compositions/frames/01-hook.html", p
         )
         self.assertIn("Never read, open, or write any other", p)
 
     def test_worker_prompt_dispatch_self_sufficient(self):
-        p = fh._worker_prompt("01-hook", skeleton_mode=True)
+        p = fh._worker_prompt(
+            "01-hook", skeleton_mode=True, dispatch_text="# Dispatch stub\n")
         self.assertNotIn(".hyperframes/frame-packets/_role.md", p)
         self.assertIn("RULES_DIR", p)
         self.assertIn("never open frame.md or _role.md", p)
+
+    def test_worker_prompt_inlines_dispatch_and_forbids_reread(self):
+        body = "# Dispatch: 01-hook\n\n## Assigned storyboard block\nHELLO-DISPATCH\n"
+        p = fh._worker_prompt(
+            "01-hook", skeleton_mode=True, dispatch_text=body)
+        self.assertIn("## Dispatch (authoritative — already complete)", p)
+        self.assertIn("HELLO-DISPATCH", p)
+        self.assertIn("Do NOT Read", p)
+        self.assertIn("01-hook.dispatch.md", p)  # named only as "do not read"
+        # Reading from disk when project_dir is set
+        d = make_project(skeleton=True)
+        with open(
+            os.path.join(
+                d, ".hyperframes", "frame-packets", "01-hook.dispatch.md"),
+            "w",
+        ) as f:
+            f.write("# Dispatch from disk\nDISK-TOKEN\n")
+        p2 = fh._worker_prompt(
+            "01-hook", skeleton_mode=True, project_dir=d)
+        self.assertIn("DISK-TOKEN", p2)
 
     def test_worker_done_ok_accepts_hyphen_suffix_ids(self):
         # 2026-11-21: empty-slug frames were ``01-``; trailing ``\b`` rejected
