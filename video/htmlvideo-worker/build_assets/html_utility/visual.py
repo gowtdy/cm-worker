@@ -34,6 +34,7 @@ DEFAULT_REPAIR_ROUNDS = 2
 DESIGN_FILE = os.path.join(".hyperframes", "visual", "_design.md")
 ANIMATION_DIR = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "skills", "hyperframes-animation"))
+BLUEPRINTS_DIR = os.path.join(ANIMATION_DIR, "blueprints")
 
 _SPLIT_RE = re.compile(r"(?=^## Frame\s+\d+)", re.M)
 _FRAME_HEAD_RE = re.compile(r"^## Frame\s+(\d+)", re.M)
@@ -41,6 +42,11 @@ _SCENES_RE = re.compile(r"^Scene\s+\d+", re.M)
 _FOCAL_RE = re.compile(r"^-\s*focal:", re.M)
 _ROLES_RE = re.compile(r"^-\s*roles:", re.M)
 _DONE_RE = re.compile(r"\bdone\s+OK\s+(\d+)\b")
+_ASSIGN_LINE_RE = re.compile(r"^F(\d+)\s*=\s*([\w-]+)(.*)$", re.M)
+# One rewrite after Phase A when any assigned blueprint is outside the catalog.
+MAX_DESIGN_ASSIGN_REPAIRS = 1
+# `compose` = intentional no-shape; workers invent without an inlined blueprint body.
+COMPOSE_BLUEPRINT = "compose"
 
 
 def _env_on(name: str, default: bool = True) -> bool:
@@ -98,7 +104,78 @@ def _frame_md_tokens(frame_md: str) -> str:
     return "\n\n".join(out).strip()
 
 
-def _build_design_prompt(preamble: str, frame_nums: list[str], tokens: str = "") -> str:
+def _blueprint_catalog() -> frozenset[str]:
+    """Shot-shape ids on disk under `hyperframes-animation/blueprints/*.md`."""
+    ids: set[str] = set()
+    try:
+        for name in os.listdir(BLUEPRINTS_DIR):
+            if name.endswith(".md") and not name.startswith("."):
+                ids.add(name[:-3])
+    except OSError:
+        pass
+    return frozenset(ids)
+
+
+def _type_token_names(tokens: str) -> list[str]:
+    """Typography slot + color names from inlined frame.md tokens (NOT blueprints)."""
+    if not tokens:
+        return []
+    names: list[str] = []
+    section = None
+    for raw in tokens.split("\n"):
+        s = raw.strip()
+        if s == "colors:":
+            section = "colors"
+            continue
+        if s == "typography:":
+            section = "typography"
+            continue
+        if section in ("colors", "typography"):
+            m = re.match(r"^([\w-]+)\s*:", s)
+            if m:
+                names.append(m.group(1))
+    # stable unique, keep order
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _catalog_prompt_block(catalog: frozenset[str], banned_tokens: list[str] | None = None) -> str:
+    """Tell Phase A which ids are legal shot shapes — and which type tokens are not."""
+    ids = sorted(catalog)
+    lines = [
+        "Valid blueprint ids (pick ONLY from this list, or "
+        f"`{COMPOSE_BLUEPRINT}` when no catalog shape fits):",
+    ]
+    lines.extend(f"- {i}" for i in ids)
+    lines.append(f"- {COMPOSE_BLUEPRINT}")
+    banned = [t for t in (banned_tokens or []) if t and t not in catalog and t != COMPOSE_BLUEPRINT]
+    if banned:
+        lines.append(
+            "Do NOT use frame.md typography/color token names as blueprint ids — "
+            "those are palette/type slots, not shot shapes. Banned examples: "
+            + ", ".join(f"`{t}`" for t in banned)
+            + "."
+        )
+    else:
+        lines.append(
+            "Do NOT use frame.md typography slot names (e.g. `display`, `headline`, "
+            "`stat-number`, `card-headline`, `closing-display`, `orbit-numeral`) or "
+            "color names as blueprint ids — those are type/palette tokens, not shot shapes."
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _build_design_prompt(
+    preamble: str,
+    frame_nums: list[str],
+    tokens: str = "",
+    catalog: frozenset[str] | None = None,
+) -> str:
     joined = ", ".join(frame_nums)
     intro = (
         "The frame.md design tokens are inlined below and the harness ALREADY wrote the "
@@ -106,6 +183,8 @@ def _build_design_prompt(preamble: str, frame_nums: list[str], tokens: str = "")
         "palette/type, and do NOT emit a `## Video direction` header." if tokens else
         "Read frame.md (design truth: palette/type/tokens) and the outline below."
     )
+    cat = catalog if catalog is not None else _blueprint_catalog()
+    catalog_block = _catalog_prompt_block(cat, _type_token_names(tokens))
     return (
         "/aiflow-build-frame-visual\n\n"
         "You are the GLOBAL design phase only. " + intro + "\n"
@@ -118,7 +197,10 @@ def _build_design_prompt(preamble: str, frame_nums: list[str], tokens: str = "")
         "reveal-cascade frame numbers), caption band, negative list.\n\n"
         "## Blueprint assignment\n"
         f"<one line per frame, frames are: {joined}. Format: `F<num> = <blueprint> "
-        "(Adapt|Reproduce)`>\n\n"
+        "(Adapt|Reproduce)` — `<blueprint>` MUST be a valid catalog id or "
+        f"`{COMPOSE_BLUEPRINT}`>\n\n"
+        + catalog_block
+        + "\n"
         "Output this as your FINAL message text (no tools, no Write, no per-frame Scene "
         "lines — the per-frame workers do those). flow is automation → autonomous.\n\n"
         "── outline preamble ──\n"
@@ -146,14 +228,96 @@ def _frame_assignment_line(assignment: str, frame_num: str) -> str:
     return m.group(0) if m else ""
 
 
-def _blueprint_body(blueprint_id: str) -> str:
-    """Inline the frame's blueprint body (removes a worker Read); empty for `compose`."""
-    if not blueprint_id or blueprint_id.lower() == "compose":
+def _is_catalog_blueprint(blueprint_id: str, catalog: frozenset[str] | None = None) -> bool:
+    """True when the id is `compose` or an on-disk blueprint stem."""
+    if not blueprint_id:
+        return False
+    if blueprint_id.lower() == COMPOSE_BLUEPRINT:
+        return True
+    cat = catalog if catalog is not None else _blueprint_catalog()
+    return blueprint_id in cat
+
+
+def _assignment_catalog_misses(
+    assignment: str,
+    frame_nums: list[str],
+    catalog: frozenset[str] | None = None,
+) -> list[tuple[str, str]]:
+    """Return [(frame_num, bad_id_or_empty), ...] for frames with non-catalog blueprints."""
+    cat = catalog if catalog is not None else _blueprint_catalog()
+    misses: list[tuple[str, str]] = []
+    for fn in frame_nums:
+        bp = _frame_blueprint(assignment, fn)
+        if not _is_catalog_blueprint(bp, cat):
+            misses.append((fn, bp))
+    return misses
+
+
+def _build_assignment_rewrite_prompt(
+    design: str,
+    misses: list[tuple[str, str]],
+    frame_nums: list[str],
+    catalog: frozenset[str] | None = None,
+    banned_tokens: list[str] | None = None,
+) -> str:
+    """Phase-A repair: rewrite ONLY the blueprint assignment lines to catalog ids."""
+    cat = catalog if catalog is not None else _blueprint_catalog()
+    bad = ", ".join(
+        f"F{fn}={bp or '∅'}" for fn, bp in misses
+    )
+    joined = ", ".join(frame_nums)
+    return (
+        "/aiflow-build-frame-visual\n\n"
+        "You are fixing the GLOBAL design-phase blueprint assignment ONLY. The creative "
+        "Video direction body is already accepted — do NOT rewrite it.\n\n"
+        f"These assignments are INVALID (not in the shot-shape catalog): {bad}. "
+        "Typography/color token names (display, headline, orbit-numeral, …) are NOT "
+        "blueprints.\n\n"
+        + _catalog_prompt_block(cat, banned_tokens)
+        + "\nEmit ONLY a `## Blueprint assignment` block with one line per frame "
+        f"({joined}), format `F<num> = <blueprint> (Adapt|Reproduce)`, every "
+        f"`<blueprint>` a catalog id or `{COMPOSE_BLUEPRINT}`. No Scene lines, no tools.\n\n"
+        "── current contract (for context) ──\n"
+        + design
+        + "\n── end contract ──\n"
+    )
+
+
+def _splice_assignment(design: str, rewrite_text: str) -> str:
+    """Replace the design's `## Blueprint assignment` section with the rewrite's."""
+    new_assign = rewrite_text.strip()
+    idx = new_assign.find("## Blueprint assignment")
+    if idx != -1:
+        new_assign = new_assign[idx:].strip()
+    elif _ASSIGN_LINE_RE.search(new_assign):
+        new_assign = "## Blueprint assignment\n\n" + new_assign
+    else:
+        return design  # unusable rewrite — keep prior
+    direction, _old = _split_design(design)
+    if not direction:
+        return new_assign
+    return direction + "\n\n" + new_assign
+
+
+def _blueprint_body(blueprint_id: str, logger: logging.Logger | None = None) -> str:
+    """Inline the frame's blueprint body (removes a worker Read); empty for `compose`.
+
+    Logs a warning when the id is neither `compose` nor an on-disk catalog file —
+    callers should have validated the assignment first; this is defense-in-depth.
+    """
+    if not blueprint_id or blueprint_id.lower() == COMPOSE_BLUEPRINT:
         return ""
-    path = os.path.join(ANIMATION_DIR, "blueprints", f"{blueprint_id}.md")
+    path = os.path.join(BLUEPRINTS_DIR, f"{blueprint_id}.md")
     if os.path.isfile(path):
         with open(path, encoding="utf-8") as f:
             return f.read().strip()
+    warn = logger.warning if logger else logging.getLogger(__name__).warning
+    warn(
+        "visual blueprint miss id=%s path=%s — worker gets empty inline "
+        "(assign a catalog id or compose)",
+        blueprint_id,
+        path,
+    )
     return ""
 
 
@@ -334,7 +498,7 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
     if not order:
         raise RuntimeError("STORYBOARD.md has no ## Frame N blocks")
 
-    # ── Phase A: global design contract (one session) ─────────────────────
+    # ── Phase A: global design contract (one session + assignment gate) ───
     log("visual driver: design-contract phase (%d frames)", len(order))
     frame_md = ""
     try:
@@ -343,13 +507,58 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
     except OSError:
         pass
     tokens = _frame_md_tokens(frame_md)
-    design_prompt = _build_design_prompt(preamble, order, tokens)
+    catalog = _blueprint_catalog()
+    banned_tokens = _type_token_names(tokens)
+    if not catalog:
+        raise RuntimeError(
+            f"blueprint catalog empty under {BLUEPRINTS_DIR} — cannot validate assignments"
+        )
+    design_prompt = _build_design_prompt(preamble, order, tokens, catalog)
     drc, design_text = run_claude_result(
         project_dir, design_prompt, logger, skill="visual", label="design"
     )
     if drc != 0:
         raise RuntimeError(f"claude visual design-contract failed rc:{drc}")
     design = _scripted_direction_head(tokens) + "\n" + _validate_design_contract(design_text)
+
+    # Catalog gate: every F<n> must name a real shot shape (or compose). Type
+    # tokens (display/headline/…) were a common miss that left Phase B workers
+    # with an empty inline and marathon thinking — rewrite assignment only.
+    for assign_round in range(1 + MAX_DESIGN_ASSIGN_REPAIRS):
+        _direction, assignment = _split_design(design)
+        misses = _assignment_catalog_misses(assignment, order, catalog)
+        if not misses:
+            break
+        bad = ", ".join(f"F{fn}={bp or '∅'}" for fn, bp in misses)
+        warn = logger.warning if logger else logging.getLogger(__name__).warning
+        warn(
+            "visual design assignment outside catalog (round %s/%s): %s",
+            assign_round + 1,
+            1 + MAX_DESIGN_ASSIGN_REPAIRS,
+            bad,
+        )
+        if assign_round >= MAX_DESIGN_ASSIGN_REPAIRS:
+            raise RuntimeError(
+                "design blueprint assignment still outside catalog after "
+                f"{1 + MAX_DESIGN_ASSIGN_REPAIRS} attempt(s): {bad}"
+            )
+        rewrite_prompt = _build_assignment_rewrite_prompt(
+            design, misses, order, catalog, banned_tokens
+        )
+        rrc, rewrite_text = run_claude_result(
+            project_dir, rewrite_prompt, logger, skill="visual", label="design-bp-fix"
+        )
+        if rrc != 0:
+            raise RuntimeError(
+                f"claude visual design assignment rewrite failed rc:{rrc} (bad: {bad})"
+            )
+        design = _splice_assignment(design, rewrite_text)
+        if "## Blueprint assignment" not in design:
+            raise RuntimeError(
+                "design assignment rewrite lost ## Blueprint assignment "
+                f"(bad: {bad})"
+            )
+
     design_dir = os.path.join(project_dir, ".hyperframes", "visual")
     os.makedirs(design_dir, exist_ok=True)
     with open(os.path.join(design_dir, "_design.md"), "w", encoding="utf-8") as f:
@@ -371,8 +580,8 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
     for round_no in range(1 + MAX_RETRY_ROUNDS):
         def run_one(fn):
             bp = _frame_blueprint(assignment, fn)
-            bp_body = _blueprint_body(bp)
-            line = _frame_assignment_line(assignment, fn) or f"F{fn} = compose"
+            bp_body = _blueprint_body(bp, logger)
+            line = _frame_assignment_line(assignment, fn) or f"F{fn} = {COMPOSE_BLUEPRINT}"
             trimmed = f"{direction}\n\n## Blueprint assignment\n{line}"
             prompt = _build_worker_prompt(fn, blocks[fn], trimmed, bp_body)
             if notes.get(fn):
