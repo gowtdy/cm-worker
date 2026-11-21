@@ -109,6 +109,12 @@ class SrcNormalizeTest(unittest.TestCase):
         self.assertEqual(sb._slugify("Not investing, guessing"), "not-investing-guessing")
         self.assertEqual(sb._slugify("  Two-Part Checklist "), "two-part-checklist")
 
+    def test_slugify_non_ascii_falls_back_to_frame(self):
+        # Chinese-only titles previously collapsed to "" → ``01-.html``.
+        self.assertEqual(sb._slugify("买入最难的是卖"), "frame")
+        self.assertEqual(sb._slugify("???"), "frame")
+        self.assertEqual(sb._slugify(""), "frame")
+
     def test_normalize_frame_srcs(self):
         d = tempfile.mkdtemp(prefix="sb-src-")
         text = (
@@ -127,6 +133,21 @@ class SrcNormalizeTest(unittest.TestCase):
             out = f.read()
         self.assertIn("- src: compositions/frames/01-not-investing-guessing.html", out)
         self.assertIn("- src: compositions/frames/02-two-part-checklist.html", out)
+
+    def test_normalize_chinese_title_avoids_trailing_hyphen_id(self):
+        d = tempfile.mkdtemp(prefix="sb-zh-")
+        text = (
+            "## Frame 1 — 买入最难的是卖\n"
+            "- scene: x\n"
+            "- src: compositions/frames/01-.html\n"
+        )
+        with open(os.path.join(d, "STORYBOARD.md"), "w") as f:
+            f.write(text)
+        sb._normalize_frame_srcs(d)
+        with open(os.path.join(d, "STORYBOARD.md")) as f:
+            out = f.read()
+        self.assertIn("- src: compositions/frames/01-frame.html", out)
+        self.assertNotIn("01-.html", out)
 
 
 class ScriptDeriveTest(unittest.TestCase):
