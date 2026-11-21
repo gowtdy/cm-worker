@@ -17,15 +17,15 @@ PROMPT = "PROMPT_SECRET_DO_NOT_LOG"
 CWD = "/tmp/htmlvideo-proj"
 
 # Mirrors html_utility.claude_cli._PROFILES (post-clamp thinking where needed).
+# Tuple: effort, thinking, max_turns, timeout, deny_agent, max_output
 _PROFILES = {
     "intent": ("high", "32000", "100", 1800, True, "32000"),
-    "storyboard": ("high", "64000", "100", 1800, True, "16000"),
+    "storyboard": ("high", "64000", "8", 1800, True, "16000"),
     "visual": ("high", "64000", "100", 1800, True, "32000"),
     "frame_html": ("high", "64000", "60", 1500, True, "48000"),
     "repair": ("high", "40000", "40", 600, True, "16000"),
-    "verify": ("medium", "32000", "100", 1800, True, "32000"),
+    "verify": ("medium", "32000", "40", 1800, True, "16000"),
 }
-_BASE_DENY = ["WebFetch", "WebSearch", "NotebookEdit", "TodoWrite"]
 _AGENT_DENY = ["Agent", "Task"]
 _FORBIDDEN = [
     "--effort",
@@ -165,9 +165,12 @@ class RunClaudeTests(unittest.TestCase):
                 self.assertNotIn("--model", cmd)
                 for flag in _FORBIDDEN:
                     self.assertNotIn(flag, cmd)
+                from html_utility.claude_cli import _BASE_DENY, _PROFILES as REAL
+
                 deny = list(_BASE_DENY)
                 if deny_agent:
                     deny.extend(_AGENT_DENY)
+                deny.extend(REAL[skill].get("deny_tools") or [])
                 deny_at = cmd.index("--disallowedTools")
                 self.assertEqual(cmd[deny_at + 1 : deny_at + 1 + len(deny)], deny)
                 self.assertEqual(cmd[deny_at + 1 + len(deny)], "--")
@@ -278,7 +281,7 @@ class RunClaudeTests(unittest.TestCase):
         os.environ["HTMLVIDEO_CLAUDE_STORYBOARD_TIMEOUT"] = "soon"
         os.environ["HTMLVIDEO_CLAUDE_STORYBOARD_THINKING_TOKENS"] = "abc"
         _, logs, cmd, kwargs = self._invoke(skill="storyboard")
-        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "100")
+        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "8")
         self.assertEqual(
             self.popen_mock.return_value.communicate.call_args.kwargs["timeout"],
             1800,
@@ -294,7 +297,7 @@ class RunClaudeTests(unittest.TestCase):
         os.environ["HTMLVIDEO_CLAUDE_VERIFY_MAX_TURNS"] = "0"
         os.environ["HTMLVIDEO_CLAUDE_VERIFY_TIMEOUT"] = "-3"
         _, logs, cmd, _ = self._invoke(skill="verify")
-        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "100")
+        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "40")
         self.assertEqual(
             self.popen_mock.return_value.communicate.call_args.kwargs["timeout"],
             1800,
