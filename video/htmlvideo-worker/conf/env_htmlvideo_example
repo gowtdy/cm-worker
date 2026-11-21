@@ -6,8 +6,8 @@ ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro
 ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro
 ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-pro
 CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-pro
-# Only used when HTMLVIDEO_CLAUDE_PROFILE=off (or skill=None). Profile-on
-# runs override this per skill via CLAUDE_CODE_EFFORT_LEVEL in the child env.
+# run_claude always overrides this per skill via CLAUDE_CODE_EFFORT_LEVEL
+# in the child env; only affects manual `claude` runs.
 CLAUDE_CODE_EFFORT_LEVEL=high
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 # Strip built-in git/PR workflow instructions + git status from the Claude
@@ -18,7 +18,6 @@ CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
 
 # Per-skill Claude CLI profiles (optional overrides; each value below is the
 # current profile default). See build_assets/docs/claude-cli-skill-profiles.md
-# HTMLVIDEO_CLAUDE_PROFILE=off
 # HTMLVIDEO_CLAUDE_INTENT_EFFORT=high
 # HTMLVIDEO_CLAUDE_INTENT_THINKING_TOKENS=32000
 # HTMLVIDEO_CLAUDE_INTENT_MAX_OUTPUT_TOKENS=32000
