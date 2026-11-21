@@ -521,6 +521,16 @@ def validate_video_create_params(
         )
         return ret, msg, params
 
+    arc = str(json_post_raw.get("arc", '') or '').strip()
+    if not (0 < len(arc) < 100):
+        ret = 1
+        msg = f'arc is invalid, reqid:{reqid}!'
+        logger.warning(
+            f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} msg:{msg} '
+            f'arc_len:{len(arc)} arc:{json_post_raw.get("arc")!r} referer:{referer}'
+        )
+        return ret, msg, params
+
     audience = str(json_post_raw.get("audience", '') or '').strip()
     if not (0 < len(audience) < 200):
         ret = 1
@@ -584,6 +594,7 @@ def validate_video_create_params(
         "model_entry": model_entry,
         "message": message,
         "angle": angle,
+        "arc": arc,
         "audience": audience,
         "name": name,
         "summary": summary,
