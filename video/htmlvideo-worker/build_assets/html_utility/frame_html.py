@@ -352,6 +352,20 @@ deliberation.
 """
 
 
+def _worker_done_ok(frame_id: str, text: str | None) -> bool:
+    """True when the worker result contains ``done OK <frame_id>``.
+
+    Frame ids may end with a non-word character (e.g. ``01-`` when the title
+    slug collapsed). A trailing ``\\b`` then fails at EOL, so we require the id
+    followed by end-of-string or whitespace instead.
+    """
+    if not text:
+        return False
+    return bool(
+        re.search(rf"\bdone\s+OK\s+{re.escape(frame_id)}(?!\S)", text, re.I)
+    )
+
+
 def _dispatch_note(rc, text):
     if rc == 124:
         return "prior attempt hit its wall-clock timeout"
@@ -463,8 +477,7 @@ def _build_frame_html_driver(project_dir, logger):
         failures = {}
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             for fid, rc, text in pool.map(run_one, remaining):
-                ok_re = re.compile(rf"\bdone\s+OK\s+{re.escape(fid)}\b")
-                ok = rc == 0 and bool(ok_re.search(text or ""))
+                ok = rc == 0 and _worker_done_ok(fid, text)
                 if (not skeleton_mode) and ok and not os.path.isfile(
                         os.path.join(project_dir, "compositions", "frames", f"{fid}.html")):
                     ok = False
