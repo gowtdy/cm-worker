@@ -148,3 +148,49 @@ class DriverTest(unittest.TestCase):
         self.assertNotIn(".hyperframes/frame-packets/_role.md", p)
         self.assertIn("RULES_DIR", p)
         self.assertIn("never open frame.md or _role.md", p)
+
+    def test_worker_done_ok_accepts_hyphen_suffix_ids(self):
+        # 2026-11-21: empty-slug frames were ``01-``; trailing ``\b`` rejected
+        # a correct ``done OK 01-`` and forced a false retry round.
+        self.assertTrue(fh._worker_done_ok("01-", "done OK 01-"))
+        self.assertTrue(fh._worker_done_ok("01-", "done OK 01-\n"))
+        self.assertTrue(fh._worker_done_ok("04-", "…\ndone OK 04-"))
+        self.assertTrue(fh._worker_done_ok("01-hook", "done OK 01-hook"))
+        self.assertFalse(fh._worker_done_ok("01-", "done OK 01-hook"))
+        self.assertFalse(fh._worker_done_ok("02-", "done OK 01-"))
+        self.assertFalse(fh._worker_done_ok("01-", ""))
+
+    def test_hyphen_suffix_frame_id_marks_animated(self):
+        d = make_project(skeleton=True)
+        # Rename packets/frames to trailing-hyphen ids (today's failure shape).
+        pkt = os.path.join(d, ".hyperframes", "frame-packets")
+        frames = os.path.join(d, "compositions", "frames")
+        mapping = {"01-hook": "01-", "02-answer": "02-"}
+        for old, new in mapping.items():
+            os.rename(os.path.join(pkt, old + ".md"), os.path.join(pkt, new + ".md"))
+            os.rename(
+                os.path.join(pkt, old + ".dispatch.md"),
+                os.path.join(pkt, new + ".dispatch.md"),
+            )
+            os.rename(
+                os.path.join(frames, old + ".html"),
+                os.path.join(frames, new + ".html"),
+            )
+        board = (
+            "## Frame 1 — Hook\n"
+            "- status: outline\n"
+            "- src: compositions/frames/01-.html\n"
+            "- duration: 4s\n\n"
+            "## Frame 2 — Answer\n"
+            "- status: outline\n"
+            "- src: compositions/frames/02-.html\n"
+            "- duration: 5s\n\n"
+            "## Video direction\n"
+        )
+        with open(os.path.join(d, "STORYBOARD.md"), "w") as f:
+            f.write(board)
+        self._patch_dispatch({k: [(0, f"done OK {k}")] for k in ("01-", "02-")})
+        fh.build_frame_html(d, None)
+        with open(os.path.join(d, "STORYBOARD.md")) as f:
+            text = f.read()
+        self.assertEqual(text.count("- status: animated"), 2)
