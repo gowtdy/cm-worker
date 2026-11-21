@@ -27,7 +27,11 @@ def _has_spoken_frames(storyboard_text: str) -> bool:
 
 
 def _slugify(title: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    """ASCII slug for frame file ids. Never empty — Chinese-only titles used to
+    collapse to ``\"\"`` and yield ``01-.html``, which then breaks the driver's
+    ``done OK <id>`` word-boundary match."""
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return slug or "frame"
 
 
 _FRAME_HEADING_RE = re.compile(
