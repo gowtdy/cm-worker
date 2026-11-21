@@ -2,7 +2,9 @@
 """Unit tests for the frame-visual design-contract (Phase A) prompt."""
 from __future__ import annotations
 
+import logging
 import unittest
+from unittest import mock
 
 from html_utility import visual as vis
 
@@ -11,19 +13,45 @@ _TOKENS = (
     '  cream: "#F5F5F0"\n'
     '  coral: "#E85D4E"\n'
     'typography:\n'
-    '  body: { fontFamily: "Space Grotesk", cqw: 0.85, weight: 400 }'
+    '  body: { fontFamily: "Space Grotesk", cqw: 0.85, weight: 400 }\n'
+    '  display: { fontFamily: "Bodoni Moda", cqw: 12.0 }\n'
+    '  headline: { fontFamily: "Bodoni Moda", cqw: 5.0 }'
 )
+
+_CATALOG = frozenset({
+    "kinetic-type-beats",
+    "titlecard-reveal",
+    "comparison-split",
+    "dataviz-countup",
+    "cta-morph-press",
+    "grid-card-assemble",
+})
 
 
 class DesignPromptTest(unittest.TestCase):
     def test_inlines_tokens_and_forbids_reading_frame_md(self):
-        p = vis._build_design_prompt("---\nformat: landscape\n---", ["1", "2", "3"], _TOKENS)
+        p = vis._build_design_prompt(
+            "---\nformat: landscape\n---", ["1", "2", "3"], _TOKENS, _CATALOG
+        )
         self.assertNotIn("Read frame.md", p)
         self.assertIn('"#F5F5F0"', p)
         self.assertIn('"#E85D4E"', p)
         self.assertIn("1, 2, 3", p)
         self.assertIn("## Blueprint assignment", p)          # assignment still the model's
         self.assertIn("creative body", p)                    # palette/type no longer the model's
+
+    def test_design_prompt_lists_catalog_and_bans_type_tokens(self):
+        p = vis._build_design_prompt(
+            "---\nformat: landscape\n---", ["1", "2"], _TOKENS, _CATALOG
+        )
+        self.assertIn("Valid blueprint ids", p)
+        self.assertIn("- kinetic-type-beats", p)
+        self.assertIn("- titlecard-reveal", p)
+        self.assertIn("`compose`", p)
+        self.assertIn("Banned examples:", p)
+        self.assertIn("`display`", p)
+        self.assertIn("`headline`", p)
+        self.assertNotIn("- display\n", p)  # type token must not appear as a valid id
 
     def test_scripted_direction_head_carries_palette_type(self):
         head = vis._scripted_direction_head(_TOKENS)
@@ -53,8 +81,73 @@ class DesignPromptTest(unittest.TestCase):
             vis._validate_design_contract("<creative, no assignment>")
 
     def test_falls_back_to_reading_frame_md_without_tokens(self):
-        p = vis._build_design_prompt("---\nformat: landscape\n---", ["1", "2"], "")
+        p = vis._build_design_prompt(
+            "---\nformat: landscape\n---", ["1", "2"], "", _CATALOG
+        )
         self.assertIn("Read frame.md", p)
+
+
+class BlueprintCatalogGateTest(unittest.TestCase):
+    def test_catalog_includes_on_disk_shapes(self):
+        cat = vis._blueprint_catalog()
+        self.assertIn("titlecard-reveal", cat)
+        self.assertIn("comparison-split", cat)
+        self.assertNotIn("display", cat)
+        self.assertNotIn("compose", cat)  # compose is synthetic, not a file
+
+    def test_type_token_names_from_tokens(self):
+        names = vis._type_token_names(_TOKENS)
+        self.assertIn("cream", names)
+        self.assertIn("display", names)
+        self.assertIn("headline", names)
+        self.assertIn("body", names)
+
+    def test_assignment_misses_type_tokens(self):
+        a = (
+            "## Blueprint assignment\n"
+            "F1 = display (Reproduce)\n"
+            "F2 = titlecard-reveal (Adapt)\n"
+            "F3 = split (Adapt)\n"
+        )
+        misses = vis._assignment_catalog_misses(a, ["1", "2", "3"], _CATALOG)
+        self.assertEqual(misses, [("1", "display"), ("3", "split")])
+
+    def test_assignment_accepts_compose_and_catalog(self):
+        a = (
+            "## Blueprint assignment\n"
+            "F1 = compose (Adapt)\n"
+            "F2 = kinetic-type-beats (Reproduce)\n"
+        )
+        self.assertEqual(
+            vis._assignment_catalog_misses(a, ["1", "2"], _CATALOG), []
+        )
+
+    def test_splice_assignment_replaces_block(self):
+        design = (
+            "## Video direction\n\ngrammar\n\n"
+            "## Blueprint assignment\n\n"
+            "F1 = display (Reproduce)\n"
+            "F2 = headline (Adapt)\n"
+        )
+        rewrite = (
+            "## Blueprint assignment\n\n"
+            "F1 = kinetic-type-beats (Reproduce)\n"
+            "F2 = titlecard-reveal (Adapt)\n"
+        )
+        out = vis._splice_assignment(design, rewrite)
+        self.assertIn("grammar", out)
+        self.assertIn("F1 = kinetic-type-beats", out)
+        self.assertNotIn("display", out)
+
+    def test_assignment_rewrite_prompt_lists_bad_and_catalog(self):
+        design = "## Video direction\nx\n\n## Blueprint assignment\nF1 = display (Adapt)\n"
+        p = vis._build_assignment_rewrite_prompt(
+            design, [("1", "display")], ["1", "2"], _CATALOG, ["display", "headline"]
+        )
+        self.assertIn("F1=display", p)
+        self.assertIn("Valid blueprint ids", p)
+        self.assertIn("- titlecard-reveal", p)
+        self.assertIn("`display`", p)
 
 
 class FrameMdTokensTest(unittest.TestCase):
@@ -117,7 +210,13 @@ class WorkerPromptTest(unittest.TestCase):
     def test_blueprint_body_empty_for_compose(self):
         self.assertEqual(vis._blueprint_body("compose"), "")
         self.assertEqual(vis._blueprint_body(""), "")
-        self.assertEqual(vis._blueprint_body("no-such-blueprint"), "")
+
+    def test_blueprint_body_warns_on_miss(self):
+        log = logging.getLogger("test.visual.bp_miss")
+        with mock.patch.object(log, "warning") as warn:
+            self.assertEqual(vis._blueprint_body("no-such-blueprint", log), "")
+            warn.assert_called_once()
+            self.assertIn("no-such-blueprint", warn.call_args[0][1])
 
     def test_blueprint_body_reads_real_file(self):
         self.assertTrue(vis._blueprint_body("titlecard-reveal"))
