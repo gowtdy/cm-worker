@@ -48,13 +48,11 @@ flowchart TD
   frameHtml[frame_html.py] --> runClaude
   verify[verify.py] --> runClaude
   script[run_aiflow_build_skills.py] --> runClaude
-  runClaude -->|profile on| profilePath["_run_profile: json + caps"]
-  runClaude -->|skill None or PROFILE=off| legacyPath["_run_legacy: text"]
+  runClaude -->|skill required| profilePath["_run_profile: json + caps"]
   profilePath --> claudeBin[claude --print]
-  legacyPath --> claudeBin
 ```
 
-`skill=None` 或 `HTMLVIDEO_CLAUDE_PROFILE=off` 时命令与环境与改动前一致（`--output-format text`，不设 timeout，不 PIPE stdout）。
+`skill` 必填；`None` 或未知名抛 `ValueError`。`HTMLVIDEO_CLAUDE_PROFILE` 已移除（设置也不生效）。
 
 ## 4. Profile 表与取值理由
 
@@ -112,7 +110,6 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 
 | 变量 | 作用 |
 |---|---|
-| `HTMLVIDEO_CLAUDE_PROFILE=off` | 一键回滚到 legacy 命令与环境 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_EFFORT` | 覆盖 effort；白名单 `low\|medium\|high\|xhigh\|max` |
 | `HTMLVIDEO_CLAUDE_<SKILL>_THINKING_TOKENS` | 覆盖思考预算 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_MAX_OUTPUT_TOKENS` | 覆盖输出上限（max_output）；未设置用 profile 默认，设空则不注入（沿用父进程 cap） |
@@ -122,7 +119,7 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 
 `<SKILL>`：`INTENT` / `STORYBOARD` / `VISUAL` / `FRAME_HTML` / `VERIFY` / `REPAIR`。
 
-全局 `CLAUDE_CODE_EFFORT_LEVEL=max`（见 `conf/env_htmlvideo_example`）在 **profile 开启时被各 skill 覆盖**；仅 `PROFILE=off` 或未传 `skill` 时作为兜底。
+全局 `CLAUDE_CODE_EFFORT_LEVEL`（见 `conf/env_htmlvideo_example`）在 `run_claude` 子进程中总被各 skill profile 覆盖，仅对手工直接运行 `claude` 生效。
 
 非法 effort / 非正 turns / timeout：打 warning 并回退 profile 默认，不致命失败。
 
@@ -174,8 +171,4 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 
 ## 10. 回滚
 
-```bash
-HTMLVIDEO_CLAUDE_PROFILE=off
-```
-
-行为恢复为：`--output-format text`，不注入 profile env / max-turns / disallowedTools / timeout。
+已无全量 env 开关。单项回退走 `HTMLVIDEO_CLAUDE_<SKILL>_*`（§6）；整体回退需 revert 代码。
