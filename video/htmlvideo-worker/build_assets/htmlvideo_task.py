@@ -154,6 +154,7 @@ def video_intent(payload):
                 'name': 'Buy, Hold, Sell',
                 'message': "Analyzing a stock's fundamentals and market signals tells you whether it's worth buying and when it's time to sell.",
                 'angle': "how-to",
+                'arc': "",
                 'audience': "Beginner to intermediate individual investors who want a practical framework for buy and sell decisions",
                 'summary': "A practical how-to on evaluating stocks: how to judge whether a stock is worth buying, and how to recognize the right time to sell. Aimed at everyday investors, it turns a common question into a clear, actionable decision framework.",
                 'customization': "Two-part structure: first, how to analyze whether a stock is worth buying; second, how to determine when to sell."
