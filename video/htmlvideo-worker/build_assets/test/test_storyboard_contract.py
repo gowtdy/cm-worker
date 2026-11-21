@@ -99,7 +99,9 @@ class BuildPromptTest(unittest.TestCase):
         self.assertIn("## Pre-seeded STORYBOARD frontmatter", p)
         self.assertIn("format: 1920x1080", p)
         self.assertIn("mode: autonomous", p)
-        self.assertIn("do NOT Read STORYBOARD.md", p)         # no file Read needed
+        self.assertIn('First tool call MUST be Write("STORYBOARD.md")', p)
+        self.assertIn("Do NOT Write SCRIPT.md", p)
+        self.assertNotIn("both Write tool", p)
 
 
 class SrcNormalizeTest(unittest.TestCase):
@@ -125,6 +127,92 @@ class SrcNormalizeTest(unittest.TestCase):
             out = f.read()
         self.assertIn("- src: compositions/frames/01-not-investing-guessing.html", out)
         self.assertIn("- src: compositions/frames/02-two-part-checklist.html", out)
+
+
+class ScriptDeriveTest(unittest.TestCase):
+    def test_generate_script_from_voiceovers(self):
+        d = tempfile.mkdtemp(prefix="sb-script-")
+        brief_zh = BRIEF_MD.replace(
+            "style_preset: capsule",
+            "style_preset: capsule\nlanguage: zh",
+        )
+        with open(os.path.join(d, "BRIEF.md"), "w") as f:
+            f.write(brief_zh)
+        storyboard = (
+            "---\nmessage: x\n---\n\n"
+            "## Frame 1 — Hook title\n"
+            "- scene: s1\n"
+            '- voiceover: "First the snowball — then the hill."\n'
+            "- duration: 4s\n"
+            "\n"
+            "## Frame 2 — Silent beat\n"
+            "- scene: s2\n"
+            '- voiceover: ""\n'
+            "- duration: 3s\n"
+            "\n"
+            "## Frame 3 — Close\n"
+            "- scene: s3\n"
+            '- voiceover: "Ship it today."\n'
+            "- duration: 5.5s\n"
+        )
+        with open(os.path.join(d, "STORYBOARD.md"), "w") as f:
+            f.write(storyboard)
+        path = sb.generate_script_from_storyboard(d)
+        self.assertTrue(path and os.path.isfile(path))
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("(Frame 1)", text)
+        self.assertIn("(Frame 3)", text)
+        self.assertNotIn("(Frame 2)", text)  # empty voiceover omitted
+        self.assertIn("    First the snowball — then the hill.", text)
+        self.assertIn("    Ship it today.", text)
+        self.assertIn("**Time:** 0.0 – 4.0s", text)
+        self.assertIn("**Time:** 4.0 – 9.5s", text)  # cumulative across spoken only
+        self.assertIn("中文普通话", text)
+
+    def test_silent_board_removes_script(self):
+        d = tempfile.mkdtemp(prefix="sb-silent-")
+        with open(os.path.join(d, "STORYBOARD.md"), "w") as f:
+            f.write(
+                "## Frame 1 — Quiet\n"
+                "- scene: s\n"
+                '- voiceover: ""\n'
+                "- duration: 4s\n"
+            )
+        script = os.path.join(d, "SCRIPT.md")
+        with open(script, "w") as f:
+            f.write("stale\n")
+        self.assertIsNone(sb.generate_script_from_storyboard(d))
+        self.assertFalse(os.path.isfile(script))
+
+    def test_finalize_gates_spoken_board(self):
+        d = tempfile.mkdtemp(prefix="sb-final-")
+        with open(os.path.join(d, "BRIEF.md"), "w") as f:
+            f.write(BRIEF_MD)
+        with open(os.path.join(d, "STORYBOARD.md"), "w") as f:
+            f.write(
+                "## Frame 1 — Hook\n"
+                "- scene: s\n"
+                '- voiceover: "Hello there."\n'
+                "- duration: 3s\n"
+                "- src: compositions/frames/wrong.html\n"
+            )
+        out = sb.finalize_storyboard_outputs(d)
+        self.assertTrue(out.endswith("STORYBOARD.md"))
+        with open(os.path.join(d, "STORYBOARD.md"), encoding="utf-8") as f:
+            self.assertIn("01-hook.html", f.read())
+        with open(os.path.join(d, "SCRIPT.md"), encoding="utf-8") as f:
+            self.assertIn("    Hello there.", f.read())
+
+
+class ProfileDenyTest(unittest.TestCase):
+    def test_storyboard_denies_explore_tools(self):
+        from html_utility.claude_cli import _PROFILES
+
+        deny = set(_PROFILES["storyboard"].get("deny_tools") or [])
+        for name in ("Bash", "Read", "Glob", "Grep", "Edit"):
+            self.assertIn(name, deny)
+        self.assertNotIn("Write", deny)
 
 
 if __name__ == "__main__":
