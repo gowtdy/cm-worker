@@ -59,7 +59,7 @@ flowchart TD
 | skill | effort | thinking | max_output | max_turns | timeout(s) | deny Agent/Task | 理由 |
 |---|---|---|---|---|---|---|---|
 | intent | high | 32000 | 32000 | 100 | 1800 | 是 | 2026-11-18 cap A/B 实证地板（16.7s 历史最优），显式固化 |
-| storyboard | high | 64000 | 32000 | 100 | 1800 | 是 | 同上（3.0m 近地板） |
+| storyboard | high | 64000 | 16000 | 100 | 1800 | 是；另禁 Bash/Read/Glob/Grep/Edit（Write-only；SCRIPT.md 由 Python 从 voiceover 派生） | 同上（3.0m 近地板）；2026-11-21 禁探盘 + SCRIPT 外提 |
 | visual | high | 64000 | 32000 | 100 | 1800 | 是 | 同上（7.1m 历史最优） |
 | frame_html | high | 64000 | 64000 | 60 | 1500 | 是 | 每帧一个进程：64000 防截断档；1500s 墙钟断电闸（2026-11-19 实测 720s 杀 4/6 帧，逐级抬到 ~25m）；B 架构无需 Agent |
 | repair | high | 40000 | 16000 | 40 | 600 | 是 | 仅 assemble 失败的一次性修复会话 |
