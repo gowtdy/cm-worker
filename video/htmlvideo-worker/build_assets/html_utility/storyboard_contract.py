@@ -32,32 +32,32 @@ def _prompt_header() -> str:
         "no waiting.\n\n"
         "The complete storyboard contract card and all project inputs are inlined "
         "below. Treat the card as the authoritative contract for this run — do NOT "
-        "re-read any skill reference files; go straight to composing and writing "
-        "the two files.\n"
+        "re-read any skill reference files or re-cat project inputs (BRIEF.md / "
+        "visible-text / frame.md / meta); go straight to composing STORYBOARD.md.\n"
     )
 
 
 def _prompt_footer() -> str:
     return (
+        "First tool call MUST be Write(\"STORYBOARD.md\"). Any Bash/Read/Glob/Grep "
+        "of project or skill files is a protocol fail — every input is already "
+        "inlined above. Do NOT Write SCRIPT.md; the harness derives it from each "
+        "frame's voiceover after you finish.\n\n"
         "The STORYBOARD frontmatter is pre-computed and INLINED above (under "
-        "`## Pre-seeded STORYBOARD frontmatter`) — copy it EXACTLY into STORYBOARD.md, "
-        "do NOT Read STORYBOARD.md for it. Keep `format`/`duration`/`message`/`audience`/"
-        "`mode` as written. When `arc` is already a real structure (not `<FILL>`), treat "
-        "it as the DECIDED story structure and expand it into frames — do not re-decide "
-        "it. Fill only `music` and any `<FILL>` value, then write the frame blocks. Write the complete "
-        "STORYBOARD.md (status: outline, required narrative fields filled) and "
-        "SCRIPT.md in ONE response: issue both Write tool "
-        "calls together in the same assistant turn (SCRIPT.md whenever any frame "
-        "has a non-empty voiceover). Never split the two files across turns, "
-        "never end the turn between the two Writes, and never re-read either "
-        "file after writing. Then end with the heads-up summary: "
+        "`## Pre-seeded STORYBOARD frontmatter`) — copy it EXACTLY into STORYBOARD.md. "
+        "Keep `format`/`duration`/`message`/`audience`/`mode` as written. When `arc` "
+        "is already a real structure (not `<FILL>`), treat it as the DECIDED story "
+        "structure and expand it into frames — do not re-decide it. Fill only "
+        "`music` and any `<FILL>` value, then write the frame blocks "
+        "(status: outline, required narrative fields filled, quality voiceover "
+        "lines — those lines become SCRIPT.md).\n\n"
+        "After the Write succeeds, end with the heads-up summary: "
         "'This video tells [audience] that [message]' + a frame table "
         "(frame · beat (type, duration) · on screen · why).\n\n"
         "Do not write ## Video direction or time-coded Scene shot blocks — those "
         "belong to /aiflow-build-frame-visual. Stop when the gate passes: "
         "STORYBOARD.md exists with every frame carrying the required narrative "
-        "fields, and SCRIPT.md exists whenever any frame has a non-empty "
-        "voiceover.\n"
+        "fields.\n"
     )
 
 
