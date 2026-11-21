@@ -44,7 +44,8 @@ def main() -> int:
     logger.info("half-run color re-verify START project=%s frames=%s", PROJECT, FRAMES)
 
     def run_one(fid: str):
-        prompt = fh._worker_prompt(fid, skeleton_mode=True)
+        prompt = fh._worker_prompt(
+            fid, skeleton_mode=True, project_dir=PROJECT)
         rc, text = run_claude_result(
             PROJECT, prompt, logger,
             extra_env={"CLAUDE_CODE_SUBAGENT_EFFORT": "high"},
