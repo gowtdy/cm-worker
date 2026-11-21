@@ -109,11 +109,15 @@ class SrcNormalizeTest(unittest.TestCase):
         self.assertEqual(sb._slugify("Not investing, guessing"), "not-investing-guessing")
         self.assertEqual(sb._slugify("  Two-Part Checklist "), "two-part-checklist")
 
-    def test_slugify_non_ascii_falls_back_to_frame(self):
+    def test_slugify_non_ascii_uses_stable_hash(self):
         # Chinese-only titles previously collapsed to "" → ``01-.html``.
-        self.assertEqual(sb._slugify("买入最难的是卖"), "frame")
-        self.assertEqual(sb._slugify("???"), "frame")
-        self.assertEqual(sb._slugify(""), "frame")
+        # Now a stable zh+8hex so frames stay unique (not all ``NN-frame``).
+        self.assertEqual(sb._slugify("买入最难的是卖"), "zhed4d2ab4")
+        self.assertEqual(sb._slugify("???"), "zh2d86c2a6")
+        self.assertEqual(sb._slugify(""), "zhda39a3ee")
+        # Same title → same slug; different titles → different slugs.
+        self.assertEqual(sb._slugify("买入最难的是卖"), sb._slugify("买入最难的是卖"))
+        self.assertNotEqual(sb._slugify("买入最难的是卖"), sb._slugify("另一标题"))
 
     def test_normalize_frame_srcs(self):
         d = tempfile.mkdtemp(prefix="sb-src-")
@@ -146,8 +150,9 @@ class SrcNormalizeTest(unittest.TestCase):
         sb._normalize_frame_srcs(d)
         with open(os.path.join(d, "STORYBOARD.md")) as f:
             out = f.read()
-        self.assertIn("- src: compositions/frames/01-frame.html", out)
+        self.assertIn("- src: compositions/frames/01-zhed4d2ab4.html", out)
         self.assertNotIn("01-.html", out)
+        self.assertNotIn("01-frame.html", out)
 
 
 class ScriptDeriveTest(unittest.TestCase):
@@ -234,6 +239,25 @@ class ProfileDenyTest(unittest.TestCase):
         for name in ("Bash", "Read", "Glob", "Grep", "Edit"):
             self.assertIn(name, deny)
         self.assertNotIn("Write", deny)
+        self.assertEqual(_PROFILES["storyboard"]["max_turns"], 8)
+
+    def test_visual_denies_explore_and_write(self):
+        from html_utility.claude_cli import _PROFILES
+
+        deny = set(_PROFILES["visual"].get("deny_tools") or [])
+        for name in ("Bash", "Glob", "Grep", "Write", "Edit"):
+            self.assertIn(name, deny)
+        self.assertNotIn("Read", deny)  # optional rules escape hatch
+
+    def test_verify_denies_explore_keeps_edit(self):
+        from html_utility.claude_cli import _PROFILES
+
+        deny = set(_PROFILES["verify"].get("deny_tools") or [])
+        for name in ("Bash", "Glob", "Grep"):
+            self.assertIn(name, deny)
+        for name in ("Read", "Edit", "Write"):
+            self.assertNotIn(name, deny)
+        self.assertEqual(_PROFILES["verify"]["max_turns"], 40)
 
 
 if __name__ == "__main__":
