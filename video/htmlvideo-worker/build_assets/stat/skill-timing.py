@@ -2,14 +2,18 @@
 # -*- coding: utf-8 -*-
 """skill-timing.py — Claude Code 转录中各 skill/阶段耗时统计
 
-扫描 /app/log/claude/projects/**/*.jsonl,识别 skill 运行(三种签名):
+扫描 /app/log/claude/projects/**/*.jsonl,识别 skill 运行(四种签名):
   1. sdk-cli 流水线:首个用户消息里的 <command-name>/aiflow-build-storyboard</command-name>
   2. 交互式 Skill 工具调用:tool_use name==Skill 的 input.skill
   3. 子代理会话:<parent-session>/subagents/agent-*.jsonl(+ .meta.json 取 agentType)
+  4. B 架构 driver 直调:首个用户消息匹配 frame-html/visual/verify/repair worker 提示词签名
+    (无 <command-name> 时补标,避免 list 表 skill 列全是 `-`)
 
 统计口径(与 /app/log/docs/*-analysis.md 各阶段分析对齐):
   wall    = 会话首尾时间戳差(子代理等待计入父会话 wall,父会话行即阶段总耗时)
   ttfb    = 入队(enqueue)/首个用户消息 → 首个 assistant 消息
+  first_write_s = t0 → 首个 Write|Edit tool_use(落盘心跳;frame-html「1–2 回合落盘」观测)
+  first_write_tool / first_write_tool_turn = 那次工具名 + 第几个含工具回合(1-based)
   rounds  = 含工具的 assistant 回合数(tool_turns;list/group 表口径,与各分析文档的"回合预算"对齐)
   tools   = tool_use 块总数;agents = Agent/Task/spawn 工具调用次数
   detail 额外给 assistant 消息总数(含纯 thinking 轮)与回合墙钟(工具回合→下一工具回合)
@@ -36,6 +40,8 @@ from datetime import datetime, timezone
 
 ROOT_DEFAULT = "/app/log/claude/projects"
 SPAWN_TOOLS = {"Agent", "Task", "spawn"}
+# Disk-landing tools — frame-html "first edit within 1–2 turns" soft rule.
+LAND_TOOLS = frozenset({"Write", "Edit"})
 
 
 def parse_ts(ts):
@@ -60,6 +66,27 @@ def iter_jsonl(path):
 # ---------------------------------------------------------------- identity
 
 
+def _driver_prompt_label(text: str) -> str | None:
+    """B-architecture driver prompts have no <command-name>; match signatures."""
+    if "You are one per-frame HTML worker" in text:
+        m = re.search(r"done OK\s+(\S+)", text)
+        fid = m.group(1) if m else "?"
+        return f"aiflow-build-frame-html:{fid}"
+    if "You are ONE per-frame worker for the visual design phase" in text:
+        m = re.search(r"done OK\s+(\S+)", text)
+        return (
+            f"aiflow-build-frame-visual:F{m.group(1)}"
+            if m else "aiflow-build-frame-visual"
+        )
+    if "You are the GLOBAL design phase only" in text:
+        return "aiflow-build-frame-visual:design"
+    if "Fix the verification findings below" in text:
+        return "aiflow-verify-frame"
+    if "You are repairing a HyperFrames" in text:
+        return "aiflow-repair"
+    return None
+
+
 def detect_identity(path):
     """(kind, label) — kind ∈ {skill, agent, none}."""
     if "/subagents/agent-" in path or os.path.basename(path).startswith("agent-"):
@@ -81,6 +108,7 @@ def detect_identity(path):
     cmd_re = re.compile(r"<command-name>(?:/)?([a-zA-Z0-9_.-]+)</command-name>")
     cmd_skills = set()
     tool_skills = set()
+    first_user_texts: list[str] = []
     for d in iter_jsonl(path):
         msg = d.get("message", {})
         if not isinstance(msg, dict):
@@ -94,6 +122,8 @@ def detect_identity(path):
                 for b in content:
                     if isinstance(b, dict) and b.get("type") == "text":
                         texts.append(b.get("text", ""))
+            if not first_user_texts and texts:
+                first_user_texts = texts
             for tx in texts:
                 for m in cmd_re.finditer(tx):
                     cmd_skills.add(m.group(1))
@@ -106,6 +136,10 @@ def detect_identity(path):
                     if s:
                         tool_skills.add("Skill:" + s)
     if not cmd_skills and not tool_skills:
+        for tx in first_user_texts:
+            driver = _driver_prompt_label(tx)
+            if driver:
+                return ("skill", driver)
         return ("none", "-")
     prim = sorted(cmd_skills)[0] if cmd_skills else sorted(tool_skills)[0]
     # 展示/聚合层面去掉 Skill: 前缀(两种签名归并为一个 skill 名)
@@ -121,6 +155,9 @@ def analyze(path):
 
     t_first = t_last = None
     enqueue_ts = first_user_ts = first_asst_ts = None
+    first_write_ts = None
+    first_write_tool = None
+    first_write_tool_turn = None  # 1-based index among tool-bearing turns
 
     n_asst = 0
     asst_ts = []  # 所有 assistant 消息时间戳(回合墙钟用)
@@ -179,6 +216,9 @@ def analyze(path):
                     names.append(nm)
                     if nm in SPAWN_TOOLS:
                         n_agents += 1
+                    if first_write_ts is None and nm in LAND_TOOLS:
+                        first_write_ts = t
+                        first_write_tool = nm
                     hid = b.get("id")
                     if hid:
                         use_by_id[hid] = (t, nm)
@@ -189,6 +229,11 @@ def analyze(path):
                     text_chars += len(str(b.get("text", "")))
             if names:
                 turns.append((t, names))
+                if (
+                    first_write_tool_turn is None
+                    and any(n in LAND_TOOLS for n in names)
+                ):
+                    first_write_tool_turn = len(turns)
 
         if role == "user":
             if isinstance(content, list) and first_user_ts is None:
@@ -226,6 +271,12 @@ def analyze(path):
     ttfb = (first_asst_ts - t0).total_seconds() if (first_asst_ts and t0) else None
     if ttfb is not None and ttfb < 0:  # 续写/无入队的杂项会话,ttfb 无意义
         ttfb = None
+    first_write_s = (
+        (first_write_ts - t0).total_seconds()
+        if (first_write_ts and t0) else None
+    )
+    if first_write_s is not None and first_write_s < 0:
+        first_write_s = None
 
     # 对比口径:缓存命中与否是缓存层噪声,单看 input_tokens 会误判方向;
     # 真实 prompt 负担 = input_tokens + cache_read_input_tokens。
@@ -239,6 +290,9 @@ def analyze(path):
         "end": t_last,
         "t0": t0,
         "ttfb": ttfb,
+        "first_write_s": first_write_s,
+        "first_write_tool": first_write_tool,
+        "first_write_tool_turn": first_write_tool_turn,
         "wall": wall,
         "turns": n_asst,
         "tool_turns": len(turns),
@@ -333,7 +387,7 @@ def discover(root, since=None, include_agents=False):
 
 LIST_HDR = (
     "time (utc)      │ path                                   │ skill                      │"
-    " ttfb   │ dur     │ ag  │ rounds │ tools │ model   │ in+cread│ out     │ cread"
+    " ttfb   │ 1stW   │ dur     │ ag  │ rounds │ tools │ model   │ in+cread│ out"
 )
 
 
@@ -341,12 +395,17 @@ def list_report(stats, full=False, csv=False):
     if not stats:
         print("no sessions found"); return
     if csv:
-        print("time,path,skill,ttfb_s,dur_s,agents,rounds,tools,model_s,prompt,in,out,cache_read,wall_s")
+        print(
+            "time,path,skill,ttfb_s,first_write_s,first_write_tool,first_write_tool_turn,"
+            "dur_s,agents,rounds,tools,model_s,prompt,in,out,cache_read,wall_s"
+        )
         for s in stats:
             t = s["start"].strftime("%Y-%m-%d %H:%M:%S") if s["start"] else ""
+            fw = "" if s["first_write_s"] is None else f'{s["first_write_s"]:.1f}'
             print(
-                f'{t},{rel(s["path"], root)},{s["label"]},{s["ttfb"] or ""},{s["wall"]:.0f},'
-                f'{s["agents"]},{s["tool_turns"]},{s["tools"]},{s["model"]:.0f},'
+                f'{t},{rel(s["path"], root)},{s["label"]},{s["ttfb"] or ""},{fw},'
+                f'{s["first_write_tool"] or ""},{s["first_write_tool_turn"] or ""},'
+                f'{s["wall"]:.0f},{s["agents"]},{s["tool_turns"]},{s["tools"]},{s["model"]:.0f},'
                 f'{s["tokens"]["prompt"]},{s["tokens"]["input"]},{s["tokens"]["output"]},{s["tokens"]["cache_read"]}'
             )
         return
@@ -355,9 +414,10 @@ def list_report(stats, full=False, csv=False):
         t = s["start"].strftime("%m-%d %H:%M") if s["start"] else "-"
         print(
             f'{t:<19}│ {short_path(rel(s["path"], root), full):<38}│ {s["label"][:27]:<27}│ '
-            f'{fmt_dur(s["ttfb"]):<7}│ {fmt_dur(s["wall"]):<7}│ {s["agents"]:<4}│ '
+            f'{fmt_dur(s["ttfb"]):<7}│ {fmt_dur(s["first_write_s"]):<7}│ '
+            f'{fmt_dur(s["wall"]):<7}│ {s["agents"]:<4}│ '
             f'{s["tool_turns"]:<7}│ {s["tools"]:<6}│ {fmt_dur(s["model"]):<7}│ '
-            f'{fmt_count(s["tokens"]["prompt"]):<8}│ {fmt_count(s["tokens"]["output"]):<8}│ {fmt_count(s["tokens"]["cache_read"]):<8}'
+            f'{fmt_count(s["tokens"]["prompt"]):<8}│ {fmt_count(s["tokens"]["output"]):<8}'
         )
     print(f"\n{len(stats)} sessions, total wall {fmt_dur(sum(s['wall'] for s in stats))}")
 
@@ -374,6 +434,7 @@ def group_report(stats):
         walls = sorted(s["wall"] for s in gs)
         n = len(walls)
         med = (walls[n // 2] + walls[n // 2 - 1]) / 2 if n % 2 == 0 else walls[n // 2]
+        fws = [s["first_write_s"] for s in gs if s["first_write_s"] is not None]
         rows.append({
             "label": label,
             "n": len(gs),
@@ -382,16 +443,22 @@ def group_report(stats):
             "min": walls[0],
             "max": walls[-1],
             "rounds": sum(s["tool_turns"] for s in gs) // len(gs),
+            "fw_avg": (sum(fws) / len(fws)) if fws else None,
+            "fw_n": len(fws),
             "prompt": sum(s["tokens"]["prompt"] for s in gs),
             "out": sum(s["tokens"]["output"] for s in gs),
             "cread": sum(s["tokens"]["cache_read"] for s in gs),
         })
     rows.sort(key=lambda r: -r["avg"])
-    print(f"{'skill':<30}│ runs │ avg    │ med    │ min     │ max     │ rounds │ prompt   │ out      │ cread")
+    print(
+        f"{'skill':<30}│ runs │ avg    │ med    │ min     │ max     │ "
+        f"rounds │ 1stWavg │ prompt   │ out"
+    )
     for r in rows:
         print(
             f"{r['label'][:29]:<30}│ {r['n']:<4} │ {fmt_dur(r['avg']):<6} │ {fmt_dur(r['med']):<6} │ "
-            f"{fmt_dur(r['min']):<7} │ {fmt_dur(r['max']):<7} │ {r['rounds']:<6} │ {fmt_count(r['prompt']):<8} │ {fmt_count(r['out']):<8} │ {fmt_count(r['cread']):<8}"
+            f"{fmt_dur(r['min']):<7} │ {fmt_dur(r['max']):<7} │ {r['rounds']:<6} │ "
+            f"{fmt_dur(r['fw_avg']):<7} │ {fmt_count(r['prompt']):<8} │ {fmt_count(r['out']):<8}"
         )
 
 
@@ -404,7 +471,16 @@ def detail_report(s, timeline=False):
     te = s["tool_exec"]
     md_ = s["model"]
     print(f"总账   wall {fmt_dur(wall, True)} = 工具 {fmt_dur(te, True)} ({te/wall*100:.0f}%) + 模型侧 {fmt_dur(md_, True)} ({md_/wall*100:.0f}%)")
-    print(f"       ttfb {fmt_dur(s['ttfb'])};回合(assistant msg)= {s['turns']}(含工具 {s['tool_turns']});"
+    fw_note = ""
+    if s["first_write_s"] is not None:
+        fw_note = (
+            f"; first_write {fmt_dur(s['first_write_s'])}"
+            f" ({s['first_write_tool']} @ tool-turn {s['first_write_tool_turn']})"
+        )
+    else:
+        fw_note = "; first_write - (no Write/Edit)"
+    print(f"       ttfb {fmt_dur(s['ttfb'])}{fw_note};"
+          f"回合(assistant msg)= {s['turns']}(含工具 {s['tool_turns']});"
           f"工具调用 {s['tools']};子代理 {s['agents']}")
     tw = s["turn_walls"]
     if tw:
