@@ -58,16 +58,18 @@ flowchart TD
 
 | skill | effort | thinking | max_output | max_turns | timeout(s) | deny Agent/Task | 理由 |
 |---|---|---|---|---|---|---|---|
-| intent | high | 32000 | 32000 | 100 | 1800 | 是 | 2026-11-18 cap A/B 实证地板（16.7s 历史最优），显式固化 |
-| storyboard | high | 64000 | 16000 | 100 | 1800 | 是；另禁 Bash/Read/Glob/Grep/Edit（Write-only；SCRIPT.md 由 Python 从 voiceover 派生） | 同上（3.0m 近地板）；2026-11-21 禁探盘 + SCRIPT 外提 |
-| visual | high | 64000 | 32000 | 100 | 1800 | 是 | 同上（7.1m 历史最优） |
-| frame_html | high | 64000 | 64000 | 60 | 1500 | 是 | 每帧一个进程：64000 防截断档；1500s 墙钟断电闸（2026-11-19 实测 720s 杀 4/6 帧，逐级抬到 ~25m）；B 架构无需 Agent |
+| intent | high | 32000 | 32000 | 100 | 1800 | 是；另禁 Write/Edit/Bash/Read/Glob/Grep（纯文本 → Python 落盘） | 2026-11-18 cap A/B 实证地板（16.7s 历史最优），显式固化 |
+| storyboard | high | 64000 | 16000 | 8 | 1800 | 是；另禁 Bash/Read/Glob/Grep/Edit（Write-only；SCRIPT.md 由 Python 从 voiceover 派生） | 契约卡内联后几乎 1 次 Write；8 轮 fail-fast；禁探盘 + SCRIPT 外提 |
+| visual | high | 64000 | 32000 | 100 | 1800 | 是；另禁 Bash/Glob/Grep/Write/Edit（保留 Read 作 rules 逃生口；文本回复合并） | 同上（7.1m 历史最优）；硬禁对齐 frame_html，停掉 ls/find |
+| frame_html | high | 64000 | 48000 | 60 | 1500 | 是；另禁 Bash/Glob/Grep（保留 Read/Edit/Write；driver 跑 frame-selfcheck，有界 ≤3 次重派） | 每帧一进程；48000 防截断探档（64000 一键回退）；1500s 墙钟；dispatch 内联，模型不读 `.dispatch.md` |
 | repair | high | 40000 | 16000 | 40 | 600 | 是 | 仅 assemble 失败的一次性修复会话 |
-| verify | medium | 32000 | 32000 | 100 | 1800 | 是 | 固化 |
+| verify | medium | 32000 | 16000 | 40 | 1800 | 是；另禁 Bash/Glob/Grep（保留 Read/Edit/Write；scan 由 Python 跑） | 修色/加 data-layout 的 fix 角色；40 轮 fail-fast；压探盘与 Todo 空转 |
 
 `frame_html` 另由调用方注入 `CLAUDE_CODE_SUBAGENT_EFFORT=high`（`frame_html.py` 与脚本 `--skill html` 一致；B 架构下仅 legacy 回退路径有意义，见 §9.7）。
 
-基准禁用工具：`WebFetch`、`WebSearch`、`NotebookEdit`、`TodoWrite`；六个 profile 再禁 `Agent`、`Task`（B 架构下无 stage 派生子代理；工具名按 CLI 2.1.316；版本漂移时未知名通常为空操作）。
+**frame_html 成功门禁（driver，非模型）**：`rc==0` ∧ 结果含 `done OK <frame_id>` ∧ `frame-selfcheck` PASS ∧ 帧文件存在。骨架自带 `skeleton-v1` 会通过 selfcheck，因此 **不能** 用「文件已存在 / selfcheck PASS」单独短路——必须等模型 `done OK`。
+
+基准禁用工具：`WebFetch`、`WebSearch`、`NotebookEdit`、`TodoWrite`、`TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`；六个 profile 再禁 `Agent`、`Task`（B 架构下无 stage 派生子代理；工具名按 CLI 2.1.316；版本漂移时未知名通常为空操作）。
 
 ## 5. 命令与 env 组装
 
@@ -135,9 +137,12 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 
 日志：
 
-- start：`claude skill start cwd=… skill=… effort=… thinking=… max_turns=… model=… timeout=…`（不打 prompt 正文）
+- start：`claude skill start label=… cwd=… skill=… effort=… thinking=… max_turns=… model=… timeout=…`（不打 prompt 正文）
+- invoke：`cmd=[…, '--', '<prompt>']`（prompt 正文替换为占位符）+ 子进程 env
 - done：`… subtype=… is_error=… num_turns=… duration_ms=… input=… output=… cache_read=… cache_create=…`
 - result：截断 2000 字符（替代原先 text 模式刷到 stdout 的可见摘要）
+
+观测：B 架构下 frame-html / visual worker 是 `run_claude` 直调（无 `<command-name>`）。`stat/skill-timing.py` 用首条用户消息的提示词签名补标（如 `aiflow-build-frame-html:01-…`），避免 list 表 skill 列全是 `-`。
 
 ## 8. 验收与 A/B
 
