@@ -203,6 +203,7 @@ def video_create(payload):
     modelname = payload.get('modelname', '')
     message = payload.get('message', '') 
     angle = payload.get('angle', '')
+    arc = payload.get('arc', '')
     audience = payload.get('audience', '')
     name = payload.get('name', '')
     summary = payload.get('summary', '')
@@ -215,7 +216,7 @@ def video_create(payload):
         logger.info(
             f'task_id:{task_id} htmlvideo start aspect:{aspect} style:{style} '
             f'duration:{duration} language:{language} modelcat:{modelcat} modelname:{modelname}'
-            f'message:{message} angle:{angle} audience:{audience} name:{name} intent_taskid:{intent_taskid}'
+            f'message:{message} angle:{angle} arc:{arc} audience:{audience} name:{name} intent_taskid:{intent_taskid}'
             f'summary:{summary} customization:{customization} notes:{notes}'
         )
         if len(content.strip()) == 0:
@@ -266,6 +267,7 @@ def video_create(payload):
             customization=customization,
             notes=notes,
             style_preset=style,
+            arc=arc,
             task_id=task_id,
         )
         cost_init = r.cost
