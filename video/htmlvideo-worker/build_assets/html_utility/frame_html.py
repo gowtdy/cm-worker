@@ -281,12 +281,15 @@ SKELETON_MARK = "skeleton-v1"
 DRIVER_ENV = "HTMLVIDEO_FRAME_HTML_DRIVER"
 SKELETON_ENV = "HTMLVIDEO_FRAME_HTML_SKELETON"
 DISPATCH_SUFFIX = ".dispatch.md"
-# One re-dispatch after the initial batch: with the 1500s per-worker timeout
-# this bounds frame-html at 2 rounds (~50 min worst case, was ~75 min at 3
-# rounds). Frames that pass exit the loop before re-entering it.
-MAX_RETRY_ROUNDS = 1
+# Bounded model→selfcheck loop per frame (default 3 attempts). Driver runs
+# frame-selfcheck after each worker return; FAIL findings go into the next
+# prompt. Never unbounded — HTMLVIDEO_FRAME_HTML_MAX_ATTEMPTS overrides.
+DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_MAX_WORKERS = 16
 DEFAULT_REPAIR_ROUNDS = 1  # assemble repair; HTMLVIDEO_FRAME_HTML_REPAIR_ROUNDS overrides
+# Kept as alias for older tests/docs that counted "1 retry".
+MAX_RETRY_ROUNDS = DEFAULT_MAX_ATTEMPTS - 1
+FRAME_SELFCHECK_SCRIPT = "/app/scripts/frame-selfcheck.mjs"
 CUT_CATALOG_PATH = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "skills",
     "aiflow-build-frame-html", "references", "cut-catalog.md"))
@@ -350,10 +353,10 @@ file under compositions/frames/ (sibling workers own those frames), any other
 frame's .dispatch.md / packet, or STORYBOARD.md — exploring sibling frames
 burns turns and cannot help this frame.
 
-Then run the structural gate and fix every FAIL:
-  node /app/scripts/frame-selfcheck.mjs {frame_file}
-
-Your terminal reply after the gate passes is exactly: done OK {frame_id}
+Do NOT run frame-selfcheck and do NOT use Bash — the driver runs
+`node {FRAME_SELFCHECK_SCRIPT} {frame_file}` after you finish and will
+re-dispatch you (bounded) with FAIL findings if needed. When you have written
+the fill, reply exactly: done OK {frame_id}
 On an unrecoverable failure instead reply: fail {frame_id}: <reason>
 
 The dispatch is self-sufficient: it already inlines the frame.md design-token
@@ -390,14 +393,45 @@ def _worker_done_ok(frame_id: str, text: str | None) -> bool:
     )
 
 
-def _dispatch_note(rc, text):
+def _run_frame_selfcheck(project_dir: str, frame_id: str) -> tuple[bool, str]:
+    """Run ``frame-selfcheck.mjs`` on one frame. Returns ``(pass, output)``."""
+    frame_rel = f"compositions/frames/{frame_id}.html"
+    frame_abs = os.path.join(project_dir, frame_rel)
+    if not os.path.isfile(frame_abs):
+        return False, f"[FAIL] file not found: {frame_rel}"
+    proc = subprocess.run(
+        ["node", FRAME_SELFCHECK_SCRIPT, frame_abs],
+        capture_output=True,
+        text=True,
+        cwd=project_dir,
+    )
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if not out:
+        out = f"(frame-selfcheck exit {proc.returncode})"
+    return proc.returncode == 0, out
+
+
+def _failure_note(
+    frame_id: str,
+    rc: int,
+    text: str | None,
+    sc_ok: bool,
+    selfcheck_out: str = "",
+) -> str:
+    parts: list[str] = []
     if rc == 124:
-        return "prior attempt hit its wall-clock timeout"
-    if rc != 0:
-        return f"prior attempt exited non-zero (rc={rc})"
-    tail = (text or "").strip()[-300:]
-    return ("prior attempt finished without passing its gate (possibly truncated); "
-            "last words: " + (tail or "∅"))
+        parts.append("prior attempt hit its wall-clock timeout")
+    elif rc != 0:
+        parts.append(f"prior attempt exited non-zero (rc={rc})")
+    elif not _worker_done_ok(frame_id, text):
+        tail = (text or "").strip()[-300:]
+        parts.append(
+            "prior attempt finished without done OK "
+            f"(possibly truncated); last words: {tail or '∅'}"
+        )
+    if not sc_ok and selfcheck_out:
+        parts.append("frame-selfcheck findings:\n" + selfcheck_out[-2000:])
+    return " | ".join(parts) if parts else "prior attempt failed gate"
 
 
 def _mark_animated_storyboard(project_dir, frame_id):
@@ -480,18 +514,27 @@ def _build_frame_html_driver(project_dir, logger):
     max_workers = _env_positive_int(
         "HTMLVIDEO_FRAME_HTML_MAX_CONCURRENCY", DEFAULT_MAX_WORKERS,
         logger or logging.getLogger("frame-html"))
+    max_attempts = _env_positive_int(
+        "HTMLVIDEO_FRAME_HTML_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS,
+        logger or logging.getLogger("frame-html"))
     remaining = list(frame_ids)
-    notes = {}
-    log("frame-html driver start frames=%s skeleton=%s", len(remaining), skeleton_mode)
-    for round_no in range(1 + MAX_RETRY_ROUNDS):
+    notes: dict[str, str] = {}
+    log(
+        "frame-html driver start frames=%s skeleton=%s max_attempts=%s",
+        len(remaining), skeleton_mode, max_attempts,
+    )
+    for attempt in range(max_attempts):
         def run_one(fid):
             prompt = _worker_prompt(
                 fid, skeleton_mode, project_dir=project_dir)
             if notes.get(fid):
                 prompt += (
-                    f"\n[RE-DISPATCH] {notes[fid]}. The frame file may already hold a "
-                    "skeleton or your own partial content — fill it directly; first "
-                    "edit within 1–2 turns; no single-turn marathon.")
+                    f"\n[RE-DISPATCH] {notes[fid]}\n"
+                    "The frame file may already hold a skeleton or your own "
+                    "partial content — fix the findings above; first edit within "
+                    "1–2 turns; no single-turn marathon. Do NOT run selfcheck "
+                    "yourself — the driver will re-check after you reply."
+                )
             rc, text = run_claude_result(
                 project_dir, prompt, logger,
                 extra_env={"CLAUDE_CODE_SUBAGENT_EFFORT": "high"},
@@ -499,26 +542,43 @@ def _build_frame_html_driver(project_dir, logger):
                 label=fid)
             return fid, rc, text
 
-        failures = {}
+        failures: dict[str, tuple[int, str | None, bool, str]] = {}
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             for fid, rc, text in pool.map(run_one, remaining):
-                ok = rc == 0 and _worker_done_ok(fid, text)
-                if (not skeleton_mode) and ok and not os.path.isfile(
-                        os.path.join(project_dir, "compositions", "frames", f"{fid}.html")):
-                    ok = False
+                frame_path = os.path.join(
+                    project_dir, "compositions", "frames", f"{fid}.html")
+                sc_ok, sc_out = _run_frame_selfcheck(project_dir, fid)
+                done = _worker_done_ok(fid, text)
+                ok = (
+                    rc == 0
+                    and done
+                    and sc_ok
+                    and os.path.isfile(frame_path)
+                )
                 if ok:
                     _mark_animated_storyboard(project_dir, fid)
                     remaining.remove(fid)
-                    log("worker ok %s (round %s)", fid, round_no)
+                    log(
+                        "worker ok %s (attempt %s/%s selfcheck=PASS)",
+                        fid, attempt + 1, max_attempts,
+                    )
                 else:
-                    failures[fid] = (rc, text)
-                    log("worker fail %s rc=%s (round %s)", fid, rc, round_no)
+                    failures[fid] = (rc, text, sc_ok, sc_out)
+                    log(
+                        "worker fail %s rc=%s done_ok=%s selfcheck=%s "
+                        "(attempt %s/%s)",
+                        fid, rc, done, "PASS" if sc_ok else "FAIL",
+                        attempt + 1, max_attempts,
+                    )
         if not remaining:
             break
-        notes = {fid: _dispatch_note(*t) for fid, t in failures.items()}
-        log("retry round %s pending=%s", round_no + 1, remaining)
+        notes = {
+            fid: _failure_note(fid, rc, text, sc_ok, sc_out)
+            for fid, (rc, text, sc_ok, sc_out) in failures.items()
+        }
+        log("retry pending=%s after attempt %s", remaining, attempt + 1)
     if remaining:
         reasons = ", ".join(
-            f"{fid}: {notes[fid]}" for fid in sorted(remaining))
+            f"{fid}: {notes.get(fid, 'unresolved')}" for fid in sorted(remaining))
         raise RuntimeError(
-            f"frames still broken after {1 + MAX_RETRY_ROUNDS} rounds: {reasons}")
+            f"frames still broken after {max_attempts} attempts: {reasons}")
