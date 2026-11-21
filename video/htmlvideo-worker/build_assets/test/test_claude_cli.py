@@ -44,6 +44,7 @@ _CLEAR_ENV = (
     "CLAUDE_CODE_MAX_THINKING_TOKENS",
     "ANTHROPIC_LOG",
     "BUN_OPTIONS",
+    "HTMLVIDEO_CLAUDE_HEARTBEAT_SECONDS",
 )
 
 
@@ -92,8 +93,14 @@ class RunClaudeTests(unittest.TestCase):
         proc = mock.Mock()
         proc.pid = 4242
         proc.returncode = rc
-        proc.communicate.return_value = (stdout, None)
-        proc.poll.return_value = rc
+        proc.args = ["claude"]
+        proc.poll.return_value = rc  # already exited → wait loop returns immediately
+        out = mock.Mock()
+        out.read.return_value = stdout
+        err = mock.Mock()
+        err.__iter__ = mock.Mock(return_value=iter([]))
+        proc.stdout = out
+        proc.stderr = err
         self.popen_mock.return_value = proc
         return proc
 
@@ -153,7 +160,7 @@ class RunClaudeTests(unittest.TestCase):
                 self.assertEqual(kwargs["stdout"], subprocess.PIPE)
                 self.assertTrue(kwargs["text"])
                 self.assertTrue(kwargs["start_new_session"])
-                self.assertIsNone(kwargs["stderr"])
+                self.assertEqual(kwargs["stderr"], subprocess.PIPE)
                 self.assertEqual(cmd[0], "claude")
                 self.assertIn("--dangerously-skip-permissions", cmd)
                 self.assertEqual(
@@ -185,7 +192,7 @@ class RunClaudeTests(unittest.TestCase):
                 self.assertNotIn("CLAUDE_CODE_MAX_THINKING_TOKENS", env)
                 self.assertEqual(os.environ["CLAUDE_CODE_EFFORT_LEVEL"], "max")
                 proc = self.popen_mock.return_value
-                proc.communicate.assert_called_once_with(timeout=timeout)
+                proc.poll.assert_called()
                 joined = "\n".join(logs.output)
                 self.assertIn(f"skill={skill}", joined)
                 self.assertIn(f"effort={effort}", joined)
@@ -260,11 +267,8 @@ class RunClaudeTests(unittest.TestCase):
         os.environ["HTMLVIDEO_CLAUDE_VISUAL_TIMEOUT"] = "30"
         os.environ["HTMLVIDEO_CLAUDE_VISUAL_MODEL"] = "deepseek-v4-pro"
         _, logs, cmd, kwargs = self._invoke(skill="visual")
-        self.assertEqual(
-            self.popen_mock.return_value.communicate.call_args.kwargs["timeout"],
-            30,
-        )
         self.assertEqual(cmd[cmd.index("--max-turns") + 1], "7")
+        self.assertIn("timeout=30", "\n".join(logs.output))
         self.assertEqual(
             cmd[cmd.index("--model") : cmd.index("--")],
             ["--model", "deepseek-v4-pro"],
@@ -282,10 +286,7 @@ class RunClaudeTests(unittest.TestCase):
         os.environ["HTMLVIDEO_CLAUDE_STORYBOARD_THINKING_TOKENS"] = "abc"
         _, logs, cmd, kwargs = self._invoke(skill="storyboard")
         self.assertEqual(cmd[cmd.index("--max-turns") + 1], "8")
-        self.assertEqual(
-            self.popen_mock.return_value.communicate.call_args.kwargs["timeout"],
-            1800,
-        )
+        self.assertIn("timeout=1800", "\n".join(logs.output))
         self.assertEqual(kwargs["env"]["MAX_THINKING_TOKENS"], "64000")
         joined = "\n".join(logs.output)
         self.assertIn("invalid HTMLVIDEO_CLAUDE_STORYBOARD_MAX_TURNS", joined)
@@ -298,11 +299,8 @@ class RunClaudeTests(unittest.TestCase):
         os.environ["HTMLVIDEO_CLAUDE_VERIFY_TIMEOUT"] = "-3"
         _, logs, cmd, _ = self._invoke(skill="verify")
         self.assertEqual(cmd[cmd.index("--max-turns") + 1], "40")
-        self.assertEqual(
-            self.popen_mock.return_value.communicate.call_args.kwargs["timeout"],
-            1800,
-        )
         joined = "\n".join(logs.output)
+        self.assertIn("timeout=1800", joined)
         self.assertIn("HTMLVIDEO_CLAUDE_VERIFY_MAX_TURNS=0 <= 0", joined)
         self.assertIn("HTMLVIDEO_CLAUDE_VERIFY_TIMEOUT=-3 <= 0", joined)
 
@@ -381,21 +379,30 @@ class RunClaudeTests(unittest.TestCase):
         proc = mock.Mock()
         proc.pid = 7777
         proc.returncode = None
-        proc.communicate.side_effect = [
-            subprocess.TimeoutExpired(cmd=["claude"], timeout=1800),
-            ("", None),
-        ]
-        proc.poll.side_effect = [None, None, -9]
+        proc.args = ["claude"]
+        out = mock.Mock()
+        out.read.return_value = ""
+        err = mock.Mock()
+        err.__iter__ = mock.Mock(return_value=iter([]))
+        proc.stdout = out
+        proc.stderr = err
         self.popen_mock.return_value = proc
+        dead = {"v": False}
+
+        def killpg_side_effect(pgid, sig):
+            dead["v"] = True
+
+        proc.poll.side_effect = lambda: -9 if dead["v"] else None
+        # started=0, deadline=1800; loop sees now=1800 → TimeoutExpired
+        mono = mock.Mock(side_effect=[0.0, 0.0, 1800.0, 1800.0, 1805.1])
         with mock.patch(
             "html_utility.claude_cli.os.getpgid", return_value=7777
         ) as getpgid, mock.patch(
-            "html_utility.claude_cli.os.killpg"
+            "html_utility.claude_cli.os.killpg", side_effect=killpg_side_effect
         ) as killpg, mock.patch(
             "html_utility.claude_cli.time.sleep"
         ), mock.patch(
-            "html_utility.claude_cli.time.monotonic",
-            side_effect=[0.0, 0.0, 10.0],
+            "html_utility.claude_cli.time.monotonic", mono
         ):
             with self.assertLogs("test.claude_cli", level="INFO") as logs:
                 code = run_claude(CWD, PROMPT, self.logger, skill="intent")
@@ -496,9 +503,18 @@ class RunClaudeTests(unittest.TestCase):
 
         logger = logging.getLogger("t")
         with mock.patch("subprocess.Popen") as popen_mock:
-            popen_mock.return_value.communicate.return_value = (
-                _result_json(result="done OK 01-hook"), "")
-            popen_mock.return_value.returncode = 0
+            proc = mock.Mock()
+            proc.pid = 1
+            proc.returncode = 0
+            proc.args = ["claude"]
+            proc.poll.return_value = 0
+            out = mock.Mock()
+            out.read.return_value = _result_json(result="done OK 01-hook")
+            err = mock.Mock()
+            err.__iter__ = mock.Mock(return_value=iter([]))
+            proc.stdout = out
+            proc.stderr = err
+            popen_mock.return_value = proc
             rc, text = run_claude_result(CWD, PROMPT, logger, skill="frame_html")
             self.assertEqual(rc, 0)
             self.assertIn("done OK 01-hook", text)
@@ -540,6 +556,64 @@ class RunClaudeTests(unittest.TestCase):
         env = kwargs["env"]
         self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "128000")
         self.assertEqual(env["CLAUDE_CODE_EFFORT_LEVEL"], "high")
+
+    def test_heartbeat_logs_while_running(self) -> None:
+        proc = mock.Mock()
+        proc.pid = 99
+        proc.returncode = None
+        proc.args = ["claude"]
+        # still running for a few polls, then exit
+        proc.poll.side_effect = [None, None, None, 0]
+        out = mock.Mock()
+        out.read.return_value = _result_json()
+        err = mock.Mock()
+        err.__iter__ = mock.Mock(return_value=iter([]))
+        proc.stdout = out
+        proc.stderr = err
+        self.popen_mock.return_value = proc
+        os.environ["HTMLVIDEO_CLAUDE_HEARTBEAT_SECONDS"] = "10"
+        # started=0; after 10s heartbeat; then exit on next poll
+        mono = mock.Mock(side_effect=[0.0, 0.0, 10.0, 10.5, 11.0, 11.0])
+        with mock.patch("html_utility.claude_cli.time.sleep"), mock.patch(
+            "html_utility.claude_cli.time.monotonic", mono
+        ):
+            with self.assertLogs("test.claude_cli", level="INFO") as logs:
+                code = run_claude(CWD, PROMPT, self.logger, skill="verify")
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "claude skill running label=- skill=verify elapsed=10s",
+            "\n".join(logs.output),
+        )
+
+    def test_stderr_progress_lines_are_logged(self) -> None:
+        proc = mock.Mock()
+        proc.pid = 99
+        proc.returncode = 0
+        proc.args = ["claude"]
+        proc.poll.return_value = 0
+        out = mock.Mock()
+        out.read.return_value = _result_json()
+        err = mock.Mock()
+        err.__iter__ = mock.Mock(
+            return_value=iter(
+                [
+                    "[INFO] [Stall] tool_dispatch_start tool=Edit\n",
+                    "noise line without markers\n",
+                    '[claude-code:unrecognized_model] {"model":"x"}\n',
+                ]
+            )
+        )
+        proc.stdout = out
+        proc.stderr = err
+        self.popen_mock.return_value = proc
+        with self.assertLogs("test.claude_cli", level="INFO") as logs:
+            code = run_claude(CWD, PROMPT, self.logger, skill="verify")
+        self.assertEqual(code, 0)
+        joined = "\n".join(logs.output)
+        self.assertIn("claude skill progress", joined)
+        self.assertIn("tool_dispatch_start", joined)
+        self.assertIn("unrecognized_model", joined)
+        self.assertNotIn("noise line without markers", joined)
 
 
 if __name__ == "__main__":
