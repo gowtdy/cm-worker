@@ -46,7 +46,6 @@ class DriverTest(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {
             "HTMLVIDEO_FRAME_HTML_DRIVER": "1",
             "HTMLVIDEO_FRAME_HTML_SKELETON": "1",
-            "HTMLVIDEO_CLAUDE_PROFILE": "1",
         }, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
