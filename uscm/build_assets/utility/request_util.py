@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 import hmac
@@ -27,6 +28,7 @@ from config.video_config import (
 from utility.auth_session import authenticate_request
 from utility.allused_voicemodels import get_common_model
 from cmwk_common.module_enum import ModuleType
+from cmwk_common.util import gen_res_dict
 from utility.use_strategy import can_use_service
 from cmwk_common.userserver_producer import fetch_generate_counts, fetch_userinfo
 from utility.util import aiflow_hmac_signature
@@ -46,6 +48,30 @@ def get_real_ip(request: Request):
     elif 'x-real-ip' in request.headers :
         real_ip = request.headers['x-real-ip']
     return real_ip
+
+async def parse_json_body(request: Request, logger: logging.Logger = None):
+    """解析 JSON body。空 body 或非法 JSON 返回 (None, err_dict)，成功返回 (obj, None)。"""
+    try:
+        body = await request.body()
+        if not body or not body.strip():
+            if logger:
+                logger.warning(
+                    f'empty request body path:{request.url.path} '
+                    f'real_ip:{get_real_ip(request)} '
+                    f'content_type:{request.headers.get("content-type")} '
+                    f'content_length:{request.headers.get("content-length")}'
+                )
+            return None, gen_res_dict(1, 'empty request body')
+        return json.loads(body), None
+    except json.JSONDecodeError as e:
+        if logger:
+            logger.warning(
+                f'invalid json body path:{request.url.path} err:{e} '
+                f'real_ip:{get_real_ip(request)} '
+                f'content_type:{request.headers.get("content-type")} '
+                f'content_length:{request.headers.get("content-length")}'
+            )
+        return None, gen_res_dict(1, 'invalid json body')
 
 def validate_request(logger: logging.Logger, real_ip: str, referer: str, reqid: str, email: str, today: str, userid: int, module: ModuleType = ModuleType.TTS, domain: str = "", request: Request = None) -> tuple[int, str, int, int]:
     """
