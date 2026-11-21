@@ -106,7 +106,7 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 - 值 ≥ 该输出 cap：cap > 127000 时压到 127000，否则压到 `cap - 1`。
 - profile `max_output` 注入在 clamp 之后，`extra_env` 里的输出 cap 最后再应用（最后赢家）；注入后 thinking 可能仍 ≥ 子进程最终输出 cap——本后端 adaptive 剥 budget_tokens，此项 inert。
 
-超时：`Popen(start_new_session=True)` + `communicate(timeout=)`；超时对进程组 `SIGTERM` → 宽限 → `SIGKILL`，返回 **124**。
+超时 / 进度：`Popen(start_new_session=True, stdout/stderr=PIPE)` + `_wait_claude_proc`（轮询 + 心跳，**不用** `communicate()`——否则 adaptive thinking 长回合会在 worker 日志里静默数分钟）。超时对进程组 `SIGTERM` → 宽限 → `SIGKILL`，返回 **124**。该等待路径对全部 skill（intent / storyboard / visual / frame_html / repair / verify）共用。
 
 ## 6. 运维接口
 
@@ -118,6 +118,7 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 | `HTMLVIDEO_CLAUDE_<SKILL>_MAX_TURNS` | 覆盖轮数；≤0 回退默认 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_TIMEOUT` | 覆盖超时秒；≤0 回退默认 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_MODEL` | 设置则追加 `--model`；默认不设 |
+| `HTMLVIDEO_CLAUDE_HEARTBEAT_SECONDS` | 全局：等待 Claude 时心跳间隔（默认 15）；`0` 关闭 |
 
 `<SKILL>`：`INTENT` / `STORYBOARD` / `VISUAL` / `FRAME_HTML` / `VERIFY` / `REPAIR`。
 
@@ -139,6 +140,8 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 
 - start：`claude skill start label=… cwd=… skill=… effort=… thinking=… max_turns=… model=… timeout=…`（不打 prompt 正文）
 - invoke：`cmd=[…, '--', '<prompt>']`（prompt 正文替换为占位符）+ 子进程 env
+- running：等待中每 N 秒 `claude skill running label=… skill=… elapsed=…s`（防长思考静默）
+- progress：stderr 匹配 tool/API/`unrecognized_model` 等行时即时 `claude skill progress …`（flush 到 worker 日志）
 - done：`… subtype=… is_error=… num_turns=… duration_ms=… input=… output=… cache_read=… cache_create=…`
 - result：截断 2000 字符（替代原先 text 模式刷到 stdout 的可见摘要）
 
