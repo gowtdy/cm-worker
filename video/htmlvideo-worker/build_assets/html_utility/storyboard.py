@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -29,9 +30,14 @@ def _has_spoken_frames(storyboard_text: str) -> bool:
 def _slugify(title: str) -> str:
     """ASCII slug for frame file ids. Never empty — Chinese-only titles used to
     collapse to ``\"\"`` and yield ``01-.html``, which then breaks the driver's
-    ``done OK <id>`` word-boundary match."""
+    ``done OK <id>`` word-boundary match. Non-ASCII titles get a stable
+    ``zh`` + 8-hex short hash so parallel frames stay unique (not all
+    ``NN-frame``)."""
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    return slug or "frame"
+    if slug:
+        return slug
+    digest = hashlib.sha1((title or "").strip().encode("utf-8")).hexdigest()[:8]
+    return f"zh{digest}"
 
 
 _FRAME_HEADING_RE = re.compile(
