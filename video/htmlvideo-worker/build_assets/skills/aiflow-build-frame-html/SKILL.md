@@ -29,12 +29,15 @@ and `../hyperframes-animation/`.
    `*.dispatch.md`).
 2. Fan out one `claude -p` worker per frame, concurrency
    `HTMLVIDEO_FRAME_HTML_MAX_CONCURRENCY` (default 16); per-worker env:
-   cap/turns/timeout from the `frame_html` claude profile (64000/60/1500).
-3. A frame is **done** iff rc==0 ∧ result contains `done OK <frame_id>`
-   (skeleton off additionally requires the file on disk). Artifact existence
-   alone is NOT a completion signal while skeletons pre-exist.
-4. Collect every failure, re-dispatch the whole failing batch in parallel with
-   the failure reason appended, at most 1 round. Then raise — never hand-fix.
+   cap/turns/timeout from the `frame_html` claude profile (48000/60/1500);
+   Bash/Glob/Grep denied (driver owns the gate).
+3. After each worker return the driver runs
+   `node frame-selfcheck.mjs compositions/frames/<frame_id>.html`. A frame is
+   **done** iff rc==0 ∧ `done OK <frame_id>` ∧ selfcheck PASS ∧ file on disk.
+   Artifact existence / skeleton selfcheck alone is NOT completion.
+4. Failures (missing done OK, non-zero rc, or selfcheck FAIL) are re-dispatched
+   in parallel with findings appended — bounded by
+   `HTMLVIDEO_FRAME_HTML_MAX_ATTEMPTS` (default 3). Then raise — never unbounded.
 5. Mark landed frames `animated` in STORYBOARD (regex, deterministic).
 6. Assemble via `assemble-index.mjs`; on failure run ONE `repair`-profile
    session (cheapest safe structural edit to frame files only), re-assemble
@@ -42,13 +45,14 @@ and `../hyperframes-animation/`.
 
 ## Worker contract (sub-agents/frame-worker.md + frame-worker-card.md)
 
-Read `.dispatch.md` fully (the only required input) → fill the
-`compositions/frames/<frame_id>.html` file —— skeleton already on disk:
-chunked edits style → body → script, each ≤ ~20 KB, first edit in 1–2 turns →
-`node /app/scripts/frame-selfcheck.mjs` → fix all FAILs → reply
-`done OK <frame_id>` (or `fail <frame_id>: <reason>`). Escape hatches:
-`_role.md` (full contract), `frame.md`, cut catalog, `RULES_DIR/*.md` — open
-only when a dispatch rule is unclear.
+Driver inlines `.dispatch.md` into the worker prompt (do not Read it again) →
+fill `compositions/frames/<frame_id>.html` (skeleton on disk): chunked
+Edit/Write style → body → script, each ≤ ~20 KB, first edit in 1–2 turns →
+reply `done OK <frame_id>` (or `fail <frame_id>: <reason>`). Do **not** run
+`frame-selfcheck` or Bash — the driver runs the gate and re-dispatches with
+FAIL findings when needed. Escape hatches: cut catalog / `RULES_DIR/*.md`
+only when a cited recipe is missing from the inlined dispatch; never open
+`frame.md` / `_role.md`.
 
 ## Gates
 
