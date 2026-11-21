@@ -6,9 +6,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
+import threading
 import time
 
 # Per-skill effort / thinking / output budget. CLAUDE_CODE_EFFORT_LEVEL in the
@@ -138,6 +140,16 @@ _INSPECT_PRELOAD = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "claude_inspect_full.js"
 )
 _DEBUG_REQUEST_TRUTHY = frozenset({"1", "true", "yes", "on"})
+# Long adaptive-thinking turns can sit silent for minutes after "skill invoke".
+# Heartbeat + stderr progress lines keep htmlvideo_worker.log moving.
+_HEARTBEAT_DEFAULT_SECONDS = 15
+_STDERR_LINE_LIMIT = 300
+_PROGRESS_RE = re.compile(
+    r"tool_dispatch|tool_use|tool_result|unrecognized_model|"
+    r"API:timing|API REQUEST|durationMs|num_turns|content_block|"
+    r"thinking_tokens|\[claude-code:|Stall\]",
+    re.I,
+)
 
 
 def _env_positive_int(name: str, default: int, logger: logging.Logger) -> int:
@@ -429,6 +441,118 @@ def _kill_process_group(proc: subprocess.Popen[str], logger: logging.Logger) -> 
         )
 
 
+def _flush_loggers(logger: logging.Logger) -> None:
+    """Push heartbeat/progress lines to disk immediately (Celery can buffer)."""
+    for log in (logger, logging.getLogger()):
+        for handler in getattr(log, "handlers", []):
+            try:
+                handler.flush()
+            except Exception:
+                pass
+
+
+def _heartbeat_seconds(logger: logging.Logger) -> int:
+    """Seconds between `claude skill running` lines; ``0`` disables heartbeats."""
+    raw = os.environ.get("HTMLVIDEO_CLAUDE_HEARTBEAT_SECONDS", "").strip()
+    if raw == "0":
+        return 0
+    if not raw:
+        return _HEARTBEAT_DEFAULT_SECONDS
+    return _env_positive_int(
+        "HTMLVIDEO_CLAUDE_HEARTBEAT_SECONDS", _HEARTBEAT_DEFAULT_SECONDS, logger
+    )
+
+
+def _wait_claude_proc(
+    proc: subprocess.Popen[str],
+    timeout: int,
+    logger: logging.Logger,
+    skill: str,
+    label: str | None,
+) -> str:
+    """Wait for the Claude child while emitting heartbeat + stderr progress.
+
+    Shared by every skill profile (intent / storyboard / visual / frame_html /
+    repair / verify): ``communicate()`` buffers until exit, so long adaptive-
+    thinking turns look hung in htmlvideo_worker.log. This polls, heartbeats
+    every N seconds (``HTMLVIDEO_CLAUDE_HEARTBEAT_SECONDS``, default 15; ``0``
+    disables), and re-logs matching stderr lines (tool/API) into the same logger.
+    """
+    tag = _log_label(label)
+    heartbeat = _heartbeat_seconds(logger)
+    started = time.monotonic()
+    deadline = started + timeout
+    last_beat = started
+    stdout_chunks: list[str] = []
+
+    def _read_stdout() -> None:
+        try:
+            if proc.stdout is None:
+                return
+            data = proc.stdout.read()
+            if data:
+                stdout_chunks.append(data)
+        finally:
+            try:
+                if proc.stdout is not None:
+                    proc.stdout.close()
+            except Exception:
+                pass
+
+    def _read_stderr() -> None:
+        if proc.stderr is None:
+            return
+        try:
+            for raw in proc.stderr:
+                line = raw.rstrip("\n")
+                if not line or not _PROGRESS_RE.search(line):
+                    continue
+                logger.info(
+                    "claude skill progress label=%s skill=%s %s",
+                    tag,
+                    skill,
+                    line[:_STDERR_LINE_LIMIT],
+                )
+                _flush_loggers(logger)
+        finally:
+            try:
+                proc.stderr.close()
+            except Exception:
+                pass
+
+    t_out = threading.Thread(
+        target=_read_stdout, name=f"claude-stdout-{tag}", daemon=True
+    )
+    t_err = threading.Thread(
+        target=_read_stderr, name=f"claude-stderr-{tag}", daemon=True
+    )
+    t_out.start()
+    t_err.start()
+    try:
+        while proc.poll() is None:
+            now = time.monotonic()
+            if now >= deadline:
+                raise subprocess.TimeoutExpired(
+                    proc.args if proc.args is not None else ["claude"], timeout
+                )
+            if heartbeat and (now - last_beat) >= heartbeat:
+                logger.info(
+                    "claude skill running label=%s skill=%s elapsed=%ss "
+                    "timeout=%ss (waiting on model/tools)",
+                    tag,
+                    skill,
+                    int(now - started),
+                    timeout,
+                )
+                _flush_loggers(logger)
+                last_beat = now
+            time.sleep(0.5)
+    finally:
+        t_out.join(timeout=_TIMEOUT_GRACE_SECONDS)
+        t_err.join(timeout=_TIMEOUT_GRACE_SECONDS)
+    return "".join(stdout_chunks)
+
+
 def _apply_debug_request_env(env: dict[str, str]) -> None:
     """When HTMLVIDEO_CLAUDE_DEBUG_REQUEST is on, dump full Anthropic request bodies.
 
@@ -544,12 +668,12 @@ def _run_profile(
         cwd=project_dir,
         env=env,
         stdout=subprocess.PIPE,
-        stderr=None,
+        stderr=subprocess.PIPE,  # tee progress into logger (was inherited/silent in worker log)
         text=True,
         start_new_session=True,
     )
     try:
-        stdout, _ = proc.communicate(timeout=timeout)
+        stdout = _wait_claude_proc(proc, timeout, logger, skill, label)
     except subprocess.TimeoutExpired:
         logger.error(
             "claude skill timeout label=%s skill=%s timeout=%s",
@@ -558,12 +682,18 @@ def _run_profile(
             timeout,
         )
         _kill_process_group(proc, logger)
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except Exception:
+                pass
         try:
-            proc.communicate(timeout=_TIMEOUT_GRACE_SECONDS)
+            proc.wait(timeout=_TIMEOUT_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
             pass
-        # Timeout: rc 124 and result text "" — the partially captured stdout
-        # is discarded (nothing parseable survives the kill).
+        # Timeout: rc 124 and result text "" — partial stdout is discarded
+        # (nothing parseable survives the kill).
         return 124, ""
     return _log_parsed_result(
         logger, skill, proc.returncode or 0, stdout or "", label=label
