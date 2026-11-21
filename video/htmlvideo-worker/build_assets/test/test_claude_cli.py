@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Profile, rollback, and usage-log behavior of run_claude."""
+"""Profile and usage-log behavior of run_claude."""
 
 from __future__ import annotations
 
@@ -88,12 +88,6 @@ class RunClaudeTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._env.stop()
 
-    def _completed_run(self, stdout: str = "", rc: int = 0) -> None:
-        proc = mock.Mock()
-        proc.returncode = rc
-        proc.stdout = stdout
-        self.run_mock.return_value = proc
-
     def _completed_popen(self, stdout: str = "", rc: int = 0) -> mock.Mock:
         proc = mock.Mock()
         proc.pid = 4242
@@ -105,7 +99,7 @@ class RunClaudeTests(unittest.TestCase):
 
     def _invoke(
         self,
-        skill: str | None = "intent",
+        skill: str = "intent",
         extra_env: dict[str, str] | None = None,
         stdout: str | None = None,
         rc: int = 0,
@@ -113,44 +107,13 @@ class RunClaudeTests(unittest.TestCase):
     ):
         if stdout is None:
             stdout = _result_json()
-        if skill is None or os.environ.get(
-            "HTMLVIDEO_CLAUDE_PROFILE", ""
-        ).strip().lower() == "off":
-            self._completed_run(stdout=stdout, rc=rc)
-        else:
-            self._completed_popen(stdout=stdout, rc=rc)
+        self._completed_popen(stdout=stdout, rc=rc)
         with self.assertLogs("test.claude_cli", level="INFO") as logs:
             code = run_claude(
                 CWD, prompt, self.logger, extra_env=extra_env, skill=skill
             )
-        if skill is None or os.environ.get(
-            "HTMLVIDEO_CLAUDE_PROFILE", ""
-        ).strip().lower() == "off":
-            args, kwargs = self.run_mock.call_args
-            return code, logs, args[0], kwargs
         args, kwargs = self.popen_mock.call_args
         return code, logs, args[0], kwargs
-
-    def _assert_legacy(self, cmd: list[str], kwargs: dict) -> None:
-        self.assertEqual(
-            cmd,
-            [
-                "claude",
-                "--print",
-                "--dangerously-skip-permissions",
-                "--permission-mode",
-                "bypassPermissions",
-                "--output-format",
-                "text",
-                PROMPT,
-            ],
-        )
-        self.assertNotIn("stdout", kwargs)
-        self.assertNotIn("timeout", kwargs)
-        self.assertNotIn("text", kwargs)
-        self.assertNotIn("stderr", kwargs)
-        self.assertEqual(kwargs["cwd"], CWD)
-        self.popen_mock.assert_not_called()
 
     def test_missing_cli_raises(self) -> None:
         self.which.return_value = None
@@ -159,60 +122,25 @@ class RunClaudeTests(unittest.TestCase):
         self.run_mock.assert_not_called()
         self.popen_mock.assert_not_called()
 
-    def test_skill_none_matches_legacy_invocation(self) -> None:
-        os.environ["HTMLVIDEO_CLAUDE_INTENT_EFFORT"] = "low"
-        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
-        code, logs, cmd, kwargs = self._invoke(skill=None)
-        self.assertEqual(code, 0)
-        self._assert_legacy(cmd, kwargs)
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "max")
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"], "1")
-        self.assertEqual(os.environ["CLAUDE_CODE_EFFORT_LEVEL"], "max")
-        joined = "\n".join(logs.output)
-        self.assertIn("--output-format text <prompt>", joined)
-        self.assertNotIn(PROMPT, joined)
-
-    def test_skill_none_merges_extra_env_only(self) -> None:
-        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
-        code, logs, cmd, kwargs = self._invoke(
-            skill=None, extra_env={"CLAUDE_CODE_SUBAGENT_EFFORT": "high"}
-        )
-        self.assertEqual(code, 0)
-        self._assert_legacy(cmd, kwargs)
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "max")
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_SUBAGENT_EFFORT"], "high")
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"], "1")
-        self.assertNotIn("MAX_THINKING_TOKENS", kwargs["env"])
-        self.assertIsNot(kwargs["env"], os.environ)
-
-    def test_profile_off_restores_legacy_even_with_skill(self) -> None:
-        os.environ["HTMLVIDEO_CLAUDE_PROFILE"] = " OFF "
-        os.environ["HTMLVIDEO_CLAUDE_INTENT_EFFORT"] = "low"
-        os.environ["HTMLVIDEO_CLAUDE_INTENT_MODEL"] = "deepseek-v4-pro"
-        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
-        code, logs, cmd, kwargs = self._invoke(
-            skill="intent", extra_env={"FOO": "bar"}
-        )
-        self.assertEqual(code, 0)
-        self._assert_legacy(cmd, kwargs)
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "max")
-        self.assertEqual(kwargs["env"]["FOO"], "bar")
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"], "1")
-        self.assertNotIn("MAX_THINKING_TOKENS", kwargs["env"])
-        self.assertNotIn("--model", cmd)
-        self.assertNotIn(PROMPT, "\n".join(logs.output))
-
-    def test_profile_off_unknown_skill_stays_legacy(self) -> None:
-        os.environ["HTMLVIDEO_CLAUDE_PROFILE"] = "off"
-        code, _, cmd, kwargs = self._invoke(skill="not-a-skill")
-        self.assertEqual(code, 0)
-        self._assert_legacy(cmd, kwargs)
-
     def test_unknown_skill_raises(self) -> None:
         with self.assertRaises(ValueError):
             run_claude(CWD, PROMPT, self.logger, skill="not-a-skill")
         self.run_mock.assert_not_called()
         self.popen_mock.assert_not_called()
+
+    def test_skill_none_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            run_claude(CWD, PROMPT, self.logger)
+        self.run_mock.assert_not_called()
+        self.popen_mock.assert_not_called()
+
+    def test_profile_env_off_is_ignored(self) -> None:
+        os.environ["HTMLVIDEO_CLAUDE_PROFILE"] = "off"
+        code, _, cmd, kwargs = self._invoke(skill="intent")
+        self.assertEqual(code, 0)
+        self.assertEqual(cmd[cmd.index("--output-format") + 1], "json")
+        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "high")
+        self.run_mock.assert_not_called()
 
     def test_each_skill_profile(self) -> None:
         os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
