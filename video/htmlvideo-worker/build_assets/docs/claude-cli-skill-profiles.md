@@ -142,7 +142,7 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 - done：`… subtype=… is_error=… num_turns=… duration_ms=… input=… output=… cache_read=… cache_create=…`
 - result：截断 2000 字符（替代原先 text 模式刷到 stdout 的可见摘要）
 
-观测：B 架构下 frame-html / visual worker 是 `run_claude` 直调（无 `<command-name>`）。`stat/skill-timing.py` 用首条用户消息的提示词签名补标（如 `aiflow-build-frame-html:01-…`），避免 list 表 skill 列全是 `-`。
+观测：B 架构下 frame-html / visual worker 是 `run_claude` 直调（无 `<command-name>`）。`stat/skill-timing.py` 用首条用户消息的提示词签名补标（如 `aiflow-build-frame-html:01-…`），避免 list 表 skill 列全是 `-`。另报 `first_write_s`（t0→首个 Write|Edit）与 `first_write_tool_turn`，用于观测 frame-html「1–2 回合落盘」软纪律是否被遵守（尚未硬约束 max_turns）。
 
 ## 8. 验收与 A/B
 
