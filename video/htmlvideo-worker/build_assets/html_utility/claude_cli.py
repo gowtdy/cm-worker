@@ -62,13 +62,13 @@ _PROFILES: dict[str, dict[str, object]] = {
     "frame_html": {
         "effort": "high", "thinking": "64000",
         # Per-worker session cap. 48000: enough output budget that a worker
-        # reading ~10k tokens of dispatch + skeleton-Editing never truncates,
-        # far enough below 128k that marathon thinking loses its silent runway.
+        # with inlined dispatch + skeleton Edit/Write never truncates, far
+        # enough below 128k that marathon thinking loses its silent runway.
         # Tightened from 64000 (2026-11-20 P2 thinking-cap lever) — the 32k
         # truncation lesson says A/B before going lower; 48000 is the probe.
         # 64000 is the documented one-line rollback; serial stages stay 32000.
         "max_output": "48000",
-        "max_turns": 60,       # per-frame fill: read + ~5 edits + selfcheck fixes
+        "max_turns": 60,       # fill only; driver owns frame-selfcheck
         # Per-worker wall kill-switch (a skeleton keeps a valid file on disk).
         # 2026-11-19 test: 720s was too short — on the adaptive backend the
         # thinking cap is stripped (see header note), so a worker burns 20–35k
@@ -76,6 +76,8 @@ _PROFILES: dict[str, dict[str, object]] = {
         # workers were killed at 720s mid-write. 1500s gives ~25 min headroom.
         "timeout": 1500,
         "deny_agent": True,    # B architecture: no stage dispatches subagents anymore
+        # Driver runs frame-selfcheck; Bash was only used for that + exploration.
+        "deny_tools": ["Bash", "Glob", "Grep"],
     },
     "repair": {
         "effort": "high", "thinking": "40000",
