@@ -308,7 +308,27 @@ def _frame_ids(project_dir):
     )
 
 
-def _worker_prompt(frame_id, skeleton_mode):
+def _load_dispatch_text(project_dir: str, frame_id: str) -> str:
+    path = os.path.join(
+        project_dir, FRAME_PACKETS_DIR, f"{frame_id}{DISPATCH_SUFFIX}")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"missing dispatch doc: {path}")
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None):
+    """Build the per-frame worker prompt with dispatch inlined.
+
+    ``dispatch_text`` overrides the on-disk ``.dispatch.md`` (tests). Production
+    callers pass ``project_dir`` so the driver reads and embeds the file — the
+    model must not Read the dispatch path again.
+    """
+    if dispatch_text is None:
+        if not project_dir:
+            raise ValueError(
+                "_worker_prompt requires project_dir or dispatch_text")
+        dispatch_text = _load_dispatch_text(project_dir, frame_id)
     frame_file = f"compositions/frames/{frame_id}.html"
     fill_line = (
         f"A pre-built skeleton already exists at {frame_file} (a `{SKELETON_MARK}` "
@@ -321,9 +341,9 @@ def _worker_prompt(frame_id, skeleton_mode):
     )
     return f"""You are one per-frame HTML worker for a HyperFrames video.
 
-Your single required input is the merged dispatch document for your frame:
-  .hyperframes/frame-packets/{frame_id}.dispatch.md
-Read it fully first, then build. {fill_line}
+The complete merged dispatch for your frame is INLINED below — treat it as the
+authoritative contract. Do NOT Read `.hyperframes/frame-packets/{frame_id}.dispatch.md`
+or any other packet/dispatch file; re-reading only wastes turns. {fill_line}
 
 Scope is exactly one file: {frame_file}. Never read, open, or write any other
 file under compositions/frames/ (sibling workers own those frames), any other
@@ -349,6 +369,10 @@ Never edit STORYBOARD.md. Turn discipline: every turn ends with a tool call or
 visible text; your first edit must land within your first 1–2 turns; keep each
 turn's thinking to at most one short paragraph — never burn a turn on marathon
 deliberation.
+
+## Dispatch (authoritative — already complete)
+
+{dispatch_text.rstrip()}
 """
 
 
@@ -461,7 +485,8 @@ def _build_frame_html_driver(project_dir, logger):
     log("frame-html driver start frames=%s skeleton=%s", len(remaining), skeleton_mode)
     for round_no in range(1 + MAX_RETRY_ROUNDS):
         def run_one(fid):
-            prompt = _worker_prompt(fid, skeleton_mode)
+            prompt = _worker_prompt(
+                fid, skeleton_mode, project_dir=project_dir)
             if notes.get(fid):
                 prompt += (
                     f"\n[RE-DISPATCH] {notes[fid]}. The frame file may already hold a "
