@@ -103,22 +103,12 @@ _THINKING_SAFE_CAP = 127000
 _LOG_LIMIT = 2000
 _TIMEOUT_GRACE_SECONDS = 5
 
-_LEGACY_CMD_LOG = (
-    "claude skill start label=%s cwd=%s cmd=claude --print "
-    "--dangerously-skip-permissions --permission-mode bypassPermissions "
-    "--output-format text <prompt>"
-)
-
 # Bun-compiled Claude binary preload: expand util.inspect so ANTHROPIC_LOG=debug
 # prints full messages/system/tools instead of [Object ...].
 _INSPECT_PRELOAD = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "claude_inspect_full.js"
 )
 _DEBUG_REQUEST_TRUTHY = frozenset({"1", "true", "yes", "on"})
-
-
-def _profile_off() -> bool:
-    return os.environ.get("HTMLVIDEO_CLAUDE_PROFILE", "").strip().lower() == "off"
 
 
 def _env_positive_int(name: str, default: int, logger: logging.Logger) -> int:
@@ -245,19 +235,6 @@ def _resolve_profile(skill: str, logger: logging.Logger) -> dict[str, object]:
         "model": model,
         "thinking_fallback": str(base["thinking"]),
     }
-
-
-def _legacy_cmd(prompt: str) -> list[str]:
-    return [
-        "claude",
-        "--print",
-        "--dangerously-skip-permissions",
-        "--permission-mode",
-        "bypassPermissions",
-        "--output-format",
-        "text",
-        prompt,
-    ]
 
 
 def _profile_cmd(
@@ -460,20 +437,6 @@ def _child_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-def _run_legacy(
-    project_dir: str,
-    prompt: str,
-    logger: logging.Logger,
-    extra_env: dict[str, str] | None,
-    label: str | None = None,
-) -> int:
-    logger.info(_LEGACY_CMD_LOG, _log_label(label), project_dir)
-    proc = subprocess.run(
-        _legacy_cmd(prompt), cwd=project_dir, env=_child_env(extra_env)
-    )
-    return proc.returncode
-
-
 def _run_profile(
     project_dir: str,
     prompt: str,
@@ -533,6 +496,13 @@ def _run_profile(
         model,
         profile.get("deny_tools"),
     )
+    logger.info(
+        "claude skill invoke label=%s skill=%s cmd=%s env=%s",
+        tag,
+        skill,
+        cmd,
+        env,
+    )
     proc = subprocess.Popen(
         cmd,
         cwd=project_dir,
@@ -582,13 +552,11 @@ def run_claude_result(
     log line so concurrent workers stay distinguishable.
 
     The result text is ``""`` whenever it cannot be produced: JSON parse
-    failure, the legacy (profile-off) path, or a wall-clock timeout (which
-    yields ``(124, "")``). Callers must gate on the exit code for those cases.
+    failure or a wall-clock timeout (which yields ``(124, "")``). Callers
+    must gate on the exit code for those cases.
     """
-    if shutil.which("claude") is None:
-        raise RuntimeError("claude CLI not found on PATH")
-    if skill is None or _profile_off():
-        return _run_legacy(project_dir, prompt, logger, extra_env, label), ""
+    #if shutil.which("claude") is None:
+    #    raise RuntimeError("claude CLI not found on PATH")
     if skill not in _PROFILES:
         raise ValueError(f"unknown claude skill profile: {skill}")
     return _run_profile(project_dir, prompt, logger, extra_env, skill, label)
@@ -605,8 +573,8 @@ def run_claude(
     """Invoke Claude Code non-interactively.
 
     ``skill`` selects a per-skill effort, thinking budget, output cap, turn
-    cap, and wall-clock timeout. ``skill=None`` or
-    ``HTMLVIDEO_CLAUDE_PROFILE=off`` keeps the legacy command and environment.
+    cap, and wall-clock timeout; it is required (``None`` or an unknown name
+    raises ``ValueError``).
     ``extra_env`` is applied last on top of the inherited environment. The
     thinking budget is clamped against the *pre-injection* output ceiling —
     the ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` value inherited or injected via
