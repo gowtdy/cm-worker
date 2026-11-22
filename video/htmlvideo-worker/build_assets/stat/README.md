@@ -15,15 +15,16 @@ python3 skill-timing.py --csv                     # list 输出 CSV(time,path,sk
 
 其他开关:`--agents`(列入子代理会话)、`--all`(列入非 skill 会话,含人工分析会话)、`--full`(显示完整路径)、`--root <dir>`(默认 `/app/log/claude/projects`)。脚本只读转录文件,无副作用。
 
-## 运行识别(三种签名)
+## 运行识别(四种签名,按优先级)
 
-| 签名 | 位置 | 示例 |
-|---|---|---|
-| sdk-cli 流水线命令 | 首个用户消息 `<command-name>` 标签 | `aiflow-build-storyboard` |
-| Skill 工具调用 | `tool_use` name=Skill 的 `input.skill` | 新 CLI(≥2.1.325)运行 |
-| 子代理会话 | `<parent>/subagents/agent-*.jsonl` + `.meta.json` | `agent:frame-html-worker │ ...` |
+| 优先级 | 签名 | 位置 | 示例 |
+|---|---|---|---|
+| 1 | sdk-cli 流水线命令 | 首个用户消息 `<command-name>` 标签 | `aiflow-build-storyboard` |
+| 2 | B 架构 driver 提示词 | 首个用户/enqueue 正文匹配 worker 签名 | `aiflow-verify-frame`(含 findings 修复) |
+| 3 | Skill 工具调用 | `tool_use` name=Skill 的 `input.skill` | 交互式 / 无 driver 时的回退 |
+| 4 | 子代理会话 | `<parent>/subagents/agent-*.jsonl` + `.meta.json` | `agent:frame-html-worker │ ...` |
 
-两种 skill 签名会归并显示为同一 skill 名(`Skill:` 前缀剥离);同一会话命中多个 skill 时取命令签名、优先级最高者。
+`<command-name>` 与 Skill 工具名归并显示(剥离 `Skill:` 前缀)。**driver 阶段身份优先于中途查阅用的 Skill 调用**,避免 verify-repair 会话因调用 `hyperframes-core` 被误标。
 
 ## 统计口径(与既往分析文档一致)
 
@@ -57,4 +58,5 @@ python3 skill-timing.py --csv                     # list 输出 CSV(time,path,sk
 
 ## 变更记录
 
+- 2026-11-21:driver 提示词签名优先于中途 Skill 工具调用,修复 verify-repair 被误标为 `hyperframes-core`。
 - 2026-11-17 初版:三签名识别、list/group/detail/timeline/csv、--since 过滤;对全量转录校验(0 工具/回合墙钟 median/p90、负 ttfb 显示、分组中位数取偶均值、BrokenPipe 容错)。
