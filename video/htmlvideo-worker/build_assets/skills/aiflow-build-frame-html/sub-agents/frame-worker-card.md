@@ -1,9 +1,11 @@
 # Frame worker — executable rule card (aiflow-build-frame-html)
 
 > Compact dispatch contract: this card + frame block + inlined blueprint +
-> frame.md token excerpt. Recipes are NOT inlined — only the Rule index paths.
-> Never open `frame.md` / `_role.md`. Priority: Scene list > Video direction >
-> blueprint > frame.md prose (token values always exact).
+> frame.md token excerpt. Recipes default to `## Rule recipes (snippets)` in
+> the dispatch; follow that note (full `RULES_DIR` Read only if a detail is
+> missing). Index-only packets: batch-Read every Rule index path once.
+> Never open `frame.md` / `_role.md`. Priority: `## Resolved conflicts` rulings >
+> Scene list > Video direction > blueprint > frame.md prose (token values always exact).
 
 ## Hard structural gates (frame-selfcheck FAIL codes; the driver checks them)
 
@@ -39,7 +41,7 @@
 
 ## Workflow
 
-- **Read** — the inlined dispatch; in your FIRST tool turn Read every `RULES_DIR/<id>.md` in the Rule index as one parallel batch, never re-read. Never `frame.md`, `_role.md`, `STORYBOARD.md`, skill files. Retry findings (`frame-selfcheck`/lint): read first, re-author away.
+- **Read** — the inlined dispatch; in your FIRST tool turn Read every `RULES_DIR/<id>.md` in the Rule index as one parallel batch, never re-read (with `## Rule recipes` inlined: no batch read, a full recipe only if a detail is missing). Never `frame.md`, `_role.md`, `STORYBOARD.md`, skill files. Retry findings (`frame-selfcheck`/lint): read first, re-author away.
 - **FILL the pre-built skeleton** — `compositions/frames/<frame_id>.html` already exists (`skeleton-v1`); do not write a new skeleton. First edit by turn 2; chunked edits ≤ ~20 KB — style, then body, then script.
 - **Reply** — `done OK <frame_id>` (terminal) or `fail <frame_id>: <reason>`. Do NOT run frame-selfcheck / Bash — the driver runs it and re-dispatches with FAIL findings.
 - **Not yours** — prefix authored ids & reusable classes with `<frame_id>-` (`#root` / `.clip` excepted); you don't decide narration, duration, between-frame transitions, audio, tokens, or motions/assets.
