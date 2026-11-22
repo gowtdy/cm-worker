@@ -20,6 +20,7 @@ from html_utility.claude_cli import (
     TRUNCATED_RC,
     _ALLOWED_EFFORTS,
     _env_positive_int,
+    _resolve_profile,
     run_claude,
     run_claude_result,
 )
@@ -319,10 +320,13 @@ SALVAGE_MAX_OUTPUT = "16000"
 SALVAGE_MAX_TURNS = 10
 SALVAGE_TIMEOUT = 300
 # P2-4: driver-level cap/effort override for every normal worker attempt
-# (salvage/degraded/phase-A keep their own caps). Unset = profile default.
+# (salvage/degraded/phase-A keep their own caps). Unset = frame_html profile
+# default (64000 cap / high effort).
 MAX_OUTPUT_ENV = "HTMLVIDEO_FRAME_HTML_MAX_OUTPUT"
 EFFORT_ENV = "HTMLVIDEO_FRAME_HTML_EFFORT"
 # P2-2: attempt 1 split into Phase A (style + body) → Phase B (script).
+# Default OFF (explicit 1 enables): on the single-request-marathon backend
+# A+B pays two cold starts for no thinking saved.
 TWO_PHASE_ENV = "HTMLVIDEO_FRAME_HTML_TWO_PHASE"
 TWO_PHASE_A_MAX_OUTPUT = "24000"
 TWO_PHASE_A_MAX_TURNS = 20
@@ -468,7 +472,10 @@ If the block lists several `- blueprint:` lines, the one under
 Never edit STORYBOARD.md. Turn discipline: every turn ends with a tool call or
 visible text; your first edit must land by your second turn (right after the
 recipe batch read, if any); keep each turn's thinking to at most one short
-paragraph — never burn a turn on marathon deliberation.
+paragraph of layout/beat notes — never burn a turn on marathon deliberation.
+Never draft CSS/HTML/JS in thinking: code goes only into Edit/Write arguments.
+Place elements on the card / frame.md cqw·cqh grid and tokens; no per-pixel
+math, no re-verifying positions.
 
 ## Dispatch (authoritative — already complete)
 
@@ -835,22 +842,24 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
         STAGE_DEADLINE_ENV, DEFAULT_STAGE_DEADLINE, env_logger)
     trunc_kill = _env_on(TRUNC_KILL_ENV)
     salvage_on = _env_on(SALVAGE_ENV)
-    # Default ON — set HTMLVIDEO_FRAME_HTML_TWO_PHASE=0 / _HEDGE=0 to disable.
-    two_phase = _env_on(TWO_PHASE_ENV, default=True) and skeleton_mode
+    # TWO_PHASE default OFF (=1 enables); HEDGE default ON (=0 disables).
+    two_phase = _env_on(TWO_PHASE_ENV, default=False) and skeleton_mode
     hedge_on = _env_on(HEDGE_ENV, default=True)
     hedge_after = _env_positive_int(HEDGE_AFTER_ENV, DEFAULT_HEDGE_AFTER, env_logger)
     degrade_on = _env_on(DEGRADE_ENV)
     degrade_window = _env_positive_int(
         DEGRADE_WINDOW_ENV, DEFAULT_DEGRADE_WINDOW, env_logger)
     base_env = _base_worker_env(env_logger)
+    worker_cap = base_env.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") or _resolve_profile(
+        "frame_html", env_logger).get("max_output") or "-"
     stats = _StageStats(frame_ids)
     started = stats.started
     log(
         "frame-html driver start mode=pipeline frames=%s skeleton=%s "
         "max_attempts=%s deadline=%ss trunc_kill=%s salvage=%s two_phase=%s "
-        "hedge=%s(after=%ss) degrade=%s(window=%ss) env_override=%s",
+        "worker_cap=%s hedge=%s(after=%ss) degrade=%s(window=%ss) env_override=%s",
         len(frame_ids), skeleton_mode, max_attempts, deadline_s,
-        trunc_kill, salvage_on, two_phase, hedge_on, hedge_after,
+        trunc_kill, salvage_on, two_phase, worker_cap, hedge_on, hedge_after,
         degrade_on, degrade_window,
         {k: v for k, v in base_env.items() if k != "CLAUDE_CODE_SUBAGENT_EFFORT"} or "-",
     )
