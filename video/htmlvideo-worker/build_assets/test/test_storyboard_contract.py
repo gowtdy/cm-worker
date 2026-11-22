@@ -245,7 +245,7 @@ class ProfileDenyTest(unittest.TestCase):
         from html_utility.claude_cli import _PROFILES
 
         deny = set(_PROFILES["visual"].get("deny_tools") or [])
-        for name in ("Bash", "Glob", "Grep", "Write", "Edit"):
+        for name in ("Bash", "Glob", "Grep", "Write", "Edit", "Skill"):
             self.assertIn(name, deny)
         self.assertNotIn("Read", deny)  # optional rules escape hatch
 
