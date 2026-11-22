@@ -2,24 +2,32 @@
 # -*- coding: utf-8 -*-
 """skill-timing.py — Claude Code 转录中各 skill/阶段耗时统计
 
-扫描 /app/log/claude/projects/**/*.jsonl,识别 skill 运行(四种签名):
+扫描 /app/log/claude/projects/**/*.jsonl,识别 skill 运行(四种签名,优先级如下):
   1. sdk-cli 流水线:首个用户消息里的 <command-name>/aiflow-build-storyboard</command-name>
-  2. 交互式 Skill 工具调用:tool_use name==Skill 的 input.skill
-  3. 子代理会话:<parent-session>/subagents/agent-*.jsonl(+ .meta.json 取 agentType)
-  4. B 架构 driver 直调:首个用户消息匹配 frame-html/visual/verify/repair worker 提示词签名
-    (无 <command-name> 时补标,避免 list 表 skill 列全是 `-`)
+  2. B 架构 driver 直调:首个用户消息匹配 frame-html/visual/verify/repair worker 提示词签名
+     (无 <command-name> 时用阶段身份;优先于中途查阅用的 Skill 工具调用,避免误标成 hyperframes-core 等)
+  3. 交互式 Skill 工具调用:tool_use name==Skill 的 input.skill(仅当上面都未命中)
+  4. 子代理会话:<parent-session>/subagents/agent-*.jsonl(+ .meta.json 取 agentType)
 
 统计口径(与 /app/log/docs/*-analysis.md 各阶段分析对齐):
   wall    = 会话首尾时间戳差(子代理等待计入父会话 wall,父会话行即阶段总耗时)
   ttfb    = 入队(enqueue)/首个用户消息 → 首个 assistant 消息
   first_write_s = t0 → 首个 Write|Edit tool_use(落盘心跳;frame-html「1–2 回合落盘」观测)
   first_write_tool / first_write_tool_turn = 那次工具名 + 第几个含工具回合(1-based)
-  rounds  = 含工具的 assistant 回合数(tool_turns;list/group 表口径,与各分析文档的"回合预算"对齐)
+  rounds  = 含工具的 API 请求数(tool_turns;按 message.id 合并——CLI 把同一响应的每个
+            content block 写成一行,并行 Read 曾被拆成多回合;2026-11-22 P1-3 起口径变小)
   tools   = tool_use 块总数;agents = Agent/Task/spawn 工具调用次数
-  detail 额外给 assistant 消息总数(含纯 thinking 轮)与回合墙钟(工具回合→下一工具回合)
+  api_requests = 去重后的 assistant API 请求数(含纯 thinking 请求)
+  first_write_req = 首个含 Write|Edit 的 API 请求序号(1-based,"到首次落盘的请求数")
+  truncations = 硬截断次数:纯 thinking 且 output_tokens ≥ --trunc-cap(默认 48000)或
+            stop_reason=max_tokens 的请求,∪ isMeta "no visible output" 续写提示(归到前一请求)
+  max_req_s = 单请求最长间隔:上一非 assistant 事件(用户/tool_result)→ 该请求最后一行
+  detail 额外给回合墙钟(工具回合→下一工具回合)
+  CSV 列变化(P1-3):末尾补齐此前漏打的 wall_s,并追加 api_requests,truncations,max_req_s,first_write_req
   tool_exec = 按 tool_use_id 配对 tool_result 时间戳的 Σ(结果-调用)
   model   = wall - tool_exec(思考+流式+每轮摊薄开销)
-  tokens  = Σ message.usage(input/output/cache_read/cache_creation); prompt = input+cache_read(跨 run 对比口径)
+  tokens  = Σ message.usage,按 message.id 去重(同一请求多行取各字段最大值);
+            prompt = input+cache_read(跨 run 对比口径)
 
 用法:
   python3 skill-timing.py                  # 全量 list 表格(按时间排序)
@@ -42,6 +50,15 @@ ROOT_DEFAULT = "/app/log/claude/projects"
 SPAWN_TOOLS = {"Agent", "Task", "spawn"}
 # Disk-landing tools — frame-html "first edit within 1–2 turns" soft rule.
 LAND_TOOLS = frozenset({"Write", "Edit"})
+USAGE_FIELDS = (
+    "input_tokens", "output_tokens",
+    "cache_read_input_tokens", "cache_creation_input_tokens",
+)
+THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
+# Hard truncation = a thinking-only response at the output cap (or
+# stop_reason max_tokens), or the CLI's isMeta "no visible output" nudge.
+TRUNC_META_PREFIX = "[Your previous response had no visible output"
+TRUNC_CAP_DEFAULT = 48000
 
 
 def parse_ts(ts):
@@ -109,7 +126,17 @@ def detect_identity(path):
     cmd_skills = set()
     tool_skills = set()
     first_user_texts: list[str] = []
+    saw_user_text = False
     for d in iter_jsonl(path):
+        # enqueue 正文也是 driver 提示词来源(尚无 user 时先占位)
+        if (
+            not first_user_texts
+            and d.get("type") == "queue-operation"
+            and d.get("operation") == "enqueue"
+        ):
+            eq = d.get("content")
+            if isinstance(eq, str) and eq.strip():
+                first_user_texts = [eq]
         msg = d.get("message", {})
         if not isinstance(msg, dict):
             continue
@@ -122,8 +149,9 @@ def detect_identity(path):
                 for b in content:
                     if isinstance(b, dict) and b.get("type") == "text":
                         texts.append(b.get("text", ""))
-            if not first_user_texts and texts:
+            if texts and not saw_user_text:
                 first_user_texts = texts
+                saw_user_text = True
             for tx in texts:
                 for m in cmd_re.finditer(tx):
                     cmd_skills.add(m.group(1))
@@ -135,43 +163,50 @@ def detect_identity(path):
                     s = (b.get("input") or {}).get("skill")
                     if s:
                         tool_skills.add("Skill:" + s)
-    if not cmd_skills and not tool_skills:
-        for tx in first_user_texts:
-            driver = _driver_prompt_label(tx)
-            if driver:
-                return ("skill", driver)
-        return ("none", "-")
-    prim = sorted(cmd_skills)[0] if cmd_skills else sorted(tool_skills)[0]
-    # 展示/聚合层面去掉 Skill: 前缀(两种签名归并为一个 skill 名)
-    prim = prim.removeprefix("Skill:")
-    return ("skill", prim)
+    if cmd_skills:
+        return ("skill", sorted(cmd_skills)[0])
+    # driver 阶段身份优先于中途 Skill 查阅(如 verify-repair 调 hyperframes-core)
+    for tx in first_user_texts:
+        driver = _driver_prompt_label(tx)
+        if driver:
+            return ("skill", driver)
+    if tool_skills:
+        prim = sorted(tool_skills)[0].removeprefix("Skill:")
+        return ("skill", prim)
+    return ("none", "-")
 
 
 # ---------------------------------------------------------------- metrics
 
 
-def analyze(path):
+def analyze(path, trunc_cap=None):
+    """One session's metrics. Assistant jsonl lines are grouped by message.id:
+    the CLI writes one line per content block of the same API response (each
+    repeating its usage), so per-line counting inflates rounds and tokens."""
     identity = detect_identity(path)
+    cap = TRUNC_CAP_DEFAULT if trunc_cap is None else trunc_cap
 
     t_first = t_last = None
     enqueue_ts = first_user_ts = first_asst_ts = None
     first_write_ts = None
     first_write_tool = None
-    first_write_tool_turn = None  # 1-based index among tool-bearing turns
 
-    n_asst = 0
-    asst_ts = []  # 所有 assistant 消息时间戳(回合墙钟用)
-    turns = []  # (ts, [tool names]) 含工具的回合
+    reqs = {}  # request key -> {ts, last_ts, prev_ts, names, types, out, stop}
+    req_order = []
+    last_event_ts = None  # last non-assistant entry (request dispatch proxy)
+    last_req_key = None
+    nudges_orphan = 0
+    nudged = set()
     n_tools = 0
     n_agents = 0
     use_by_id = {}  # tool_use_id -> (ts, name)
     result_by_id = {}  # tool_use_id -> ts
     tool_hist = {}  # name -> [count, exec_s]
 
-    toks = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
-    usage_msgs = 0
+    usage_by_key = {}  # request key -> {field: max}
     think_msgs = think_chars = 0
     text_chars = 0
+    anon = 0
 
     for d in iter_jsonl(path):
         t = parse_ts(d.get("timestamp"))
@@ -186,34 +221,55 @@ def analyze(path):
 
         msg = d.get("message", {})
         if not isinstance(msg, dict):
+            if d.get("type") != "assistant":
+                last_event_ts = t
             continue
         role = msg.get("role")
         content = msg.get("content")
+        mid = msg.get("id")
+        if role == "assistant":
+            if mid is None:
+                anon += 1
+                key = f"anon-{anon}"
+            else:
+                key = mid
+        else:
+            key = None
 
         usage = msg.get("usage")
-        if usage:
-            usage_msgs += 1
-            toks["input"] += usage.get("input_tokens", 0) or 0
-            toks["output"] += usage.get("output_tokens", 0) or 0
-            toks["cache_read"] += usage.get("cache_read_input_tokens", 0) or 0
-            toks["cache_creation"] += usage.get("cache_creation_input_tokens", 0) or 0
+        if usage and role == "assistant":
+            slot = usage_by_key.setdefault(key, {})
+            for f in USAGE_FIELDS:
+                slot[f] = max(slot.get(f, 0), usage.get(f, 0) or 0)
 
         if role == "assistant" and isinstance(content, list):
             blocks = [b for b in content if isinstance(b, dict)]
-            real = [b for b in blocks if b.get("type") in ("text", "tool_use", "thinking")]
+            real = [b for b in blocks if b.get("type") in ("text", "tool_use", "thinking", "redacted_thinking")]
             if not real:
                 continue
-            n_asst += 1
-            asst_ts.append(t)
+            req = reqs.get(key)
+            if req is None:
+                req = reqs[key] = {
+                    "ts": t, "last_ts": t, "prev_ts": last_event_ts,
+                    "names": [], "types": set(), "out": 0, "stop": None,
+                }
+                req_order.append(key)
+            req["last_ts"] = t
+            last_req_key = key
+            if usage:
+                req["out"] = max(req["out"], usage.get("output_tokens", 0) or 0)
+            if msg.get("stop_reason"):
+                req["stop"] = msg.get("stop_reason")
             if first_asst_ts is None:
                 first_asst_ts = t
-            names = []
             for b in blocks:
                 bt = b.get("type")
+                if bt:
+                    req["types"].add(bt)
                 if bt == "tool_use":
                     n_tools += 1
                     nm = b.get("name", "?")
-                    names.append(nm)
+                    req["names"].append(nm)
                     if nm in SPAWN_TOOLS:
                         n_agents += 1
                     if first_write_ts is None and nm in LAND_TOOLS:
@@ -227,15 +283,16 @@ def analyze(path):
                     think_chars += len(str(b.get("thinking", "")))
                 elif bt == "text":
                     text_chars += len(str(b.get("text", "")))
-            if names:
-                turns.append((t, names))
-                if (
-                    first_write_tool_turn is None
-                    and any(n in LAND_TOOLS for n in names)
-                ):
-                    first_write_tool_turn = len(turns)
+            continue
 
+        if role != "assistant":
+            last_event_ts = t
         if role == "user":
+            if d.get("isMeta") and _user_text(content).lstrip().startswith(TRUNC_META_PREFIX):
+                if last_req_key is not None:
+                    nudged.add(last_req_key)
+                else:
+                    nudges_orphan += 1
             if isinstance(content, list) and first_user_ts is None:
                 if any(isinstance(b, dict) and b.get("type") in ("text", "tool_result") for b in content):
                     first_user_ts = t
@@ -260,6 +317,26 @@ def analyze(path):
             tool_hist.setdefault(nm, [0, 0.0])
             tool_hist[nm][0] += 1
 
+    # 回合 = 含工具的 API 请求(按 message.id 合并并行 tool_use 拆出的多行)
+    turns = [(reqs[k]["ts"], reqs[k]["names"]) for k in req_order if reqs[k]["names"]]
+    first_write_tool_turn = next(
+        (i + 1 for i, (_, names) in enumerate(turns) if any(n in LAND_TOOLS for n in names)),
+        None)
+    first_write_req = next(
+        (i + 1 for i, k in enumerate(req_order) if any(n in LAND_TOOLS for n in reqs[k]["names"])),
+        None)
+    truncated = set(nudged)
+    for k in req_order:
+        r = reqs[k]
+        visible = r["types"] - THINKING_TYPES
+        if not visible and (r["out"] >= cap or r["stop"] == "max_tokens"):
+            truncated.add(k)
+    req_secs = [
+        (reqs[k]["last_ts"] - reqs[k]["prev_ts"]).total_seconds()
+        for k in req_order if reqs[k]["prev_ts"] is not None
+    ]
+    max_req_s = max(req_secs) if req_secs else None
+
     # 回合墙钟:含工具回合 → 下一个含工具回合(最后一个取会话尾)
     turn_walls = []
     for idx, (tt, _) in enumerate(turns):
@@ -278,6 +355,12 @@ def analyze(path):
     if first_write_s is not None and first_write_s < 0:
         first_write_s = None
 
+    toks = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+    for slot in usage_by_key.values():
+        toks["input"] += slot.get("input_tokens", 0)
+        toks["output"] += slot.get("output_tokens", 0)
+        toks["cache_read"] += slot.get("cache_read_input_tokens", 0)
+        toks["cache_creation"] += slot.get("cache_creation_input_tokens", 0)
     # 对比口径:缓存命中与否是缓存层噪声,单看 input_tokens 会误判方向;
     # 真实 prompt 负担 = input_tokens + cache_read_input_tokens。
     toks["prompt"] = toks["input"] + toks["cache_read"]
@@ -293,15 +376,19 @@ def analyze(path):
         "first_write_s": first_write_s,
         "first_write_tool": first_write_tool,
         "first_write_tool_turn": first_write_tool_turn,
+        "first_write_req": first_write_req,
         "wall": wall,
-        "turns": n_asst,
+        "turns": len(req_order),
+        "api_requests": len(req_order),
         "tool_turns": len(turns),
         "tools": n_tools,
         "agents": n_agents,
         "tool_exec": tool_exec,
         "model": wall - tool_exec,
         "tokens": toks,
-        "usage_msgs": usage_msgs,
+        "usage_msgs": len(usage_by_key),
+        "truncations": len(truncated) + nudges_orphan,
+        "max_req_s": max_req_s,
         "think_msgs": think_msgs,
         "think_chars": think_chars,
         "text_chars": text_chars,
@@ -309,6 +396,16 @@ def analyze(path):
         "turns_data": turns,
         "turn_walls": turn_walls,
     }
+
+
+def _user_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            str(b.get("text", "")) for b in content
+            if isinstance(b, dict) and b.get("type") == "text")
+    return ""
 
 
 # ---------------------------------------------------------------- formatting
@@ -347,7 +444,7 @@ def fmt_count(n):
 # ---------------------------------------------------------------- discovery
 
 
-def discover(root, since=None, include_agents=False):
+def discover(root, since=None, include_agents=False, trunc_cap=None):
     files = []
     for p in glob.glob(os.path.join(root, "**", "*.jsonl"), recursive=True):
         if p.endswith(".meta.json"):
@@ -373,7 +470,7 @@ def discover(root, since=None, include_agents=False):
 
     out = []
     for p in files:
-        st = analyze(p)
+        st = analyze(p, trunc_cap=trunc_cap)
         if st["start"] is None:
             continue
         if since_dt and st["start"] < since_dt:
@@ -387,7 +484,7 @@ def discover(root, since=None, include_agents=False):
 
 LIST_HDR = (
     "time (utc)      │ path                                   │ skill                      │"
-    " ttfb   │ 1stW   │ dur     │ ag  │ rounds │ tools │ model   │ in+cread│ out"
+    " ttfb   │ 1stW   │ dur     │ ag  │ rounds │ tools │ model   │ in+cread│ out      │ req │ trn │ maxReq"
 )
 
 
@@ -397,16 +494,20 @@ def list_report(stats, full=False, csv=False):
     if csv:
         print(
             "time,path,skill,ttfb_s,first_write_s,first_write_tool,first_write_tool_turn,"
-            "dur_s,agents,rounds,tools,model_s,prompt,in,out,cache_read,wall_s"
+            "dur_s,agents,rounds,tools,model_s,prompt,in,out,cache_read,wall_s,"
+            "api_requests,truncations,max_req_s,first_write_req"
         )
         for s in stats:
             t = s["start"].strftime("%Y-%m-%d %H:%M:%S") if s["start"] else ""
             fw = "" if s["first_write_s"] is None else f'{s["first_write_s"]:.1f}'
+            mr = "" if s["max_req_s"] is None else f'{s["max_req_s"]:.1f}'
             print(
                 f'{t},{rel(s["path"], root)},{s["label"]},{s["ttfb"] or ""},{fw},'
                 f'{s["first_write_tool"] or ""},{s["first_write_tool_turn"] or ""},'
                 f'{s["wall"]:.0f},{s["agents"]},{s["tool_turns"]},{s["tools"]},{s["model"]:.0f},'
-                f'{s["tokens"]["prompt"]},{s["tokens"]["input"]},{s["tokens"]["output"]},{s["tokens"]["cache_read"]}'
+                f'{s["tokens"]["prompt"]},{s["tokens"]["input"]},{s["tokens"]["output"]},{s["tokens"]["cache_read"]},'
+                f'{s["wall"]:.1f},{s["api_requests"]},{s["truncations"]},{mr},'
+                f'{s["first_write_req"] or ""}'
             )
         return
     print(LIST_HDR)
@@ -417,7 +518,8 @@ def list_report(stats, full=False, csv=False):
             f'{fmt_dur(s["ttfb"]):<7}│ {fmt_dur(s["first_write_s"]):<7}│ '
             f'{fmt_dur(s["wall"]):<7}│ {s["agents"]:<4}│ '
             f'{s["tool_turns"]:<7}│ {s["tools"]:<6}│ {fmt_dur(s["model"]):<7}│ '
-            f'{fmt_count(s["tokens"]["prompt"]):<8}│ {fmt_count(s["tokens"]["output"]):<8}'
+            f'{fmt_count(s["tokens"]["prompt"]):<8}│ {fmt_count(s["tokens"]["output"]):<8} │ '
+            f'{s["api_requests"]:<4}│ {s["truncations"]:<4}│ {fmt_dur(s["max_req_s"])}'
         )
     print(f"\n{len(stats)} sessions, total wall {fmt_dur(sum(s['wall'] for s in stats))}")
 
@@ -448,17 +550,20 @@ def group_report(stats):
             "prompt": sum(s["tokens"]["prompt"] for s in gs),
             "out": sum(s["tokens"]["output"] for s in gs),
             "cread": sum(s["tokens"]["cache_read"] for s in gs),
+            "trunc": sum(s["truncations"] for s in gs),
+            "max_req": max((s["max_req_s"] for s in gs if s["max_req_s"] is not None), default=None),
         })
     rows.sort(key=lambda r: -r["avg"])
     print(
         f"{'skill':<30}│ runs │ avg    │ med    │ min     │ max     │ "
-        f"rounds │ 1stWavg │ prompt   │ out"
+        f"rounds │ 1stWavg │ prompt   │ out      │ trunc │ maxReq"
     )
     for r in rows:
         print(
             f"{r['label'][:29]:<30}│ {r['n']:<4} │ {fmt_dur(r['avg']):<6} │ {fmt_dur(r['med']):<6} │ "
             f"{fmt_dur(r['min']):<7} │ {fmt_dur(r['max']):<7} │ {r['rounds']:<6} │ "
-            f"{fmt_dur(r['fw_avg']):<7} │ {fmt_count(r['prompt']):<8} │ {fmt_count(r['out']):<8}"
+            f"{fmt_dur(r['fw_avg']):<7} │ {fmt_count(r['prompt']):<8} │ {fmt_count(r['out']):<8} │ "
+            f"{r['trunc']:<5} │ {fmt_dur(r['max_req'])}"
         )
 
 
@@ -475,13 +580,16 @@ def detail_report(s, timeline=False):
     if s["first_write_s"] is not None:
         fw_note = (
             f"; first_write {fmt_dur(s['first_write_s'])}"
-            f" ({s['first_write_tool']} @ tool-turn {s['first_write_tool_turn']})"
+            f" ({s['first_write_tool']} @ tool-turn {s['first_write_tool_turn']},"
+            f" API request #{s['first_write_req']})"
         )
     else:
         fw_note = "; first_write - (no Write/Edit)"
     print(f"       ttfb {fmt_dur(s['ttfb'])}{fw_note};"
-          f"回合(assistant msg)= {s['turns']}(含工具 {s['tool_turns']});"
+          f"API 请求(按 message.id)= {s['api_requests']}(含工具 {s['tool_turns']});"
           f"工具调用 {s['tools']};子代理 {s['agents']}")
+    print(f"       截断 {s['truncations']} 次;单请求最长 {fmt_dur(s['max_req_s'])}"
+          f"(上一事件 → 该请求最后一行)")
     tw = s["turn_walls"]
     if tw:
         tws = sorted(tw)
@@ -489,7 +597,7 @@ def detail_report(s, timeline=False):
     T = s["tokens"]
     print(f"令牌   prompt(in+cread) {fmt_count(T['prompt'])} = in {fmt_count(T['input'])} + "
           f"cache_read {fmt_count(T['cache_read'])}; out {fmt_count(T['output'])} "
-          f"cache_write {fmt_count(T['cache_creation'])} (usage msgs {s['usage_msgs']})")
+          f"cache_write {fmt_count(T['cache_creation'])} (usage 去重请求 {s['usage_msgs']})")
     print(f"思考   {s['think_msgs']} blocks / {fmt_count(s['think_chars'])} chars;助手文本 {fmt_count(s['text_chars'])} chars")
 
     print("\n-- 耗时最长的 8 个回合 --")
@@ -525,6 +633,8 @@ def main():
     ap.add_argument("--timeline", action="store_true", help="detail 附工具时间线")
     ap.add_argument("--csv", action="store_true", help="list 输出 CSV")
     ap.add_argument("--full", action="store_true", help="显示完整路径")
+    ap.add_argument("--trunc-cap", type=int, default=TRUNC_CAP_DEFAULT,
+                    help=f"截断判定的 output cap(默认 {TRUNC_CAP_DEFAULT})")
     args = ap.parse_args()
     root = args.root
 
@@ -551,13 +661,14 @@ def main():
                 # 最后尝试按 session 文件名基础部分匹配(忽略子目录 agent-)
                 print(f"no transcript matching '{cand}' under {root}")
                 sys.exit(1)
-        stats = [analyze(cand)]
+        stats = [analyze(cand, trunc_cap=args.trunc_cap)]
         if stats[0]["start"] is None:
             print(f"{cand}: unreadable/empty"); sys.exit(1)
         detail_report(stats[0], timeline=args.timeline)
         return
 
-    stats = discover(root, since=args.since, include_agents=args.agents)
+    stats = discover(root, since=args.since, include_agents=args.agents,
+                     trunc_cap=args.trunc_cap)
     if not args.all:
         stats = [s for s in stats if s["kind"] == "skill" or (args.agents and s["kind"] == "agent")]
     if args.group:
