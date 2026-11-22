@@ -34,6 +34,12 @@ import {
   parseFrameFamilies,
   planFile,
 } from "./lib/fonts.mjs";
+import {
+  parseCheckJson,
+  parseCheckText,
+  extractJsonObject,
+  checkParseContradiction,
+} from "./lib/verify-check-parse.mjs";
 
 const argv = process.argv.slice(2);
 const vi = argv.indexOf("--videodir");
@@ -316,37 +322,38 @@ if (lint.error) {
 /* ── check ──────────────────────────────────────────────────────────────── */
 say("");
 say("── check ──");
-const check = run("npx", ["hyperframes", "check", "."], { timeout: 300_000 });
+// Prefer --json: Layout lines are `✗ t=… content_overlap …` without `code:`,
+// so the old text regex silently dropped every layout error (2026-11-22).
+const check = run("npx", ["hyperframes", "check", ".", "--json"], { timeout: 300_000 });
 const checkOk = check.status === 0;
-const chk = { sections: [], errors: [], warns: [], infos: [] };
+let chk = { errors: [], warns: [], infos: [] };
+let checkParseMode = "none";
+let checkContradiction = false;
 if (check.error) {
   say(`  ⚠ cannot run check: ${check.error}`);
 } else {
-  const lines = (check.stdout + "\n" + check.stderr).split("\n");
-  let section = "?";
-  let cur = null;
-  for (const raw of lines) {
-    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-    if (/^[A-Z][A-Za-z]+$/.test(line.trim()) && line === line.trim()) {
-      section = line.trim();
-      continue;
-    }
-    const m = /^\s*([✗⚠ℹ])\s+([a-z_]+):\s?(.*)$/.exec(line);
-    if (m) {
-      cur = { mark: m[1], code: m[2], msg: trunc(m[3] || "", 130), section, file: "" };
-      const bucket = m[1] === "✗" ? chk.errors : m[1] === "⚠" ? chk.warns : chk.infos;
-      bucket.push(cur);
-      continue;
-    }
-    const f = /^\s{2,}(\/\S+\.html)\s+(.+)$/.exec(line) || /^\s{2,}(\S+\.html)\s*/.exec(line);
-    if (f && cur && !cur.file) cur.file = rel(f[1]);
+  const json = extractJsonObject(check.stdout);
+  if (json) {
+    chk = parseCheckJson(json, { root: videodir });
+    checkParseMode = "json";
+  } else {
+    chk = parseCheckText(`${check.stdout}\n${check.stderr}`);
+    checkParseMode = "text-fallback";
+    say("  ⚠ check --json unparseable; used text fallback parser");
   }
-  const isCaptionFP = (c) => c.code === "text_box_overflow" && /#caption-word|\.caption-line/.test(c.msg);
-  say(`  exit=${check.status}  ✗=${chk.errors.length}  ⚠=${chk.warns.length}  ℹ=${chk.infos.length}`);
+  checkContradiction = checkParseContradiction(check.status, chk);
+  const isCaptionFP = (c) =>
+    c.code === "text_box_overflow" && /#caption-word|\.caption-line/.test(c.msg);
+  say(
+    `  exit=${check.status}  parse=${checkParseMode}  ✗=${chk.errors.length}  ⚠=${chk.warns.length}  ℹ=${chk.infos.length}`,
+  );
+  // Use "in <file>" — never "@path". Claude Code treats @mentions as file
+  // attachments and auto-injects whole HTML into the fix prompt (~70KB).
   const printGroup = (list) => {
     for (const c of list) {
       const tag = isCaptionFP(c) ? "  (expected false-positive per playbook #5)" : "";
-      say(`  ${c.mark} [${c.section}] ${c.code} ${c.file ? "@" + c.file : ""} — ${c.msg}${tag}`);
+      const where = c.file ? ` in ${c.file}` : "";
+      say(`  ${c.mark} [${c.section}] ${c.code}${where} — ${c.msg}${tag}`);
     }
     if (list.length > 20) say(`    …+${list.length - 20} more`);
   };
@@ -356,6 +363,14 @@ if (check.error) {
     const agg = new Map();
     for (const c of chk.infos) agg.set(c.code, (agg.get(c.code) || 0) + 1);
     say("  infos (count only): " + [...agg].map(([c, n]) => `${c}×${n}`).join(", "));
+  }
+  if (checkContradiction) {
+    say(
+      "  ✗ PARSER/INFRA: check exited non-zero but 0 error findings were parsed — "
+      + "refusing GATE FAIL with empty actionable list (would burn a no-op model turn)",
+    );
+    const tail = (check.stdout || check.stderr || "").split("\n").filter(Boolean).slice(-8);
+    for (const line of tail) say(`    ${trunc(line, 160)}`);
   }
 }
 
@@ -395,5 +410,5 @@ say("");
 say(`GATE: ${gate ? "PASS ✓ (lint+check+structural+transitions — go to snapshot)" : `FAIL ✗ (lint ok=${lintOk}, check exit=${check.status === null ? "n/a" : check.status}, digit-led selectors=${self.digit.length}, missing frames=${missingFrames.length}, transitions=${tv.error ? "n/a" : tv.status === 0 ? "ok" : tv.status}, ${realErrors} error finding(s))`}`);
 
 console.log(out.join("\n"));
-if (lint.error || check.error || tv.error) process.exit(2);
+if (lint.error || check.error || tv.error || checkContradiction) process.exit(2);
 process.exit(gate ? 0 : 1);
