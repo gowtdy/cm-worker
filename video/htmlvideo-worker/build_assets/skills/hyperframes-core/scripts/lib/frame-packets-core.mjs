@@ -33,23 +33,45 @@ export function field(block, name) {
 }
 
 const BLUEPRINT_MODE_RE = /\(\s*(adapt|reproduce)\s*\)/i;
+const BARE_MODE_RE = /^(adapt|reproduce)$/i;
+const titleMode = (m) => m[0].toUpperCase() + m.slice(1).toLowerCase();
 
 // A frame block may carry several `- blueprint:` lines (frame-visual appends a
 // moded `- blueprint: <id> (Adapt|Reproduce)` below the outline's bare one).
 // The moded line wins; among equals the LAST one wins. The id is the leading
 // kebab token — `(Adapt)` and any trailing prose never reach the filename.
+// A bare `- blueprint: Adapt` names only the mode: id is "" (modeOnly) and the
+// real id comes from `## Blueprint assignment` (see withAssignment).
 export function selectBlueprint(block) {
   const raws = [...block.matchAll(/^-\s+blueprint:\s*(.+)$/gim)].map((m) => m[1].trim());
   if (raws.length === 0) return null;
   const parsed = raws.map((raw) => {
-    const mode = raw.match(BLUEPRINT_MODE_RE)?.[1] ?? null;
-    const id = raw.replace(BLUEPRINT_MODE_RE, "").trim().match(/^[\w.-]+/)?.[0] ?? "";
-    return { raw, id, mode: mode ? mode[0].toUpperCase() + mode.slice(1).toLowerCase() : null };
+    let mode = raw.match(BLUEPRINT_MODE_RE)?.[1] ?? null;
+    let id = raw.replace(BLUEPRINT_MODE_RE, "").trim().match(/^[\w.-]+/)?.[0] ?? "";
+    if (BARE_MODE_RE.test(id)) { mode = mode ?? id; id = ""; }
+    return { raw, id, mode: mode ? titleMode(mode) : null };
   });
-  const moded = parsed.filter((p) => p.mode);
-  const chosen = (moded.length ? moded : parsed).at(-1);
-  const ids = [...new Set(parsed.map((p) => p.id.toLowerCase()))];
+  const named = parsed.filter((p) => p.id);
+  const moded = named.filter((p) => p.mode);
+  const modeOnly = parsed.filter((p) => !p.id && p.mode).at(-1);
+  let chosen = (moded.length ? moded : named).at(-1);
+  if (chosen && !chosen.mode && modeOnly) chosen = { ...chosen, mode: modeOnly.mode };
+  if (!chosen) chosen = modeOnly ? { ...modeOnly, modeOnly: true } : parsed.at(-1);
+  const ids = [...new Set(named.map((p) => p.id.toLowerCase()))];
   return { ...chosen, all: parsed, conflict: ids.length > 1 };
+}
+
+// Fills a mode-only selection (`- blueprint: Adapt`) from the frame's
+// `## Blueprint assignment` entry; without one the frame gets no blueprint.
+export function withAssignment(sel, assigned, warnLabel) {
+  if (!sel?.modeOnly) return sel;
+  if (assigned?.id) return { ...sel, id: assigned.id, mode: sel.mode ?? assigned.mode, fromAssignment: true };
+  if (warnLabel) {
+    console.warn(
+      `frame-packets: ${warnLabel}: \`- blueprint: ${sel.raw}\` names only a mode and \`## Blueprint assignment\` has no entry — no blueprint inlined`,
+    );
+  }
+  return sel;
 }
 
 // `## Blueprint assignment` → Map(frameNumber → { id, mode }).
@@ -69,8 +91,8 @@ function frameNumber(heading) {
   return m ? Number(m[1]) : null;
 }
 
-function blueprintSectionFor(block, animationDir, heading, warnLabel) {
-  const sel = selectBlueprint(block);
+function blueprintSectionFor(block, animationDir, heading, warnLabel, assigned = null) {
+  const sel = withAssignment(selectBlueprint(block), assigned, warnLabel);
   if (!sel || !sel.id || sel.id.toLowerCase() === "compose") return { sel, section: "" };
   if (sel.conflict && warnLabel) {
     console.warn(
@@ -87,7 +109,7 @@ function blueprintSectionFor(block, animationDir, heading, warnLabel) {
   if (sel.conflict) {
     section = section.replace(
       `## ${title}\n`,
-      `## ${title}\n\n> Authoritative blueprint for this frame. Other \`- blueprint:\` lines in the block (${sel.all.filter((p) => p !== sel).map((p) => `\`${p.raw}\``).join(", ")}) are superseded.\n`,
+      `## ${title}\n\n> Authoritative blueprint for this frame. Other \`- blueprint:\` lines in the block (${sel.all.filter((p) => p.id && p.raw !== sel.raw).map((p) => `\`${p.raw}\``).join(", ")}) are superseded.\n`,
     );
   }
   return { sel, section };
@@ -173,8 +195,8 @@ export function citedRules(block, ruleIds) {
   return [...new Set([...explicit, ...mentioned])].filter((id) => ruleIds.includes(id));
 }
 
-export function resourceSections(block, { animationDir, ruleIds }) {
-  let sections = blueprintSectionFor(block, animationDir, "Selected blueprint", null).section;
+export function resourceSections(block, { animationDir, ruleIds, assigned = null }) {
+  let sections = blueprintSectionFor(block, animationDir, "Selected blueprint", null, assigned).section;
   for (const rule of citedRules(block, ruleIds)) {
     sections += selectedFile(
       join(animationDir, "rules", `${rule}.md`),
@@ -368,6 +390,10 @@ const MOTION_BANS = [
   },
 ];
 
+// "No rotation or skew on type" style bans are scoped to text, not to cards.
+const TYPE_ROTATION_BAN_RE = /\b(?:no|never|avoid|without)\b[^.\n;]{0,40}?\b(?:rotat\w*|3d|tilt\w*|skew\w*|perspective)\b[^.\n;]{0,40}?\b(?:on|of|for|to)\s+(?:the\s+|any\s+)?(?:type|text|typography|letters?|glyphs?|words?|headlines?|copy)\b/i;
+const CARD_3D_RE = /\b3d\b|\brotat(?:e|ion)Y\b|\bperspective\b|\btilt(?:s|ed|ing)?\b/gi;
+
 function negativeListText(direction) {
   const i = String(direction ?? "").search(/negative list/i);
   if (i < 0) return "";
@@ -417,8 +443,12 @@ const fmtS = (n) => `${Number(n.toFixed(3))}s`;
 // carries a ruling the worker applies verbatim instead of deliberating.
 export function detectConflicts({ block, sel, assigned, blueprintText = "", direction = "", frameMd = "" }) {
   const out = [];
-  if (sel?.conflict) {
-    const others = sel.all.filter((p) => p.id.toLowerCase() !== sel.id.toLowerCase()).map((p) => `\`${p.raw}\``);
+  // A mode word is never a blueprint id — no ruling may name `Adapt`/`Reproduce`.
+  if (sel?.id && BARE_MODE_RE.test(sel.id)) sel = { ...sel, id: "", modeOnly: true };
+  if (assigned?.id && BARE_MODE_RE.test(assigned.id)) assigned = null;
+  if (sel?.modeOnly && assigned?.id) sel = withAssignment(sel, assigned, null);
+  if (sel?.conflict && sel.id) {
+    const others = sel.all.filter((p) => p.id && p.id.toLowerCase() !== sel.id.toLowerCase()).map((p) => `\`${p.raw}\``);
     out.push({
       kind: "blueprint-fields",
       detail: `the block lists several \`- blueprint:\` lines (${others.join(", ")} vs \`${sel.raw}\`)`,
@@ -467,7 +497,23 @@ export function detectConflicts({ block, sel, assigned, blueprintText = "", dire
       });
     }
   }
-  const neg = negativeListText(direction);
+  const typeBan = [direction, frameMd].map((t) => TYPE_ROTATION_BAN_RE.exec(t ?? "")?.[0]).find(Boolean);
+  const neg = negativeListText(direction).replace(new RegExp(TYPE_ROTATION_BAN_RE.source, "gi"), "");
+  if (typeBan) {
+    const fromBlock = positiveMentions(block, CARD_3D_RE);
+    const fromBp = positiveMentions(blueprintText, CARD_3D_RE);
+    if (fromBlock.length || fromBp.length) {
+      const where = [
+        fromBlock.length ? `block: "…${fromBlock[0]}…"` : "",
+        fromBp.length ? `blueprint \`${sel?.id || "?"}\`: "…${fromBp[0]}…"` : "",
+      ].filter(Boolean).join("; ");
+      out.push({
+        kind: "type-rotation-scope",
+        detail: `the design constraints say "${typeBan.replace(/\s+/g, " ").trim()}" while 3D/tilt is asked for (${where})`,
+        ruling: "the rotation/3D ban applies to type only — glyphs, words and text lines stay upright and flat (no rotate/rotateX/rotateY/skew on text). Card/container tilt, rotateY and perspective run exactly as the recipe/blueprint specifies; text inside a tilted card rides along with its card, never with its own rotation tween.",
+      });
+    }
+  }
   if (neg) {
     for (const ban of MOTION_BANS) {
       if (!ban.banned.test(neg)) continue;
@@ -527,10 +573,10 @@ export function buildDispatchDocs({ projectDir, frames, outDir, animationDir, ca
   const direction = [videoDirection(storyboard), designContract].filter(Boolean).join("\n\n");
   mkdirSync(outDir, { recursive: true });
   return frames.map((frame) => {
-    const { sel, section: blueprintSection } = blueprintSectionFor(
-      frame.block, animationDir, "Selected blueprint", frame.frameId);
     const assigned = assignment.get(frameNumber(frame.heading));
-    if (assigned && sel && assigned.id.toLowerCase() !== sel.id.toLowerCase()) {
+    const { sel, section: blueprintSection } = blueprintSectionFor(
+      frame.block, animationDir, "Selected blueprint", frame.frameId, assigned);
+    if (assigned && sel?.id && assigned.id.toLowerCase() !== sel.id.toLowerCase()) {
       console.warn(
         `frame-packets: ${frame.frameId}: selected blueprint "${sel.id}" ≠ Blueprint assignment "${assigned.id}"`,
       );
@@ -681,12 +727,14 @@ export function buildFramePackets({
   const frames = splitFrames(storyboard);
   if (frames.length === 0) throw new Error("STORYBOARD.md has no frame blocks");
   const ruleIds = knownRuleIds(animationDir);
+  const assignment = blueprintAssignment(storyboard);
 
   const packets = frames.map((frame) => {
     const id = frameId(frame);
     if (validateFrame) validateFrame(frame, id);
     checkSceneTimeline(frame.block, id);
-    const packet = `# Frame packet: ${id}\n\n## Project inputs\n\n- Project: ${resolve(projectDir)}\n${designTruthLine(projectDir)}\n- RULES_DIR: ${join(animationDir, "rules")}\n\n## Assigned storyboard block\n\n${frame.block}\n${resourceSections(frame.block, { animationDir, ruleIds })}${extraSections ? extraSections(frame.block) : ""}`;
+    const assigned = assignment.get(frameNumber(frame.heading));
+    const packet = `# Frame packet: ${id}\n\n## Project inputs\n\n- Project: ${resolve(projectDir)}\n${designTruthLine(projectDir)}\n- RULES_DIR: ${join(animationDir, "rules")}\n\n## Assigned storyboard block\n\n${frame.block}\n${resourceSections(frame.block, { animationDir, ruleIds, assigned })}${extraSections ? extraSections(frame.block) : ""}`;
     const bytes = Buffer.byteLength(packet);
     if (bytes > maxPacketBytes) {
       throw new Error(`${id}: frame packet is ${bytes} bytes (limit ${maxPacketBytes})`);
