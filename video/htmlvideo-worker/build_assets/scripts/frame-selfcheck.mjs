@@ -31,15 +31,28 @@
  *     selector strings (id_requires_css_escape — promoted to FAIL: CSS drops
  *     the rule and querySelectorAll throws at runtime)
  *   WARN (do not fail exit code): css transition usage, background painted
- *     on #root, data-composition-id != basename
+ *     on #root, data-composition-id != basename, font_out_of_ramp,
+ *     font_dead_fallback
  */
 
 import fs from "node:fs";
+import path from "node:path";
+import {
+  GENERIC_FAMILIES,
+  extractDeclaredFamilies,
+  extractFontStacks,
+  extractGoogleFamilies,
+  extractUsedFamilies,
+  loadCliAliases,
+  normFamily,
+  parseFrameFamilies,
+} from "./lib/fonts.mjs";
 
 const [fileArg] = process.argv.slice(2);
-const findings = [];
-function fail(msg) { findings.push(`[FAIL] ${msg}`); }
-function warn(msg) { findings.push(`[WARN] ${msg}`); }
+const fails = [];
+const warns = [];
+function fail(msg) { fails.push(`[FAIL] ${msg}`); }
+function warn(msg) { warns.push(`[WARN] ${msg}`); }
 
 if (!fileArg) {
   console.error("usage: node frame-selfcheck.mjs compositions/frames/<frame_id>.html");
@@ -73,7 +86,12 @@ if (!rootM) {
   else if (compId[1] !== frameId) warn(`root data-composition-id "${compId[1]}" != file id "${frameId}"`);
   const dur = /data-duration="([^"]*)"/.exec(rootTag);
   if (!dur) fail("root missing data-duration (missing_root_duration — breaks transitions inject)");
-  else if (!(parseFloat(dur[1]) > 0)) fail(`root data-duration "${dur[1]}" is not a positive number`);
+  else if (!/^\d+(\.\d+)?$/.test(dur[1])) {
+    fail(
+      `root data-duration "${dur[1]}" must be a plain number with no unit suffix ` +
+        `(use data-duration="N", not "Ns") — transitions inject requires a bare numeric value`,
+    );
+  } else if (!(parseFloat(dur[1]) > 0)) fail(`root data-duration "${dur[1]}" is not a positive number`);
   if (/<div\b[^>]*\bclass="[^"]*"\s[^>]*id="root"/.test(html) || /<div\b[^>]*id="root"[^>]*\bclass="[^"]*"/.test(html)) {
     fail("root styled via class — style the frame root via #root, never a class (subcomposition_root_styled_by_class)");
   }
@@ -163,10 +181,51 @@ if (rootBg && !/^\s*(transparent|none|initial)\s*$/.test(rootBg[1])) {
   warn("background painted on #root — full-bleed ground should be a class=\"clip\" layer, not the root");
 }
 
-if (findings.length === 0) {
+// Font ramp warnings. frame.md is the ramp; CLI aliases are bundled and silent.
+// font_dead_fallback only fires when alias keys loaded (otherwise a real alias
+// could look orphan). Neither warning changes the exit code.
+try {
+  let dir = path.dirname(path.resolve(fileArg));
+  let frameMd = null;
+  for (let i = 0; i < 4; i++) {
+    const cand = path.join(dir, "frame.md");
+    if (fs.existsSync(cand)) { frameMd = cand; break; }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  if (frameMd) {
+    const ramp = new Set(parseFrameFamilies(fs.readFileSync(frameMd, "utf8")).map((f) => normFamily(f)));
+    const { keys } = loadCliAliases();
+    const declared = extractDeclaredFamilies(html);
+    const google = extractGoogleFamilies(html);
+    const aliasHas = (n) => !!(keys && keys.has(n));
+    for (const name of extractUsedFamilies(html)) {
+      if (ramp.has(name) || aliasHas(name)) continue;
+      warn(`font_out_of_ramp: "${name}" is not in frame.md typography`);
+    }
+    if (keys) {
+      const seen = new Set();
+      for (const stack of extractFontStacks(html)) {
+        stack.forEach((name, i) => {
+          if (i === 0 || !name || seen.has(name) || GENERIC_FAMILIES.has(name)) return;
+          if (ramp.has(name) || declared.has(name) || google.has(name) || keys.has(name)) return;
+          seen.add(name);
+          warn(`font_dead_fallback: "${name}" is an orphan fallback (not primary) — drop it`);
+        });
+      }
+    }
+  }
+} catch {
+  /* font warnings are best-effort and never fail the structural gate */
+}
+
+if (fails.length === 0) {
+  for (const w of warns) console.error(w);
   console.log(`PASS ${frameId}`);
   process.exit(0);
 }
-for (const f of findings) console.error(f);
-console.error(`FAIL ${frameId} (${findings.length} finding${findings.length > 1 ? "s" : ""})`);
+for (const f of fails) console.error(f);
+for (const w of warns) console.error(w);
+console.error(`FAIL ${frameId} (${fails.length} finding${fails.length > 1 ? "s" : ""})`);
 process.exit(1);
