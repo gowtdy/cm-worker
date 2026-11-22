@@ -53,10 +53,13 @@ and `../hyperframes-animation/`.
      pass (current file inlined; 16000 cap / 10 turns / 300s) instead of a
      fresh re-dispatch. `HTMLVIDEO_FRAME_HTML_SALVAGE=0` disables.
    - Switches (docs/2026-11-22-frame-html-critical-path-hardening.md):
-     rich skeleton / two-phase / hedge **default ON**
-     (`HTMLVIDEO_FRAME_HTML_RICH_SKELETON` / `_TWO_PHASE` / `_HEDGE`; set `0` to
-     disable); `_DEGRADE` default ON; `_MAX_OUTPUT` / `_EFFORT` optional
-     overrides. One `frame-html stage summary` INFO line per stage.
+     rich skeleton / hedge **default ON**
+     (`HTMLVIDEO_FRAME_HTML_RICH_SKELETON` / `_HEDGE`; set `0` to disable);
+     two-phase **default OFF** (`_TWO_PHASE=1` opts in — on the deepseek
+     backend each worker is one long single-request marathon, so splitting A+B
+     only adds a cold start); single-phase workers run at the frame_html
+     profile cap of 64000. `_DEGRADE` default ON; `_MAX_OUTPUT` / `_EFFORT`
+     optional overrides. One `frame-html stage summary` INFO line per stage.
 5. Mark landed frames `animated` in STORYBOARD as each frame completes
    (regex, deterministic, serialized by a lock).
 6. Assemble via `assemble-index.mjs`; on failure run ONE `repair`-profile
