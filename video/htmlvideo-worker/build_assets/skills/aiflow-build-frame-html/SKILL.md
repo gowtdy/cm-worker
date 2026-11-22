@@ -38,7 +38,9 @@ and `../hyperframes-animation/`.
 3. After each worker return the driver runs
    `node frame-selfcheck.mjs compositions/frames/<frame_id>.html`. A frame is
    **done** iff rc==0 ∧ `done OK <frame_id>` ∧ selfcheck PASS ∧ file on disk.
-   Artifact existence / skeleton selfcheck alone is NOT completion.
+   Artifact existence / skeleton selfcheck alone is NOT completion. A file
+   still carrying `skeleton-v1` with an empty `#root` or no timeline tween
+   FAILs `skeleton_unfilled`.
 4. Failures (missing done OK, non-zero rc, or selfcheck FAIL) are re-dispatched
    with findings appended — bounded by
    `HTMLVIDEO_FRAME_HTML_MAX_ATTEMPTS` (default 3). Then raise — never unbounded.
@@ -46,9 +48,15 @@ and `../hyperframes-animation/`.
      driver tails its session jsonl and kills a thinking-only output-cap turn
      (rc 125). The retry after rc 125 runs with a 64000 output cap.
      `HTMLVIDEO_FRAME_HTML_TRUNC_KILL=0` disables.
-   - Salvage: rc 124/125 with a changed frame file that passes selfcheck gets a
-     short finish pass (current file inlined; 16000 cap / 10 turns / 300s)
-     instead of a fresh re-dispatch. `HTMLVIDEO_FRAME_HTML_SALVAGE=0` disables.
+   - Salvage: rc 124/125 with a changed frame file that passes selfcheck (or
+     fails only `skeleton_unfilled` with body content) gets a short finish
+     pass (current file inlined; 16000 cap / 10 turns / 300s) instead of a
+     fresh re-dispatch. `HTMLVIDEO_FRAME_HTML_SALVAGE=0` disables.
+   - Switches (docs/2026-11-22-frame-html-critical-path-hardening.md):
+     rich skeleton / two-phase / hedge **default ON**
+     (`HTMLVIDEO_FRAME_HTML_RICH_SKELETON` / `_TWO_PHASE` / `_HEDGE`; set `0` to
+     disable); `_DEGRADE` default ON; `_MAX_OUTPUT` / `_EFFORT` optional
+     overrides. One `frame-html stage summary` INFO line per stage.
 5. Mark landed frames `animated` in STORYBOARD as each frame completes
    (regex, deterministic, serialized by a lock).
 6. Assemble via `assemble-index.mjs`; on failure run ONE `repair`-profile
@@ -59,9 +67,12 @@ and `../hyperframes-animation/`.
 
 Driver inlines `.dispatch.md` into the worker prompt (do not Read it again).
 The dispatch inlines the rule card, storyboard block, selected blueprint and
-frame.md token excerpt — rule recipes are **not** inlined, only indexed: in
-the first tool turn the worker Reads every `RULES_DIR/<id>.md` in the Rule
-index as one parallel batch. Then FILL the pre-built skeleton at
+frame.md token excerpt — rule recipes default to **snippet** inlining under
+`## Rule recipes (snippets)` (`HTMLVIDEO_FRAME_PACKETS_INLINE_RECIPES=snippet`;
+set `off` to index-only, or `full` for complete recipes). When snippets/full
+are present, Read a full `RULES_DIR/<id>.md` only if a detail is missing; when
+`off`, the first tool turn Reads every indexed recipe in one parallel batch.
+A trailing `## Resolved conflicts` block carries final packet-time rulings. Then FILL the pre-built skeleton at
 `compositions/frames/<frame_id>.html` (never write a new skeleton): chunked
 Edit/Write style → body → script, each ≤ ~20 KB, first edit by turn 2 →
 reply `done OK <frame_id>` (or `fail <frame_id>: <reason>`). Do **not** run
