@@ -222,5 +222,314 @@ class WorkerPromptTest(unittest.TestCase):
         self.assertTrue(vis._blueprint_body("titlecard-reveal"))
 
 
+_GOOD_REPLY = (
+    "done OK 6\n"
+    "- blueprint: grid-card-assemble (Adapt)\n"
+    "- focal: the card grid\n"
+    "- roles: grid = foreground · cream = background wallpaper\n"
+    "- sfx: soft-pop\n"
+    "Scene 1 (0.0–2.0s): cards rise.\n"
+    "Scene 2 (2.0–6.0s): grid locks.\n"
+)
+
+
+class SceneParseTest(unittest.TestCase):
+    def test_bullet_prefixed_scene_lines_accepted_and_normalized(self):
+        reply = _GOOD_REPLY.replace("Scene 1", "- Scene 1").replace("Scene 2", "* Scene 2")
+        out = vis._parse_worker_additions("6", reply)
+        self.assertIsNotNone(out)
+        self.assertIn("\nScene 1 (0.0–2.0s): cards rise.", out)
+        self.assertIn("\nScene 2 (2.0–6.0s): grid locks.", out)
+        self.assertNotIn("- Scene", out)
+        self.assertNotIn("done OK", out)
+
+    def test_bold_and_indented_scene_lines_normalized(self):
+        reply = (
+            "  done OK 6\n"
+            "  - focal: f\n"
+            "  - roles: r\n"
+            "**Scene 1 (0.0–2.0s):** a\n"
+            "  Scene 2 (2.0–6.0s): b\n"
+        )
+        out = vis._parse_worker_additions("6", reply)
+        self.assertEqual(
+            out, "- focal: f\n- roles: r\nScene 1 (0.0–2.0s): a\nScene 2 (2.0–6.0s): b")
+
+    def test_diagnose_reasons(self):
+        self.assertIsNone(vis._diagnose_worker_reply("6", _GOOD_REPLY))
+        self.assertEqual(vis._diagnose_worker_reply("6", ""), "empty reply")
+        no_scene = "\n".join(l for l in _GOOD_REPLY.split("\n") if "Scene" not in l)
+        self.assertIn("Scene", vis._diagnose_worker_reply("6", no_scene))
+        no_roles = _GOOD_REPLY.replace("- roles:", "roles:")
+        self.assertIn("`- roles:`", vis._diagnose_worker_reply("6", no_roles))
+        self.assertIn("missing `done OK 6`",
+                      vis._diagnose_worker_reply("6", _GOOD_REPLY.replace("done OK 6", "")))
+        self.assertIn("does not match frame 7", vis._diagnose_worker_reply("7", _GOOD_REPLY))
+
+    def test_dispatch_note_carries_reason_and_tail(self):
+        bad = _GOOD_REPLY.replace("Scene", "Shot")
+        note = vis._dispatch_note(0, bad, "6")
+        self.assertIn("missing `Scene N", note)
+        self.assertIn("last words:", note)
+        self.assertIn("grid locks.", note)
+        self.assertIn("timeout", vis._dispatch_note(124, "", "6"))
+        self.assertIn("rc=1", vis._dispatch_note(1, "", "6"))
+
+
+class SceneWindowTest(unittest.TestCase):
+    def test_6b01_f3_overlap_clamped(self):
+        text = ("- focal: f\n"
+                "Scene 1 (0.0–1.8s): a\n"
+                "Scene 2 (1.6–6.8s): b\n"
+                "Scene 3 (6.6–9.0s): c\n")
+        out, fixes = vis._normalize_scene_windows(text, 9.0)
+        self.assertIn("Scene 1 (0.0–1.8s): a", out)
+        self.assertIn("Scene 2 (1.8–6.8s): b", out)
+        self.assertIn("Scene 3 (6.8–9.0s): c", out)
+        self.assertEqual(len(fixes), 2)
+        self.assertTrue(out.startswith("- focal: f\n"))
+
+    def test_first_start_pulled_to_zero_and_coverage_extended(self):
+        text = "Scene 1 (0.3–2s): a\nScene 2 (2–4s): b\n"
+        out, fixes = vis._normalize_scene_windows(text, 6.153)
+        self.assertIn("Scene 1 (0.0–2.0s): a", out)
+        self.assertIn("Scene 2 (2.0–6.153s): b", out)
+        self.assertEqual(len(fixes), 2)
+
+    def test_overrun_clamped_to_duration_but_good_coverage_untouched(self):
+        out, fixes = vis._normalize_scene_windows(
+            "Scene 1 (0.0–4.0s): a\nScene 2 (4.0–9.0s): b\n", 8.208)
+        self.assertIn("Scene 2 (4.0–8.208s)", out)
+        self.assertEqual(len(fixes), 1)
+        text = "Scene 1 (0.0–4.0s): a\nScene 2 (4.0–7.6s): b\n"
+        self.assertEqual(vis._normalize_scene_windows(text, 8.0), (text, []))
+
+    def test_clean_windows_unchanged_and_no_duration_ok(self):
+        text = "Scene 1 (0–2): a\nScene 2 (2–5): b\n"
+        self.assertEqual(vis._normalize_scene_windows(text, None), (text, []))
+        self.assertEqual(vis._normalize_scene_windows("no scenes", 5.0), ("no scenes", []))
+
+    def test_inverting_overlap_left_for_gate(self):
+        text = "Scene 1 (0.0–3.0s): a\nScene 2 (2.0–2.5s): b\n"
+        out, fixes = vis._normalize_scene_windows(text, None)
+        self.assertEqual(out, text)
+        self.assertEqual(fixes, [])
+
+    def test_gate_unparseable_window_canonicalized(self):
+        out, fixes = vis._normalize_scene_windows(
+            "Scene 1 (0.0 s – 2.0 s): a\nScene 2 (2.0–5.0s): b\n", 5.0)
+        self.assertIn("Scene 1 (0.0–2.0s): a", out)
+        self.assertIn("window format canonicalized", fixes)
+
+    def test_frame_duration(self):
+        self.assertEqual(vis._frame_duration("- duration: 6.153s\n"), 6.153)
+        self.assertIsNone(vis._frame_duration("- scene: x"))
+
+
+_BLOCKS = {
+    "1": ("## Frame 1 — The hunch and the panic\n\n"
+          "- scene: Cream canvas. Two kinetic words swap in place.\n"
+          '- voiceover: "Most investors buy on a hunch. Neither ends well."\n'
+          "- duration: 6.153s\n- transition_in: cut\n- beat: recognition + concern\n"),
+    "2": ("## Frame 2 — Check one\n\n"
+          "- scene: The checklist card; row one highlights.\n"
+          '- voiceover: "First, understand it."\n'
+          "- duration: 8.2s\n- transition_in: push-slide RIGHT\n- beat: comprehension\n"),
+    "3": ("## Frame 3 — Check two\n\n"
+          "- scene: Same checklist card; row two checks off.\n"
+          '- voiceover: "Second, check the engine."\n'
+          "- duration: 7.0s\n- transition_in: push-slide RIGHT\n- beat: momentum\n"),
+}
+
+
+class PromptShapeTest(unittest.TestCase):
+    def test_no_slash_skill_in_driver_prompts(self):
+        prompts = [
+            vis._build_design_prompt("---\n---", ["1"], "", frozenset({"a"})),
+            vis._build_worker_prompt("1", "block", "design", "bp"),
+            vis._build_assignment_rewrite_prompt("d", [("1", "x")], ["1"], frozenset({"a"})),
+        ]
+        for p in prompts:
+            self.assertNotIn("/aiflow-build-frame-visual", p)
+            self.assertFalse(p.lstrip().startswith("/"))
+        for p in prompts[:2]:
+            self.assertIn("aiflow-build-frame-visual contract", p)
+
+    def test_worker_prompt_shared_prefix_order_and_thinking_hint(self):
+        p = vis._build_worker_prompt("3", "FRAME BLOCK", "DESIGN TEXT", "BP BODY")
+        i_design = p.index("[DESIGN CONTRACT]")
+        i_bp = p.index("[SELECTED BLUEPRINT")
+        i_ctx = p.index("[CONTEXT")
+        self.assertLess(i_design, i_bp)
+        self.assertLess(i_bp, i_ctx)
+        self.assertLess(p.index("DESIGN TEXT"), p.index("FRAME BLOCK"))
+        self.assertIn("do NOT draft the full answer", p)
+        # everything before the design contract is frame-agnostic (cacheable)
+        self.assertEqual(
+            p[:i_design],
+            vis._build_worker_prompt("9", "other", "DESIGN TEXT", "")[:i_design])
+        self.assertIn("`done OK 3`", p[i_ctx:])
+
+    def test_design_prompt_has_frame_summaries_and_locked_transitions(self):
+        order = ["1", "2", "3"]
+        p = vis._build_design_prompt(
+            "---\n---", order, "", frozenset({"a"}), vis._frame_summaries(_BLOCKS, order))
+        self.assertIn("F1 — The hunch and the panic", p)
+        self.assertIn("beat: recognition + concern", p)
+        self.assertIn("6.153s", p)
+        self.assertIn("transition_in: push-slide RIGHT", p)
+        self.assertIn('vo: "Most investors buy on a hunch."', p)
+        self.assertNotIn("Neither ends well", p)        # only the first sentence
+        self.assertIn("**Locked transitions**", p)
+        self.assertIn("**Shared stage**", p)
+        self.assertIn("F2→F3", p)
+
+    def test_shared_stage_pairs(self):
+        sums = vis._frame_summaries(_BLOCKS, ["1", "2", "3"])
+        pairs = vis._shared_stage_pairs(sums)
+        self.assertEqual([(a, b) for a, b, _ in pairs], [("2", "3")])
+        overlap = [
+            {"num": "1", "scene": "white checklist card rows highlight", "duration": "7s"},
+            {"num": "2", "scene": "white checklist card rows strike", "duration": "7.2s"},
+        ]
+        self.assertEqual(len(vis._shared_stage_pairs(overlap)), 1)
+
+
+class BlueprintTruncateTest(unittest.TestCase):
+    def test_short_body_untouched(self):
+        self.assertEqual(vis._truncate_blueprint("# t\n\n**intent**: x", 5000),
+                         "# t\n\n**intent**: x")
+
+    def test_long_body_keeps_signature_sections(self):
+        body = (
+            "# demo — Demo\n\n"
+            "**intent**: the signature move.\n\n"
+            "**roles served**\n\n" + "- role line\n" * 400 + "\n"
+            "**duration**: 3–5s\n\n"
+            "**shot structure**\n\n```\n" + "Scene line\n" * 600 + "```\n\n"
+            "**motion vocabulary**: rise, settle\n\n"
+            "**rule mapping**\n\n" + "- map\n" * 300
+        )
+        out = vis._truncate_blueprint(body, 3000)
+        self.assertLessEqual(len(out), 3300)
+        self.assertTrue(out.startswith("# demo"))
+        for kept in ("**intent**", "**duration**", "**shot structure**", "**motion vocabulary**"):
+            self.assertIn(kept, out)
+        self.assertNotIn("**roles served**", out)
+        self.assertNotIn("**rule mapping**", out)
+        self.assertIn("(truncated", out)
+        self.assertEqual(out.count("```") % 2, 0)
+
+    def test_real_long_blueprint_capped(self):
+        out = vis._blueprint_body("kinetic-type-beats")
+        self.assertLessEqual(len(out), vis.DEFAULT_BLUEPRINT_MAX_CHARS + 300)
+        self.assertIn("**shot structure**", out)
+        self.assertIn("(truncated", out)
+
+
+class DriverFanOutTest(unittest.TestCase):
+    """Phase B end-to-end with Claude + gate mocked."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="visual-driver-")
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
+        os_ = __import__("os")
+        self.board = "---\nformat: 1920x1080\n---\n\n" + "\n".join(
+            _BLOCKS[k] for k in ("1", "2"))
+        with open(os_.path.join(self.tmp, "STORYBOARD.md"), "w", encoding="utf-8") as f:
+            f.write(self.board)
+        with open(os_.path.join(self.tmp, "frame.md"), "w", encoding="utf-8") as f:
+            f.write("---\ncolors:\n  cream: \"#F5F5F0\"\n---\n")
+        with open(os_.path.join(self.tmp, "hyperframes.json"), "w", encoding="utf-8") as f:
+            f.write("{}")
+        # stale fragment from an earlier run must not leak into the merge
+        os_.makedirs(os_.path.join(self.tmp, ".hyperframes", "visual"))
+        with open(os_.path.join(self.tmp, ".hyperframes", "visual", "F1.md"), "w") as f:
+            f.write("STALE")
+
+    def test_failed_frame_redispatched_without_waiting_for_others(self):
+        import os
+        import threading
+        f2_retry_started = threading.Event()
+        calls = []
+        lock = threading.Lock()
+
+        def fake_result(project_dir, prompt, logger, **kw):
+            label = kw.get("label")
+            with lock:
+                calls.append((label, prompt, kw))
+            if label == "design":
+                return 0, ("**Motion grammar.** calm\n\n## Blueprint assignment\n"
+                           "F1 = titlecard-reveal (Adapt)\nF2 = compose (Adapt)\n")
+            if label == "F1":
+                # A whole-round barrier would never start F2's retry while F1 runs.
+                self.assertTrue(f2_retry_started.wait(5), "F2 retry waited for F1")
+                return 0, ("done OK 1\n- focal: f\n- roles: r\n"
+                           "Scene 1 (0.0–2.0s): a\nScene 2 (1.8–5.0s): b\n")
+            if "[RE-DISPATCH]" in prompt:
+                f2_retry_started.set()
+                return 0, ("done OK 2\n- focal: g\n- roles: s\n"
+                           "- Scene 1 (0.0–3.0s): c\n- Scene 2 (3.0–8.2s): d\n")
+            return 0, "done OK 2\n- focal: g\n- roles: s\nShot 1: no scene lines"
+
+        gate = mock.Mock(returncode=0, stdout="", stderr="")
+        log = logging.getLogger("test.visual.driver")
+        with mock.patch.object(vis, "run_claude_result", side_effect=fake_result), \
+                mock.patch.object(vis.subprocess, "run", return_value=gate), \
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}):
+            vis.build_frame_visual(self.tmp, log)
+
+        design_kw = next(kw for label, _, kw in calls if label == "design")
+        self.assertEqual(design_kw["thinking_default"], "32000")
+        retry_prompt = next(p for label, p, _ in calls
+                            if label == "F2" and "[RE-DISPATCH]" in p)
+        self.assertIn("missing `Scene N", retry_prompt)
+        self.assertIn("no scene lines", retry_prompt)
+
+        vdir = os.path.join(self.tmp, ".hyperframes", "visual")
+        with open(os.path.join(vdir, "F1.md"), encoding="utf-8") as f:
+            f1 = f.read()
+        self.assertIn("Scene 2 (2.0–6.153s): b", f1)   # overlap + coverage fixed
+        self.assertNotIn("STALE", f1)
+        with open(os.path.join(vdir, "F2.md"), encoding="utf-8") as f:
+            self.assertIn("\nScene 1 (0.0–3.0s): c", f.read())
+        self.assertTrue(os.path.isfile(os.path.join(vdir, "_design.md")))
+
+        with open(os.path.join(self.tmp, "STORYBOARD.md"), encoding="utf-8") as f:
+            merged = f.read()
+        for k in ("1", "2"):
+            self.assertIn(_BLOCKS[k].strip(), merged)   # narrative byte-exact
+        self.assertIn("## Video direction", merged)
+        self.assertNotIn("- Scene", merged)
+
+    def test_frame_failing_twice_raises(self):
+        import os
+
+        def fake_result(project_dir, prompt, logger, **kw):
+            if kw.get("label") == "design":
+                return 0, ("## Blueprint assignment\nF1 = compose (Adapt)\n"
+                           "F2 = compose (Adapt)\n")
+            if kw.get("label") == "F1":
+                return 0, "done OK 1\n- focal: f\n- roles: r\nScene 1 (0–3): a\nScene 2 (3–6.2): b"
+            return 0, "nothing useful"
+
+        log = logging.getLogger("test.visual.driver")
+        with mock.patch.object(vis, "run_claude_result", side_effect=fake_result), \
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}):
+            with self.assertRaisesRegex(RuntimeError, r"\['2'\]"):
+                vis.build_frame_visual(self.tmp, log)
+
+    def test_legacy_rollback_uses_legacy_profile(self):
+        import os
+        log = logging.getLogger("test.visual.driver")
+        with mock.patch.object(vis, "run_claude", return_value=1) as rc, \
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "0"}):
+            with self.assertRaises(RuntimeError):
+                vis.build_frame_visual(self.tmp, log)
+        self.assertEqual(rc.call_args.kwargs["skill"], "visual_legacy")
+        self.assertTrue(rc.call_args.args[1].startswith("/aiflow-build-frame-visual"))
+
+
 if __name__ == "__main__":
     unittest.main()
