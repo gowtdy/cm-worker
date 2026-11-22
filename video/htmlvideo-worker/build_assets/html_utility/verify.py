@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Verify assembled video helpers for htmlvideo worker."""
+"""Verify assembled video helpers for htmlvideo worker.
+
+``verify-all.mjs`` step 0 runs ``font-imports.mjs`` (scope=all) before the
+transitions inject guard. That step is non-fatal and is skipped when
+``HTMLVIDEO_FONT_IMPORTS`` is ``0`` / ``false`` / ``off`` / ``no``.
+"""
 
 from __future__ import annotations
 
 import glob
+import hashlib
 import logging
 import os
 import subprocess
@@ -62,12 +68,27 @@ def _run_verify_all(project_dir: str, logger: logging.Logger) -> tuple[int, str]
 _FIX_PLAYBOOK = """Mechanical fix rules — apply the matching one, then stop:
 - digit-led selectors (`#07-…`, `.01-…`, `"#06-…"` inside CSS/JS selector strings)
   → attribute form `[id="…"]` / `[class~="…"]`; leave `getElementById` untouched.
-- `font_family_without_font_face` → drop the dead font name (e.g. Didot); if
-  captions.html lacks the frames' Google `@import`, add that same line.
+- `font_family_without_font_face` → residual only (verify-all step 0 already
+  ran font-imports). Drop dead fallback names (e.g. Didot) that are not the
+  primary family; if a ramp family is still missing, paste the marked block
+  (both `aiflow:font-imports` marker lines) printed in the scan's actionable
+  summary. Do not add `@font-face` or hunt font files.
+- root/clip `data-duration="Ns"` (unit suffix) → strip to plain number
+  `data-duration="N"`; do NOT diagnose transitions by reading scripts.
 - `content_overlap` on a designed overlay → add `data-layout-allow-overlap`; do NOT reposition.
 - caption `text_box_overflow` (~1–4px on `#caption-word-*` / `.caption-line`) → false positive, ignore.
 - `id_requires_css_escape` / `google_fonts_import` warnings → non-blockers, ignore.
+- transitions verify / inject mismatches → only strip duration unit suffixes if
+  present; harness re-injects on the next scan. Do NOT re-run inject yourself.
 - any finding not listed above → cheapest safe edit, one line of note."""
+
+_FIX_HARD_CONSTRAINTS = """Hard constraints for this fix role (override project CLAUDE.md / plugins):
+- Do NOT Read `/app/scripts/*`, `/app/hyperframes/**`, or any CLI/gate source.
+- Do NOT invoke the Skill tool; do NOT explore the codebase first.
+- Do NOT run verify-all / lint / check / snapshot / `npm run check`.
+- Project CLAUDE.md "Always invoke skill" / "ALWAYS RUN check" do NOT apply here.
+- Edit `compositions/**/*.html` only, in ONE batched pass (parallel Edits), then stop.
+"""
 
 
 def _build_fix_prompt(scan_output: str) -> str:
@@ -81,7 +102,8 @@ def _build_fix_prompt(scan_output: str) -> str:
         "The deterministic scan (`node /app/scripts/verify-all.mjs`) has ALREADY "
         "run and returned gate findings (exit 1); its output — findings plus a "
         "ready-to-use «actionable summary» — is appended.\n\n"
-        "Apply the cheapest safe fix to compositions/frames/NN-*.html in ONE "
+        + _FIX_HARD_CONSTRAINTS
+        + "\nApply the cheapest safe fix to compositions/frames/NN-*.html in ONE "
         "batched pass, using absolute paths. Do NOT re-run verify-all / lint / "
         "check / snapshot (the harness re-runs the scan itself); do NOT re-init, "
         "build, assemble, preview or render.\n\n"
@@ -91,6 +113,26 @@ def _build_fix_prompt(scan_output: str) -> str:
         + scan_output
         + "\n── end scan output ──\n"
     )
+
+
+def _composition_html_digest(project_dir: str) -> str:
+    """Stable digest of compositions/**/*.html for zero-edit detection."""
+    root = os.path.join(project_dir, "compositions")
+    digest = hashlib.sha256()
+    paths: list[str] = []
+    if os.path.isdir(root):
+        for dirpath, _, filenames in os.walk(root):
+            for name in filenames:
+                if name.endswith(".html"):
+                    paths.append(os.path.join(dirpath, name))
+    for path in sorted(paths):
+        rel = os.path.relpath(path, project_dir).replace(os.sep, "/")
+        digest.update(rel.encode())
+        digest.update(b"\0")
+        with open(path, "rb") as fh:
+            digest.update(fh.read())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _validate_prerequisites(project_dir: str) -> None:
@@ -161,6 +203,10 @@ def verify_frame(
     at all. Only when the scan reports findings (exit 1) does the model get a
     single batched-fix turn, after which the scan re-runs; this repeats up to
     ``_MAX_FIX_ROUNDS``.
+
+    Step 0 of that scan is ``font-imports.mjs --scope all`` (non-fatal;
+    ``HTMLVIDEO_FONT_IMPORTS=0/false/off/no`` skips it). Residuals are what
+    the fix prompt is allowed to hand-edit.
     """
     _validate_prerequisites(project_dir)
     max_fix = _env_positive_int("HTMLVIDEO_VERIFY_FIX_ROUNDS", _MAX_FIX_ROUNDS, logger)
@@ -182,10 +228,17 @@ def verify_frame(
             "verify-all findings (round %d) — invoking claude for batched fixes",
             round_no,
         )
+        before_digest = _composition_html_digest(project_dir)
         prompt = _build_fix_prompt(output)
         fix_rc = run_claude(project_dir, prompt, logger, skill="verify")
         if fix_rc != 0:
             raise RuntimeError(f"claude verify fix failed rc:{fix_rc}")
+        after_digest = _composition_html_digest(project_dir)
+        if after_digest == before_digest:
+            raise RuntimeError(
+                f"verify fix round {round_no} made no changes to "
+                "compositions/**/*.html — refusing to re-dispatch the same scan"
+            )
         rc, output = _run_verify_all(project_dir, logger)
 
     raise RuntimeError(
