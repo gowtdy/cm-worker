@@ -108,14 +108,14 @@ P0 首批：`frame_html.py`、`claude_cli.py`、`audio.mjs`、`frame-packets.mjs
 - **CSV 列变化**：此前表头有 `wall_s` 但行内漏打（列错位），现补齐；末尾追加 `api_requests,truncations,max_req_s,first_write_req`。`rounds` 数值因去重变小（口径修正，非回归）。list/group 表各加 `req/trn/maxReq`、`trunc/maxReq` 列。
 - `log/stat/skill-timing.py` 是 11-17 的旧快照（早于 driver 签名识别），无代码调用，**未同步**；以 `stat/skill-timing.py` 为准。
 
-## 4. P2（后续：阶段 p50 10–12m）——**开关落地；富骨架/两阶段/对冲默认开（2026-11-22）**
+## 4. P2（后续：阶段 p50 10–12m）——**开关落地；富骨架/对冲默认开，两阶段默认关（2026-11-22）**
 
 | ID | 状态 | 内容 | 开关 / 默认 |
 |---|---|---|---|
 | **P2-1** | ✅ | `buildSkeletons({rich})`：全时长 `class="clip bg" data-skeleton="bg"`（track 0）、每 Scene 占位注释、`const tl = gsap.timeline({ paused: true }); window.__timelines["id"] = tl;` + `tl.addLabel("sceneN", t)`（Scene 溢出时按 duration 等比缩放 label）。结构门全 PASS，仍判 `skeleton_unfilled`；driver 检测 `(rich)` 标记追加复用说明 | `HTMLVIDEO_FRAME_HTML_RICH_SKELETON` 默认 **1**（有问题设 `0`） |
-| **P2-2** | ✅ | 仅 attempt 1（skeleton 模式）：Phase A（style+body，cap 24000 / 20 turns，回复 `phase-a OK`）→ rc=0 才跑 Phase B（内联当前文件，写 script，正常 cap）。**只做最终门禁**；A 失败（124/125）直接按普通失败处理（可 salvage：body 已写的 `no-tween` 半成品），重试回到单阶段 | `HTMLVIDEO_FRAME_HTML_TWO_PHASE` 默认 **1**（有问题设 `0`） |
+| **P2-2** | ✅ | 仅 attempt 1（skeleton 模式）：Phase A（style+body，cap 24000 / 20 turns，回复 `phase-a OK`）→ rc=0 才跑 Phase B（内联当前文件，写 script，正常 cap）。**只做最终门禁**；A 失败（124/125）直接按普通失败处理（可 salvage：body 已写的 `no-tween` 半成品），重试回到单阶段 | `HTMLVIDEO_FRAME_HTML_TWO_PHASE` 默认 **0**（显式 `1` 才开；见 §7 2026-11-22 夜） |
 | **P2-3** | ✅ | 仅当「其余帧全部 ok、只剩该帧在跑、主尝试已运行 ≥ 阈值、帧文件自开跑后哈希未变（无 Write 心跳）、未过 deadline、非 salvage」时，在 `.hyperframes/hedge/<fid>-<n>-*/` 副本中起 hedge；先过门禁者胜：hedge 胜 → 取消主尝试（`cancel_event` → 杀进程组 rc=130）→ 等其退出后拷回并复检、标 animated；主胜 → 取消 hedge。两者皆败 → 用主尝试结果走普通重试。每帧最多一次 | `HTMLVIDEO_FRAME_HTML_HEDGE` 默认 **1**；`HTMLVIDEO_FRAME_HTML_HEDGE_AFTER` 默认 **660**s（有问题设 `HEDGE=0`） |
-| **P2-4** | ✅ | driver 级 extra_env：`CLAUDE_CODE_MAX_OUTPUT_TOKENS` / `CLAUDE_CODE_EFFORT_LEVEL`（effort 非法值告警忽略）；截断重派 cap = max(64000, 覆盖值)；salvage/降级/Phase A 用各自 cap | `HTMLVIDEO_FRAME_HTML_MAX_OUTPUT`、`HTMLVIDEO_FRAME_HTML_EFFORT` 默认未设（= profile：48000 / high） |
+| **P2-4** | ✅ | driver 级 extra_env：`CLAUDE_CODE_MAX_OUTPUT_TOKENS` / `CLAUDE_CODE_EFFORT_LEVEL`（effort 非法值告警忽略）；截断重派 cap = max(64000, 覆盖值)；salvage/降级/Phase A 用各自 cap | `HTMLVIDEO_FRAME_HTML_MAX_OUTPUT`、`HTMLVIDEO_FRAME_HTML_EFFORT` 默认未设（= profile：**64000** / high） |
 | **P2-5** | ✅ | 重派时若 `deadline − elapsed < window`：走降级 prompt（每元素 ≤1–2 个简单 tween、无 3D/粒子、禁止 Read、Scene 必须齐），cap 32000 / 30 turns / timeout=max(300, 剩余秒)，日志 `retry … as degraded … degraded=1`。salvage 优先于降级；过 deadline 仍按 P0 不再发起 | `HTMLVIDEO_FRAME_HTML_DEGRADE` 默认 **1**（只影响本会失败的尾部帧）；`HTMLVIDEO_FRAME_HTML_DEGRADE_WINDOW` 默认 **600**s |
 
 > P2-5 窗口未采用「1.5× 单次 timeout」：默认 timeout 1500s × 1.5 = 2250s ≈ deadline 2400s，几乎所有重派都会被降级；改为固定窗口 600s（可调）。
@@ -149,10 +149,10 @@ python3 stat/skill-timing.py --since '2026-11-23' --group --trunc-cap $cap   # t
 | `HTMLVIDEO_FRAME_PACKETS_RESOLVE_CONFLICTS` | `1` | **P1-2** 写 `## Resolved conflicts`（`0` 仅 console warn） |
 | `HTMLVIDEO_FRAME_PACKETS_INLINE_RECIPES` | `snippet` | **P1-5** 默认开；`full` 全文；`off`/`0` 关闭 |
 | `HTMLVIDEO_FRAME_HTML_RICH_SKELETON` | `1` | **P2-1** 富骨架（设 `0` 回滚） |
-| `HTMLVIDEO_FRAME_HTML_TWO_PHASE` | `1` | **P2-2** 两阶段填充（设 `0` 回滚） |
+| `HTMLVIDEO_FRAME_HTML_TWO_PHASE` | `0` | **P2-2** 两阶段填充（显式 `1` 才开） |
 | `HTMLVIDEO_FRAME_HTML_HEDGE` | `1` | **P2-3** 对冲（设 `0` 回滚） |
 | `HTMLVIDEO_FRAME_HTML_HEDGE_AFTER` | `660` | 对冲阈值（秒） |
-| `HTMLVIDEO_FRAME_HTML_MAX_OUTPUT` | 未设 | **P2-4** 覆盖 worker cap |
+| `HTMLVIDEO_FRAME_HTML_MAX_OUTPUT` | 未设（= profile 64000） | **P2-4** 覆盖 worker cap |
 | `HTMLVIDEO_FRAME_HTML_EFFORT` | 未设 | **P2-4** 覆盖 effort（low/medium/high/xhigh/max） |
 | `HTMLVIDEO_FRAME_HTML_DEGRADE` | `1` | **P2-5** 临近 deadline 降级重派 |
 | `HTMLVIDEO_FRAME_HTML_DEGRADE_WINDOW` | `600` | 降级窗口（秒） |
@@ -164,11 +164,19 @@ python3 stat/skill-timing.py --since '2026-11-23' --group --trunc-cap $cap   # t
 - 冲突检查是关键词级静态规则：色彩语义只做「背景色固定」一类；`At ~3.4s` 等散落时间点不改；否定识别只看前 4 词，"rows settle with no bounce, cards flip" 中 flip 仍计为正向（正确），但更复杂的否定句可能漏判/误判。
 - snippet 模式会让 dispatch 超过 40000B 预算（样本 F04/F06 ≈ 45–47KB，仅 warning）。
 - hedge 的「无 Write」心跳只看帧文件哈希是否变化；hedge 期间该帧 token 成本翻倍；被取消一方的 jsonl 会话保留在 Claude 配置目录。
-- 两阶段只作用于 attempt 1；Phase A 未回复 `phase-a OK` 不作门禁（只看 rc）。
+- 两阶段（默认关，`TWO_PHASE=1` 时）只作用于 attempt 1；Phase A 未回复 `phase-a OK` 不作门禁（只看 rc）。
 - 降级帧画面会更素；日志 `degraded=` 与汇总 `degraded=N` 可追溯。
 - 全部 P2 只有 mock 单测，**未**真实 `claude` 端到端回放。
 
 ## 7. 变更记录
+
+### 2026-11-22 夜 — 两阶段默认关、首尝试 64k、压思考量（任务 `6b028798b3dace27` 分析）
+- `HTMLVIDEO_FRAME_HTML_TWO_PHASE`：默认 **关**（显式 `1` 才开）。deepseek 后端每个 worker 是单请求马拉松，A+B 拆分不省思考、只多一次冷启动，实测负收益。
+- `frame_html` profile `max_output` 48000 → **64000**（首尝试/正常 worker）；`HTMLVIDEO_FRAME_HTML_MAX_OUTPUT` / `HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS` 覆盖照旧；截断重派仍是 max(64000, 覆盖值)；Phase A（手动开时）仍 24000。driver start 日志新增 `worker_cap=`。
+- `selectBlueprint`：裸 `- blueprint: Adapt|Reproduce` 只当 mode，蓝图 id 取 `## Blueprint assignment` 该帧条目；无条目 → warning、不内联蓝图；`detectConflicts` 不再产出「`Adapt` 是蓝图 / 忽略 assignment」的裁决。
+- `detectConflicts` 新增 `type-rotation-scope`：设计约束写「No rotation … on type」而 block/blueprint 要 rotateY/perspective/tilt 时，裁决为「旋转/3D 限制只针对文字；卡片/容器 tilt、perspective 按 recipe/blueprint 执行」；该类文字限定句不再触发全局 `negative-list-3d`。
+- worker 卡片 / frame-worker.md / driver prompt：thinking 只记布局/节拍要点，不写 CSS/HTML/JS 草稿（代码只进 Edit/Write 参数）；布局按 cqw/cqh 网格与 token，禁止逐像素推算与反复验算。
+- effort **未改默认**（仍 high）；建议跑 medium × 64k A/B（§4.1 矩阵，`HTMLVIDEO_FRAME_HTML_EFFORT=medium`），尚未改默认。
 
 ### 2026-11-22 晚 — 默认开关再开一档
 - `HTMLVIDEO_FRAME_HTML_RICH_SKELETON` / `TWO_PHASE` / `HEDGE`：默认开；有问题设 `0`。
