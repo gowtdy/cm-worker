@@ -76,7 +76,11 @@ _FIX_PLAYBOOK = """Mechanical fix rules — apply the matching one, then stop:
   summary. Do not add `@font-face` or hunt font files.
 - root/clip `data-duration="Ns"` (unit suffix) → strip to plain number
   `data-duration="N"`; do NOT diagnose transitions by reading scripts.
-- `content_overlap` on a designed overlay → add `data-layout-allow-overlap`; do NOT reposition.
+- `content_overlap` → follow the scan's triage line: `designed_overlay` (badge /
+  stamp / overlay / watermark …) → `data-layout-allow-overlap` on the text or an
+  inner container (not the scene root); `real_collision` (text vs text) →
+  reposition / shrink, do NOT allow-overlap; `ambiguous` → read the frame's
+  layout intent first, then pick one. Never blanket-allow every overlap.
 - caption `text_box_overflow` (~1–4px on `#caption-word-*` / `.caption-line`) → false positive, ignore.
 - `id_requires_css_escape` / `google_fonts_import` warnings → non-blockers, ignore.
 - transitions verify / inject mismatches → only strip duration unit suffixes if
