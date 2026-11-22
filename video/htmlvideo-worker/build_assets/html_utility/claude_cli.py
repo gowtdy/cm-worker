@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 
 # Per-skill effort / thinking / output budget. CLAUDE_CODE_EFFORT_LEVEL in the
 # child env overrides any --effort flag, and the binary reads
@@ -152,6 +154,138 @@ _PROGRESS_RE = re.compile(
 )
 
 
+# Exit code for a session killed by the truncation watcher (124 = wall-clock).
+TRUNCATED_RC = 125
+_TRUNC_META_PREFIX = "[Your previous response had no visible output"
+_THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
+_TRUNC_POLL_SECONDS = 2.0
+
+
+class _TruncatedKill(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _session_jsonl_candidates(config_dir: str, project_dir: str, session_id: str) -> list[str]:
+    projects = os.path.join(config_dir, "projects")
+    slug = re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(project_dir))
+    direct = os.path.join(projects, slug, f"{session_id}.jsonl")
+    if os.path.isfile(direct):
+        return [direct]
+    return glob.glob(os.path.join(projects, "*", f"{session_id}.jsonl"))
+
+
+class _TruncationWatcher:
+    """Tail one session jsonl and flag a hard-truncated (thinking-only) turn.
+
+    Signatures: the CLI's isMeta nudge ``[Your previous response had no
+    visible output…``, or an assistant message whose output_tokens reached the
+    cap (or stop_reason max_tokens) with no text / tool_use block. Any I/O or
+    parse problem disables the watcher silently — never fails the session.
+    """
+
+    def __init__(self, session_id: str, project_dir: str, config_dir: str,
+                 cap: int, logger: logging.Logger) -> None:
+        self.session_id = session_id
+        self.project_dir = project_dir
+        self.config_dir = config_dir
+        self.cap = cap
+        self.logger = logger
+        self.disabled = False
+        self._path: str | None = None
+        self._pos = 0
+        self._partial = ""
+        self._group_id = None
+        self._group_types: set[str] = set()
+        self._group_max_out = 0
+        self._group_stop = None
+
+    def _close_group(self) -> str | None:
+        if self._group_id is None:
+            return None
+        visible = bool(self._group_types - _THINKING_TYPES)
+        hit_cap = self._group_max_out >= self.cap or self._group_stop == "max_tokens"
+        self._group_id = None
+        self._group_types = set()
+        out, self._group_max_out = self._group_max_out, 0
+        self._group_stop = None
+        if not visible and hit_cap:
+            return f"thinking-only turn hit output cap (output_tokens={out} cap={self.cap})"
+        return None
+
+    def _feed(self, entry: dict) -> str | None:
+        kind = entry.get("type")
+        msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+        if kind == "assistant":
+            mid = msg.get("id")
+            reason = None
+            if mid != self._group_id:
+                reason = self._close_group()
+                self._group_id = mid if mid is not None else object()
+            for block in msg.get("content") or []:
+                if isinstance(block, dict) and block.get("type"):
+                    self._group_types.add(str(block["type"]))
+            usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+            try:
+                self._group_max_out = max(self._group_max_out, int(usage.get("output_tokens") or 0))
+            except (TypeError, ValueError):
+                pass
+            if msg.get("stop_reason"):
+                self._group_stop = msg.get("stop_reason")
+            return reason
+        if kind == "user":
+            content = msg.get("content")
+            text = ""
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = " ".join(
+                    str(b.get("text", "")) for b in content
+                    if isinstance(b, dict) and b.get("type") == "text")
+            if entry.get("isMeta") and text.lstrip().startswith(_TRUNC_META_PREFIX):
+                return "no-visible-output nudge (thinking-only turn)"
+            return self._close_group()
+        return None
+
+    def poll(self) -> str | None:
+        if self.disabled:
+            return None
+        try:
+            if self._path is None:
+                found = _session_jsonl_candidates(
+                    self.config_dir, self.project_dir, self.session_id)
+                if not found:
+                    return None
+                self._path = found[0]
+            with open(self._path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(self._pos)
+                chunk = f.read()
+                self._pos = f.tell()
+            if not chunk:
+                return None
+            data = self._partial + chunk
+            lines = data.split("\n")
+            self._partial = lines.pop()
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(entry, dict):
+                    reason = self._feed(entry)
+                    if reason:
+                        return reason
+        except Exception as exc:  # never break the session on watcher trouble
+            self.disabled = True
+            self.logger.debug("truncation watcher disabled session=%s: %s",
+                              self.session_id, exc)
+        return None
+
+
 def _env_positive_int(name: str, default: int, logger: logging.Logger) -> int:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
@@ -284,6 +418,7 @@ def _profile_cmd(
     deny_agent: bool,
     model: str,
     extra_deny: list[str] | None = None,
+    session_id: str | None = None,
 ) -> list[str]:
     deny = list(_BASE_DENY)
     if deny_agent:
@@ -306,6 +441,8 @@ def _profile_cmd(
     ]
     if model:
         cmd.extend(["--model", model])
+    if session_id:
+        cmd.extend(["--session-id", session_id])
     # `--` keeps the prompt from being swallowed by --disallowedTools.
     cmd.extend(["--", prompt])
     return cmd
@@ -469,8 +606,12 @@ def _wait_claude_proc(
     logger: logging.Logger,
     skill: str,
     label: str | None,
+    watcher: _TruncationWatcher | None = None,
 ) -> str:
     """Wait for the Claude child while emitting heartbeat + stderr progress.
+
+    ``watcher`` (optional) is polled every few seconds; a truncation verdict
+    raises ``_TruncatedKill`` so the caller can kill the process group.
 
     Shared by every skill profile (intent / storyboard / visual / frame_html /
     repair / verify): ``communicate()`` buffers until exit, so long adaptive-
@@ -483,6 +624,7 @@ def _wait_claude_proc(
     started = time.monotonic()
     deadline = started + timeout
     last_beat = started
+    last_watch = started
     stdout_chunks: list[str] = []
 
     def _read_stdout() -> None:
@@ -546,6 +688,11 @@ def _wait_claude_proc(
                 )
                 _flush_loggers(logger)
                 last_beat = now
+            if watcher is not None and (now - last_watch) >= _TRUNC_POLL_SECONDS:
+                last_watch = now
+                reason = watcher.poll()
+                if reason:
+                    raise _TruncatedKill(reason)
             time.sleep(0.5)
     finally:
         t_out.join(timeout=_TIMEOUT_GRACE_SECONDS)
@@ -597,8 +744,18 @@ def _run_profile(
     extra_env: dict[str, str] | None,
     skill: str,
     label: str | None = None,
+    session_id: str | None = None,
+    trunc_kill: bool = False,
+    max_turns_override: int | None = None,
+    timeout_override: int | None = None,
 ) -> tuple[int, str]:
     profile = _resolve_profile(skill, logger)
+    if max_turns_override and max_turns_override > 0:
+        profile["max_turns"] = int(max_turns_override)
+    if timeout_override and timeout_override > 0:
+        profile["timeout"] = int(timeout_override)
+    if trunc_kill and not session_id:
+        session_id = str(uuid.uuid4())
     env = _child_env(extra_env)
     env["CLAUDE_CODE_EFFORT_LEVEL"] = str(profile["effort"])
     env["MAX_THINKING_TOKENS"] = str(profile["thinking"])
@@ -632,7 +789,7 @@ def _run_profile(
     tag = _log_label(label)
     logger.info(
         "claude skill start label=%s cwd=%s skill=%s effort=%s thinking=%s "
-        "max_turns=%s model=%s timeout=%s",
+        "max_turns=%s model=%s timeout=%s session=%s trunc_kill=%s",
         tag,
         project_dir,
         skill,
@@ -641,6 +798,8 @@ def _run_profile(
         max_turns,
         model or "-",
         timeout,
+        session_id or "-",
+        bool(trunc_kill),
     )
     cmd = _profile_cmd(
         prompt,
@@ -648,7 +807,19 @@ def _run_profile(
         bool(profile["deny_agent"]),
         model,
         profile.get("deny_tools"),
+        session_id=session_id,
     )
+    watcher = None
+    if trunc_kill and session_id:
+        try:
+            config_dir = env.get("CLAUDE_CONFIG_DIR") or os.path.join(
+                os.path.expanduser("~"), ".claude")
+            watcher = _TruncationWatcher(
+                session_id, project_dir, config_dir,
+                _output_token_limit(env), logger)
+        except Exception as exc:
+            logger.debug("truncation watcher unavailable: %s", exc)
+            watcher = None
     # Never log the prompt body (docs §7: start/invoke omit prompt text).
     # Env log is a whitelist — full os.environ dumps secrets (tokens) and
     # pollutes truncation assertions (e.g. HEADLESS matching HEAD).
@@ -673,7 +844,30 @@ def _run_profile(
         start_new_session=True,
     )
     try:
-        stdout = _wait_claude_proc(proc, timeout, logger, skill, label)
+        stdout = _wait_claude_proc(
+            proc, timeout, logger, skill, label, watcher=watcher)
+    except _TruncatedKill as trunc:
+        logger.warning(
+            "claude skill truncated label=%s skill=%s session=%s reason=%s "
+            "— killing process group (rc=%s)",
+            tag,
+            skill,
+            session_id,
+            trunc.reason,
+            TRUNCATED_RC,
+        )
+        _kill_process_group(proc, logger)
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=_TIMEOUT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+        return TRUNCATED_RC, ""
     except subprocess.TimeoutExpired:
         logger.error(
             "claude skill timeout label=%s skill=%s timeout=%s",
@@ -707,8 +901,17 @@ def run_claude_result(
     extra_env: dict[str, str] | None = None,
     skill: str | None = None,
     label: str | None = None,
+    session_id: str | None = None,
+    trunc_kill: bool = False,
+    max_turns: int | None = None,
+    timeout: int | None = None,
 ) -> tuple[int, str]:
     """run_claude + the parsed terminal 'result' text.
+
+    ``session_id`` pins ``--session-id``; ``trunc_kill`` tails that session's
+    jsonl and kills a hard-truncated (thinking-only, output-cap) turn,
+    returning ``(TRUNCATED_RC, "")``. ``max_turns`` / ``timeout`` override the
+    profile values for this one call (salvage passes).
 
     Frame workers gate on their final reply (`done OK <frame_id>`), which the
     CLI surfaces in the JSON stdout's `result` field — callers that need that
@@ -725,7 +928,11 @@ def run_claude_result(
         raise RuntimeError("claude CLI not found on PATH")
     if skill not in _PROFILES:
         raise ValueError(f"unknown claude skill profile: {skill}")
-    return _run_profile(project_dir, prompt, logger, extra_env, skill, label)
+    return _run_profile(
+        project_dir, prompt, logger, extra_env, skill, label,
+        session_id=session_id, trunc_kill=trunc_kill,
+        max_turns_override=max_turns, timeout_override=timeout,
+    )
 
 
 def run_claude(
