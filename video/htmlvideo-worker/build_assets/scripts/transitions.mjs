@@ -85,21 +85,29 @@ function parseFrameClips(html, frameIds) {
     clips.set(idm[1], {
       id: idm[1],
       block: m[0],
-      start: num(/data-start="([\d.]+)"/),
-      duration: num(/data-duration="([\d.]+)"/),
+      start: num(/data-start="([\d.]+)s?"/),
+      duration: num(/data-duration="([\d.]+)s?"/),
       track: num(/data-track-index="(\d+)"/) ?? 0,
     });
   }
   return clips;
 }
 
+// Accept optional unit suffix ("7.036" or "7.036s"); always rewrite as a plain number.
+const DUR_ATTR_RE = /\bdata-duration="([\d.]+)s?"/;
+const DUR_ATTR_REPLACE_RE = /\bdata-duration="[\d.]+s?"/;
+
 // The host wrapper is extended across an outgoing transition, so the mounted
 // frame must remain visually populated for the same local-time window. Extend
 // the frame root and every non-audio timed element that reached the original
 // storyboard boundary. This also repairs worker files whose root was already
 // inflated while their ground/content clips still ended at the synced duration.
+//
+// Returns a pending write `{ path, html, log }` — caller flushes after the full
+// planning loop so a mid-loop die leaves frame files untouched (atomic across
+// the inject pass).
 function extendFrameTail(hyperframesDir, frame, baseDuration, targetDuration, die) {
-  if (!frame?.src || targetDuration <= baseDuration) return;
+  if (!frame?.src || targetDuration <= baseDuration) return null;
   const framePath = join(hyperframesDir, frame.src);
   let html;
   try {
@@ -116,7 +124,7 @@ function extendFrameTail(hyperframesDir, frame, baseDuration, targetDuration, di
   let foundRoot = false;
   let extended = 0;
   const rewritten = html.replace(/<([A-Za-z][\w:-]*)\b([^>]*)>/g, (tag, name, attrs) => {
-    const durationMatch = attrs.match(/\bdata-duration="([\d.]+)"/);
+    const durationMatch = attrs.match(DUR_ATTR_RE);
     if (!durationMatch) return tag;
     const duration = Number(durationMatch[1]);
     if (!Number.isFinite(duration)) return tag;
@@ -124,26 +132,26 @@ function extendFrameTail(hyperframesDir, frame, baseDuration, targetDuration, di
     const compositionMatch = attrs.match(/\bdata-composition-id="([^"]+)"/);
     if (compositionMatch?.[1] === compId && !foundRoot) {
       foundRoot = true;
-      return tag.replace(/\bdata-duration="[\d.]+"/, `data-duration="${targetDuration}"`);
+      return tag.replace(DUR_ATTR_REPLACE_RE, `data-duration="${targetDuration}"`);
     }
 
     if (name.toLowerCase() === "audio") return tag;
-    const startMatch = attrs.match(/\bdata-start="([\d.]+)"/);
+    const startMatch = attrs.match(/\bdata-start="([\d.]+)s?"/);
     if (!startMatch) return tag;
     const start = Number(startMatch[1]);
     const end = start + duration;
     if (end < baseDuration - EPS || end >= targetDuration - EPS) return tag;
     extended++;
-    return tag.replace(/\bdata-duration="[\d.]+"/, `data-duration="${r3(targetDuration - start)}"`);
+    return tag.replace(DUR_ATTR_REPLACE_RE, `data-duration="${r3(targetDuration - start)}"`);
   });
 
   if (!foundRoot) die(`${frame.src} has no data-composition-id="${compId}" root`);
-  writeFileSync(framePath, rewritten);
-  console.log(
-    `  ${compId}: extended root + ${extended} tail clip(s) ${baseDuration}s→${targetDuration}s`,
-  );
+  return {
+    path: framePath,
+    html: rewritten,
+    log: `  ${compId}: extended root + ${extended} tail clip(s) ${baseDuration}s→${targetDuration}s`,
+  };
 }
-
 // Resolve a transition_in spec to a registry record (calm default on unknown).
 function resolveRecord(spec, byName, reg, warn) {
   let rec = byName.get(spec.type);
@@ -247,6 +255,10 @@ function runInject(argv) {
 
   const gsapLines = [];
   const applied = [];
+  // Defer frame-file writes until planning succeeds — a mid-loop die must not
+  // leave half-extended outgoing frames on disk.
+  const pendingFrameWrites = new Map(); // path -> { html, log }
+  const padTargets = [];
   for (let i = 1; i < order.length; i++) {
     const spec = parseTransitionIn(order[i].frame.transitionIn);
     if (!spec) continue; // hard cut
@@ -267,14 +279,20 @@ function runInject(argv) {
     const baseDuration = outgoing.duration;
     outgoing.duration = r3(Math.max(baseDuration, contractBase + dur)); // extend outgoing only
     if (outgoing.duration > baseDuration + 1e-6) {
-      extendFrameTail(hyperframesDir, order[i - 1].frame, baseDuration, outgoing.duration, die);
+      const pending = extendFrameTail(
+        hyperframesDir,
+        order[i - 1].frame,
+        baseDuration,
+        outgoing.duration,
+        die,
+      );
+      if (pending) pendingFrameWrites.set(pending.path, pending);
     }
-    padFrameInternalDuration(
-      hyperframesDir,
-      order[i - 1].frame.src,
-      outgoing.id,
-      outgoing.duration,
-    );
+    padTargets.push({
+      src: order[i - 1].frame.src,
+      id: outgoing.id,
+      duration: outgoing.duration,
+    });
     gsapLines.push(
       ...buildGsap(rec, outgoing.id, incoming.id, dur, T, spec.direction, CW, CH, die),
     );
@@ -286,6 +304,13 @@ function runInject(argv) {
     return;
   }
 
+  for (const { path, html: frameHtml, log } of pendingFrameWrites.values()) {
+    writeFileSync(path, frameHtml);
+    console.log(log);
+  }
+  for (const t of padTargets) {
+    padFrameInternalDuration(hyperframesDir, t.src, t.id, t.duration);
+  }
   // 0/1 ping-pong all frame clips in play order.
   const ordered = [...clips.values()].sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
   ordered.forEach((c, i) => {
@@ -295,11 +320,10 @@ function runInject(argv) {
   // rewrite each clip block: start unchanged; duration possibly extended; track ping-ponged.
   for (const c of clips.values()) {
     const nb = c.block
-      .replace(/data-duration="[\d.]+"/, `data-duration="${c.duration}"`)
+      .replace(/data-duration="[\d.]+s?"/, `data-duration="${c.duration}"`)
       .replace(/data-track-index="\d+"/, `data-track-index="${c.track}"`);
     html = html.replace(c.block, nb);
   }
-
   // stamp the GSAP after the master timeline anchor.
   const anchor = 'window.__timelines["main"] = gsap.timeline({ paused: true });';
   if (!html.includes(anchor)) die("master timeline anchor not found in index.html");
