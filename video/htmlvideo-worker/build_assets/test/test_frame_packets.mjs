@@ -552,7 +552,97 @@ export function testSelectBlueprint() {
   const d = core.selectBlueprint("- blueprint: x-y\n- blueprint: x-y (Adapt)\n");
   assert.strictEqual(d.conflict, false);
   assert.strictEqual(core.selectBlueprint("- duration: 4s\n"), null);
+  // bare mode word is a mode, never an id
+  const e = core.selectBlueprint("- blueprint: Adapt\n");
+  assert.strictEqual(e.id, "");
+  assert.strictEqual(e.mode, "Adapt");
+  assert.ok(e.modeOnly && !e.conflict);
+  const f = core.selectBlueprint("- blueprint: typewriter-reveal\n- blueprint: reproduce\n");
+  assert.strictEqual(f.id, "typewriter-reveal");
+  assert.strictEqual(f.mode, "Reproduce");
+  assert.ok(!f.conflict);
+  const g = core.withAssignment(e, { id: "typewriter-reveal", mode: "Adapt" });
+  assert.strictEqual(g.id, "typewriter-reveal");
+  assert.strictEqual(g.mode, "Adapt");
+  assert.strictEqual(core.withAssignment(e, undefined).id, "");
   console.log("selectBlueprint OK");
+}
+
+const BARE_MODE_STORYBOARD = `---
+format: landscape
+---
+## Video direction
+
+**Negative list.** No rotation or skew on type. Background always cream.
+
+## Blueprint assignment
+
+F3 = typewriter-reveal (Adapt)
+
+## Frame 3 — Type
+
+- status: outline
+- src: compositions/frames/03-type.html
+- duration: 4s
+- blueprint: Adapt
+
+Scene 1 (0.0–4.0s): headline types on while the card tilts in with perspective.
+
+## Frame 4 — Orphan
+
+- status: outline
+- src: compositions/frames/04-orphan.html
+- duration: 4s
+- blueprint: Reproduce
+
+Scene 1 (0.0–4.0s): flat hold.
+`;
+
+export function testBareModeBlueprint() {
+  const dir = mkdtempSync(join(tmpdir(), "fh-bare-"));
+  writeFileSync(join(dir, "STORYBOARD.md"), BARE_MODE_STORYBOARD);
+  const card = join(dir, "card.md"); writeFileSync(card, "role card text");
+  writeFileSync(join(dir, "frame.md"), FIX_FRAME_MD);
+  mkdirSync(join(dir, "rules"), { recursive: true });
+  mkdirSync(join(dir, "blueprints"), { recursive: true });
+  writeFileSync(join(dir, "blueprints", "typewriter-reveal.md"),
+    "# tw\n\n**duration**: 3–5s (x)\n\nBODY-typewriter: card rotateY 12deg with perspective 1200px.");
+  const sb = readFileSync(join(dir, "STORYBOARD.md"), "utf8");
+  const frames = core.splitFrames(sb).map((f) => ({ ...f, frameId: core.frameId(f) }));
+  const docs = core.buildDispatchDocs({
+    projectDir: dir, frames, outDir: join(dir, "out"), animationDir: dir,
+    cardPath: card, frameMdPath: join(dir, "frame.md"), storyboard: sb,
+  });
+  const t3 = readFileSync(docs[0].path, "utf8");
+  assert.ok(t3.includes("## Selected blueprint: typewriter-reveal (mode: Adapt)"), "id from assignment");
+  assert.ok(t3.includes("BODY-typewriter"));
+  const kinds = docs[0].conflicts.map((c) => c.kind);
+  assert.ok(!kinds.includes("blueprint-assignment") && !kinds.includes("blueprint-fields"), kinds.join(","));
+  assert.ok(!/`(?:Adapt|Reproduce)` is the frame's blueprint/i.test(t3));
+  assert.ok(!t3.includes("ignore the assignment"));
+  // type-only rotation ban vs card tilt → scoped ruling, not the global 3D drop
+  assert.ok(kinds.includes("type-rotation-scope"), kinds.join(","));
+  assert.ok(!kinds.includes("negative-list-3d"), "type-scoped ban must not drop card 3D");
+  const tail = t3.slice(t3.indexOf("## Resolved conflicts"));
+  assert.ok(tail.includes("applies to type only") && tail.includes("perspective run exactly as the recipe/blueprint"));
+  // no assignment entry → no blueprint, no ruling about a mode word
+  const t4 = readFileSync(docs[1].path, "utf8");
+  assert.ok(!t4.includes("## Selected blueprint"));
+  assert.deepStrictEqual(docs[1].conflicts, []);
+  // detectConflicts never rules a mode word to be the blueprint
+  const c = core.detectConflicts({
+    block: "- blueprint: Adapt\n",
+    sel: { id: "Adapt", raw: "Adapt", mode: null, all: [], conflict: false },
+    assigned: { id: "typewriter-reveal", mode: "Adapt" },
+  });
+  assert.deepStrictEqual(c, []);
+  // general negative list without the type scope still drops 3D
+  const g = core.detectConflicts({
+    block: "Scene 1 (0.0–4.0s): card tilts in with perspective.\n",
+    sel: null, assigned: null, direction: "**Negative list.** No 3D anywhere.",
+  });
+  assert.deepStrictEqual(g.map((x) => x.kind), ["negative-list-3d"]);
+  console.log("bare-mode blueprint + type rotation scope OK");
 }
 
 export function testDualBlueprintDispatch() {
@@ -615,6 +705,7 @@ if (process.argv[1] && process.argv[1].endsWith("test_frame_packets.mjs")) {
   testDispatchIngestsDesignContract();
   testSelectBlueprint();
   testDualBlueprintDispatch();
+  testBareModeBlueprint();
   testSceneTimelineDrift();
   testSelfcheckSkeletonUnfilled();
   testRichSkeleton();
