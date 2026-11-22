@@ -40,6 +40,25 @@ GATE: FAIL ✗ (…, 8 error finding(s))
         self.assertTrue(v.scan_looks_unactionable(out))
 
 
+class FixPlaybookTest(unittest.TestCase):
+    def test_content_overlap_rule_follows_triage(self):
+        pb = v._FIX_PLAYBOOK
+        self.assertIn("designed_overlay", pb)
+        self.assertIn("real_collision", pb)
+        self.assertIn("ambiguous", pb)
+        self.assertNotIn("do NOT reposition", pb)
+
+    def test_partial_miss_marker_is_unactionable(self):
+        out = (
+            "  ✗ PARSER/INFRA: check JSON declares errorCount that parsed findings "
+            "do not match — declared=8 parsed=1\n"
+            "── actionable summary ──\n"
+            "  1) Known failure #4 — content_overlap triage — designed_overlay×1\n"
+            "GATE: FAIL ✗ (…, 1 error finding(s))\n"
+        )
+        self.assertTrue(v.scan_looks_unactionable(out))
+
+
 class VerifyFramePrecheckTest(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp(prefix="verify-pre-")
