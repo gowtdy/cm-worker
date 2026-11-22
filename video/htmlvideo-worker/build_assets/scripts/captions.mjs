@@ -38,6 +38,14 @@ import { fileURLToPath } from "node:url";
 import { parseStoryboard } from "./lib/storyboard.mjs";
 import { captionBand, parseFormat } from "./lib/dimensions.mjs";
 import { parseColors, parseFonts, semanticColors } from "./lib/tokens.mjs";
+import {
+  MARK_END,
+  MARK_IMPORT,
+  canonicalImport,
+  loadCliAliases,
+  normFamily,
+  parseFrameFamilies,
+} from "./lib/fonts.mjs";
 
 const flag = (argv, name, def) => {
   const i = argv.indexOf(`--${name}`);
@@ -177,7 +185,11 @@ function runBuild(argv) {
   let source;
   if (existsSync(skinPath)) {
     const tokens = frameTokensCss(framePath, H);
-    const faces = brandFontFaces(framePath, hyperframesDir);
+    let faces = brandFontFaces(framePath, hyperframesDir);
+    if (!String(faces || "").trim()) {
+      const fb = fallbackFontImport(framePath);
+      if (fb) faces = fb;
+    }
     const fonts = existsSync(framePath) ? parseFonts(readFileSync(framePath, "utf8")) : {};
     writeFileSync(
       htmlPath,
@@ -195,7 +207,10 @@ function runBuild(argv) {
     );
     source = `preset skin (${skinPath.replace(hyperframesDir + "/", "")})`;
   } else {
-    writeFileSync(htmlPath, buildCaptionsHtml(finalized, total, W, H));
+    let html = buildCaptionsHtml(finalized, total, W, H);
+    const fb = fallbackFontImport(framePath);
+    if (fb) html = html.replace(/<style>/, `<style>\n${fb}\n`);
+    writeFileSync(htmlPath, html);
     source = "default (built-in pill)";
   }
 
@@ -284,6 +299,23 @@ function buildFromSkin(skin, groups, total, W, H, tokens, die, faces = "", fonts
 }
 
 export { buildFromSkin };
+
+// No local face files → the same marked Google @import font-imports.mjs writes,
+// so a later scope=captions pass is a byte-identical no-op. Alias families
+// (Inter, Roboto, …) are already bundled and stay out of the URL.
+function fallbackFontImport(framePath) {
+  try {
+    if (!existsSync(framePath)) return "";
+    const fams = parseFrameFamilies(readFileSync(framePath, "utf8"));
+    if (!fams.length) return "";
+    const { keys } = loadCliAliases();
+    const need = keys ? fams.filter((f) => !keys.has(normFamily(f))) : fams.slice();
+    if (!need.length) return "";
+    return `${MARK_IMPORT}\n${canonicalImport(need)}\n${MARK_END}`;
+  } catch {
+    return "";
+  }
+}
 
 // @font-face for the brand display/body fonts, matched from the project's font dirs
 // (staged assets/fonts first, else capture/assets/fonts) by family-name prefix, with
