@@ -61,14 +61,28 @@ _PROFILES: dict[str, dict[str, object]] = {
         "deny_tools": ["Bash", "Read", "Glob", "Grep", "Edit"],
     },
     "visual": {
-        "effort": "high", "thinking": "64000",
+        # 2026-11-22 (6b01 analysis): a per-frame worker only emits ~1-2k
+        # tokens of shot lines; F1 burned minutes drafting the full answer +
+        # negative-list self-check in thinking. 24000 is the worker default;
+        # the design session asks for 32000 per call (visual.py). Rollback:
+        # HTMLVIDEO_CLAUDE_VISUAL_THINKING_TOKENS=64000 (wins over both).
+        "effort": "high", "thinking": "24000",
         "max_output": "32000",  # 同上（visual 7.1m 历史最优）
         "max_turns": 100, "timeout": 1800, "deny_agent": True,
         # Text-out workers (design + per-frame): harness merges replies; no
         # Write/Edit. Keep Read for the optional one-file rules escape hatch.
         # Bash/Glob/Grep were soft-forbidden in the prompt only — hard-deny
         # stops the ls/find exploration tax (aligns with frame_html).
-        "deny_tools": ["Bash", "Glob", "Grep", "Write", "Edit"],
+        # Skill: the contract is inlined; a SessionStart "invoke a skill" hook
+        # would re-inject the whole SKILL.md (same rationale as verify).
+        "deny_tools": ["Bash", "Glob", "Grep", "Write", "Edit", "Skill"],
+    },
+    "visual_legacy": {
+        # HTMLVIDEO_FRAME_VISUAL_DRIVER=0 single-session flow: the model edits
+        # STORYBOARD.md itself via the slash skill, so it needs Write/Edit.
+        "effort": "high", "thinking": "64000",
+        "max_output": "32000",
+        "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
     "frame_html": {
         "effort": "high", "thinking": "64000",
@@ -392,17 +406,24 @@ def _clamp_thinking(
     return str(clamped)
 
 
-def _resolve_profile(skill: str, logger: logging.Logger) -> dict[str, object]:
+def _resolve_profile(
+    skill: str,
+    logger: logging.Logger,
+    thinking_default: str | None = None,
+) -> dict[str, object]:
+    """``thinking_default`` replaces the profile's thinking default for one call;
+    an explicit ``HTMLVIDEO_CLAUDE_<SKILL>_THINKING_TOKENS`` still wins."""
     base = _PROFILES[skill]
     prefix = f"HTMLVIDEO_CLAUDE_{skill.upper()}"
     effort = _resolve_effort(
         f"{prefix}_EFFORT", str(base["effort"]), logger
     )
+    default_thinking = str(thinking_default or base["thinking"]).strip()
     thinking = os.environ.get(
-        f"{prefix}_THINKING_TOKENS", str(base["thinking"])
+        f"{prefix}_THINKING_TOKENS", default_thinking
     ).strip()
     if not thinking:
-        thinking = str(base["thinking"])
+        thinking = default_thinking
     model = os.environ.get(f"{prefix}_MODEL", "").strip()
     max_output = os.environ.get(
         f"{prefix}_MAX_OUTPUT_TOKENS", str(base.get("max_output", ""))
@@ -499,6 +520,21 @@ def _log_label(label: str | None) -> str:
     return label if label else "-"
 
 
+def _thinking_usage_fields(usage: dict) -> dict[str, object]:
+    """Thinking/reasoning counters from a result ``usage`` block, flattened one
+    level (``output_tokens_details.reasoning_tokens``). Empty when the backend
+    reports none — the adaptive gateway usually omits them."""
+    out: dict[str, object] = {}
+    for key, value in usage.items():
+        if isinstance(value, dict):
+            for sub, sv in value.items():
+                if "thinking" in sub or "reasoning" in sub:
+                    out[f"{key}.{sub}"] = sv
+        elif "thinking" in key or "reasoning" in key:
+            out[key] = value
+    return out
+
+
 def _log_parsed_result(
     logger: logging.Logger,
     skill: str,
@@ -539,6 +575,14 @@ def _log_parsed_result(
         usage.get("cache_read_input_tokens"),
         usage.get("cache_creation_input_tokens"),
     )
+    thinking_usage = _thinking_usage_fields(usage)
+    if thinking_usage:
+        logger.info(
+            "claude skill thinking label=%s skill=%s %s",
+            tag,
+            skill,
+            " ".join(f"{k}={v}" for k, v in thinking_usage.items()),
+        )
     result = payload.get("result", "")
     if not isinstance(result, str):
         result = json.dumps(result, ensure_ascii=False)
@@ -765,8 +809,9 @@ def _run_profile(
     max_turns_override: int | None = None,
     timeout_override: int | None = None,
     cancel_event: threading.Event | None = None,
+    thinking_default: str | None = None,
 ) -> tuple[int, str]:
-    profile = _resolve_profile(skill, logger)
+    profile = _resolve_profile(skill, logger, thinking_default)
     if max_turns_override and max_turns_override > 0:
         profile["max_turns"] = int(max_turns_override)
     if timeout_override and timeout_override > 0:
@@ -940,6 +985,7 @@ def run_claude_result(
     max_turns: int | None = None,
     timeout: int | None = None,
     cancel_event: threading.Event | None = None,
+    thinking_default: str | None = None,
 ) -> tuple[int, str]:
     """run_claude + the parsed terminal 'result' text.
 
@@ -948,6 +994,8 @@ def run_claude_result(
     returning ``(TRUNCATED_RC, "")``. ``max_turns`` / ``timeout`` override the
     profile values for this one call (salvage passes). Setting
     ``cancel_event`` kills the session and returns ``(CANCELLED_RC, "")``.
+    ``thinking_default`` swaps the profile's thinking default for this call
+    (the per-skill ``_THINKING_TOKENS`` env still wins).
 
     Frame workers gate on their final reply (`done OK <frame_id>`), which the
     CLI surfaces in the JSON stdout's `result` field — callers that need that
@@ -968,7 +1016,7 @@ def run_claude_result(
         project_dir, prompt, logger, extra_env, skill, label,
         session_id=session_id, trunc_kill=trunc_kill,
         max_turns_override=max_turns, timeout_override=timeout,
-        cancel_event=cancel_event,
+        cancel_event=cancel_event, thinking_default=thinking_default,
     )
 
 
