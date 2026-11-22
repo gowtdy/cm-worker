@@ -43,7 +43,7 @@ def make_project(skeleton=False, with_dispatch=True):
 
 class DriverTest(unittest.TestCase):
     def setUp(self):
-        # Production defaults: TWO_PHASE/HEDGE ON. Unit fixtures expect a
+        # Production defaults: TWO_PHASE OFF, HEDGE ON. Unit fixtures expect a
         # single call per attempt unless a test explicitly re-enables them.
         patcher = mock.patch.dict(os.environ, {
             "HTMLVIDEO_FRAME_HTML_DRIVER": "1",
@@ -376,8 +376,8 @@ class HardeningP1P2Test(unittest.TestCase):
                     "HTMLVIDEO_FRAME_HTML_STAGE_DEADLINE"):
             self.addCleanup(os.environ.pop, key, None)
             os.environ.pop(key, None)
-        # Keep TWO_PHASE/HEDGE off unless a test turns them on (production
-        # default is ON; DriverTest.setUp already pins them to 0).
+        # Keep TWO_PHASE/HEDGE off unless a test turns them on (DriverTest.setUp
+        # already pins them to 0).
         os.environ[fh.TWO_PHASE_ENV] = "0"
         os.environ[fh.HEDGE_ENV] = "0"
 
@@ -486,16 +486,43 @@ class HardeningP1P2Test(unittest.TestCase):
             self.assertNotIn("CLAUDE_CODE_EFFORT_LEVEL", c[1])
             self.assertNotIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS", c[1])
 
-    def test_two_phase_and_hedge_default_on(self):
+    def test_two_phase_default_off_single_phase_64k(self):
+        import logging
+        os.environ.pop(fh.TWO_PHASE_ENV, None)
+        script = {k: [lambda d, k=k: (0, f"done OK {k}")] for k in ("01-hook", "02-answer")}
+        logger = logging.getLogger("test.fh.defaults")
+        with self.assertLogs(logger, level="INFO") as logs:
+            self._run(self._recorder(script), logger)
+        # one single-phase call per frame, profile cap (no driver-level override)
+        self.assertEqual(len(self.calls), 2)
+        for c in self.calls:
+            self.assertNotIn("PHASE", c[3])
+            self.assertNotIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS", c[1])
+        start = [m for m in logs.output if "driver start" in m][0]
+        self.assertIn("two_phase=False", start)
+        self.assertIn("worker_cap=64000", start)
+        from html_utility.claude_cli import _resolve_profile
+        self.assertEqual(_resolve_profile("frame_html", logger)["max_output"], "64000")
+
+    def test_two_phase_opt_in_and_hedge_default_on(self):
         os.environ.pop(fh.TWO_PHASE_ENV, None)
         os.environ.pop(fh.HEDGE_ENV, None)
-        self.assertTrue(fh._env_on(fh.TWO_PHASE_ENV, default=True))
+        self.assertFalse(fh._env_on(fh.TWO_PHASE_ENV, default=False))
         self.assertTrue(fh._env_on(fh.HEDGE_ENV, default=True))
-        # Explicit off still works for rollback.
-        os.environ[fh.TWO_PHASE_ENV] = "0"
+        os.environ[fh.TWO_PHASE_ENV] = "1"
         os.environ[fh.HEDGE_ENV] = "0"
-        self.assertFalse(fh._env_on(fh.TWO_PHASE_ENV, default=True))
+        self.assertTrue(fh._env_on(fh.TWO_PHASE_ENV, default=False))
         self.assertFalse(fh._env_on(fh.HEDGE_ENV, default=True))
+
+    def test_max_output_override_shows_in_start_log(self):
+        import logging
+        os.environ[fh.MAX_OUTPUT_ENV] = "80000"
+        script = {k: [lambda d, k=k: (0, f"done OK {k}")] for k in ("01-hook", "02-answer")}
+        logger = logging.getLogger("test.fh.capoverride")
+        with self.assertLogs(logger, level="INFO") as logs:
+            self._run(self._recorder(script), logger)
+        start = [m for m in logs.output if "driver start" in m][0]
+        self.assertIn("worker_cap=80000", start)
 
     def test_two_phase_runs_a_then_b(self):
         os.environ[fh.TWO_PHASE_ENV] = "1"
