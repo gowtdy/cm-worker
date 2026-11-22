@@ -23,8 +23,9 @@
 - **Fonts (Override).** Write only `frame.md` family names plus a generic fallback (`sans-serif` / `serif`). Never write `@import`, `<link>`, or `@font-face` — the driver runs `font-imports.mjs`. Lint still checks `font_family_without_font_face`; `google_fonts_import` is a warning only.
 - **GSAP.** Ship `<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>` inside `<template>`, pinned `3.14.2`.
 - **Template / root shape.** Root: `<div id="root" data-composition-id="<frame_id>" data-width="1920" data-height="1080" data-duration="<duration>">`; style via `#root`, never a class.
-- **Units.** Primary `cqw` / `cqh` (ramp is cqw-based; 1cqw = 19.2px at 1920-wide); fixed-size décor (4/6/8/12px shadows/dots/strokes) uses px. Pick per element, move on; no conversion tables.
+- **Units.** Primary `cqw` / `cqh` (ramp is cqw-based; 1cqw = 19.2px at 1920-wide); fixed-size décor (4/6/8/12px shadows/dots/strokes) uses px. Place on the card / frame.md cqw·cqh grid and tokens — no per-pixel math, no re-verifying positions, no conversion tables.
 - **Turn discipline.** Every turn ends with a tool call or visible text — never thinking-only (silent turns discarded); undecided upstream → pick sibling-consistent, proceed within this turn (≤ ~1 min).
+- **Thinking = layout/beat notes only.** Never draft CSS/HTML/JS in thinking; code appears only in Edit/Write arguments.
 
 ## Frame visual law
 
