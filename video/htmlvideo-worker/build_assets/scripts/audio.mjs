@@ -248,29 +248,94 @@ function runSyncDurations(argv) {
   }
   const lines = storyboardRaw.split(/\r?\n/);
   const FRAME_RE = /^#{2,3}\s+(?:frame|beat|scene)\b.*?(\d+)/i;
+  const scaleScenes = sceneScalingOn();
   let curFrame = null;
+  let blockStart = -1;
   let updated = 0;
+  let scaled = 0;
+  const updatedBlocks = []; // [{ start, end, duration }]
+  const closeBlock = (end) => {
+    if (blockStart >= 0 && updatedBlocks.length && updatedBlocks.at(-1).start === blockStart)
+      updatedBlocks.at(-1).end = end;
+  };
   for (let i = 0; i < lines.length; i++) {
     const h = lines[i].match(FRAME_RE);
     if (h) {
+      closeBlock(i);
       curFrame = Number(h[1]);
+      blockStart = i;
+      continue;
+    }
+    if (/^#{1,2}\s/.test(lines[i])) {
+      closeBlock(i);
+      curFrame = null;
+      blockStart = -1;
       continue;
     }
     if (curFrame != null && durByFrame.has(curFrame)) {
       const m = lines[i].match(/^(\s*[-*]\s+duration\s*:\s*).*/i);
       if (m) {
-        lines[i] = `${m[1]}${durByFrame.get(curFrame)}s`;
+        const dur = durByFrame.get(curFrame);
+        lines[i] = `${m[1]}${dur}s`;
         durByFrame.delete(curFrame);
         updated++;
+        updatedBlocks.push({ start: blockStart, end: lines.length, duration: Number(dur) });
       }
+    }
+  }
+  closeBlock(lines.length);
+  if (scaleScenes) {
+    for (const b of updatedBlocks) {
+      if (scaleSceneWindows(lines, b.start, b.end, b.duration)) scaled++;
     }
   }
   writeFileSync(storyboardPath, lines.join("\n"));
   const missing = [...durByFrame.keys()];
   console.log(
     `✓ audio sync-durations: ${updated} frame duration(s) updated` +
+      (scaleScenes ? ` · scene windows rescaled in ${scaled} frame(s)` : " · scene scaling off") +
       (missing.length ? ` · no \`- duration:\` line for frame(s) ${missing.join(", ")}` : ""),
   );
+}
+
+// HTMLVIDEO_SYNC_SCALE_SCENES=0 restores the duration-only rewrite.
+function sceneScalingOn() {
+  const raw = (process.env.HTMLVIDEO_SYNC_SCALE_SCENES ?? "").trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+}
+
+const SCENE_WINDOW_RE =
+  /(Scene\s+\d+\s*\(\s*)(~?)(\d+(?:\.\d+)?)(\s*s?\s*)([–—-])(\s*~?)(\d+(?:\.\d+)?)(\s*s?\s*\))/gi;
+
+function fmtSeconds(x) {
+  return (Math.round(x * 100) / 100).toFixed(2).replace(/0$/, "");
+}
+
+// Rescale every `Scene N (a–b s)` window in lines[start, end) by
+// duration / (last scene end) so the shot list ends exactly on the synced
+// duration. Returns true when any window changed.
+function scaleSceneWindows(lines, start, end, duration) {
+  if (!(duration > 0)) return false;
+  let lastEnd = 0;
+  for (let i = start; i < end; i++) {
+    for (const m of lines[i].matchAll(SCENE_WINDOW_RE)) lastEnd = Math.max(lastEnd, Number(m[7]));
+  }
+  if (!(lastEnd > 0) || Math.abs(lastEnd - duration) < 0.005) return false;
+  const k = duration / lastEnd;
+  const durText = String(Number(duration));
+  let changed = false;
+  for (let i = start; i < end; i++) {
+    const next = lines[i].replace(SCENE_WINDOW_RE, (_all, pre, tilde, a, mid, dash, sp, b, post) => {
+      const bNum = Number(b);
+      const newB = bNum === lastEnd ? durText : fmtSeconds(bNum * k);
+      return `${pre}${tilde}${fmtSeconds(Number(a) * k)}${mid}${dash}${sp}${newB}${post}`;
+    });
+    if (next !== lines[i]) {
+      lines[i] = next;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 // ── dispatch ──────────────────────────────────────────────────────────────────
