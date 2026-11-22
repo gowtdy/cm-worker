@@ -30,6 +30,8 @@
  *   - no digit-led id/class selectors ("#07-…", ".01-…") in CSS or JS
  *     selector strings (id_requires_css_escape — promoted to FAIL: CSS drops
  *     the rule and querySelectorAll throws at runtime)
+ *   - skeleton_unfilled: a `skeleton-v1` file whose #root has no real content
+ *     or whose timeline has no tween (driver-only code, not a lint rule)
  *   WARN (do not fail exit code): css transition usage, background painted
  *     on #root, data-composition-id != basename, font_out_of_ramp,
  *     font_dead_fallback
@@ -139,6 +141,45 @@ if (!/gsap\.timeline\s*\(/.test(html) || !/\bpaused\s*:\s*true\b/.test(html)) {
 }
 const reg = new RegExp(`__timelines\\s*\\[\\s*["']${frameId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']\\s*\\]`);
 if (!reg.test(html)) fail(`timeline not registered at window.__timelines["${frameId}"] (timeline_not_registered)`);
+
+// --- skeleton_unfilled -------------------------------------------------------
+// The marker alone proves nothing (a filled frame may keep the comment); it only
+// arms the check. FAIL needs unfilled evidence: #root without real children
+// (elements tagged data-skeleton are scaffold, not content) or a timeline with
+// no tween. An empty style block alone is only a WARN.
+function rootInner(src, from) {
+  const tagRe = /<(\/?)div\b[^>]*>/gi;
+  tagRe.lastIndex = from;
+  let depth = 1;
+  for (let m = tagRe.exec(src); m; m = tagRe.exec(src)) {
+    depth += m[1] ? -1 : 1;
+    if (depth === 0) return src.slice(from, m.index);
+  }
+  return src.slice(from);
+}
+const SKELETON_MARK = "skeleton-v1";
+if (html.includes(SKELETON_MARK) && rootM) {
+  const evidence = [];
+  const inner = rootInner(html, rootM.index + rootM[0].length).replace(/<!--[\s\S]*?-->/g, "");
+  const realTags = [...inner.matchAll(/<([a-zA-Z][\w-]*)\b([^>]*)>/g)]
+    .filter((m) => !/\bdata-skeleton\b/.test(m[2]));
+  if (realTags.length === 0 && inner.replace(/<[^>]*>/g, "").trim() === "") evidence.push("root-empty");
+  const stripJs = (s) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(?<!:)\/\/[^\n]*/g, "");
+  const inlineJs = [...html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
+    .map((m) => stripJs(m[1])).join("\n");
+  const hasTween = /\.(?:to|from|fromTo|set|call|staggerTo|staggerFrom|staggerFromTo)\s*\(/.test(inlineJs)
+    || /\b(?:tl|timeline)\.add\s*\(/.test(inlineJs);
+  if (!hasTween) evidence.push("no-tween");
+  const css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)]
+    .map((m) => m[1].replace(/\/\*[\s\S]*?\*\//g, "")).join("").trim();
+  const placeholderStyle = css === "";
+  if (evidence.length) {
+    if (placeholderStyle) evidence.push("placeholder-style");
+    fail(`skeleton_unfilled: file still carries the ${SKELETON_MARK} marker and is not filled (evidence: ${evidence.join(", ")}) — write the #root body markup and the timeline tweens (skeleton_unfilled)`);
+  } else if (placeholderStyle) {
+    warn(`${SKELETON_MARK} marker with an empty <style> block — styles still the skeleton placeholder?`);
+  }
+}
 
 // --- digit-led id/class selectors (id_requires_css_escape) -----------------
 // CSS silently DROPS an entire selector rule when the id/class starts with a
