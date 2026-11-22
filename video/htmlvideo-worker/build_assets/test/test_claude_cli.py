@@ -615,6 +615,164 @@ class RunClaudeTests(unittest.TestCase):
         self.assertIn("unrecognized_model", joined)
         self.assertNotIn("noise line without markers", joined)
 
+    def test_session_id_flag_and_overrides(self) -> None:
+        from html_utility.claude_cli import run_claude_result
+        self._completed_popen(stdout=_result_json())
+        with self.assertLogs("test.claude_cli", level="INFO"):
+            run_claude_result(
+                CWD, PROMPT, self.logger, skill="frame_html",
+                session_id="11111111-2222-3333-4444-555555555555",
+                max_turns=10, timeout=300)
+        cmd = self.popen_mock.call_args.args[0]
+        i = cmd.index("--session-id")
+        self.assertEqual(cmd[i + 1], "11111111-2222-3333-4444-555555555555")
+        self.assertLess(i, cmd.index("--"))
+        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "10")
+
+    def test_truncation_watcher_kills_and_returns_125(self) -> None:
+        from html_utility import claude_cli
+        proc = mock.Mock()
+        proc.pid = 5151
+        proc.returncode = None
+        proc.args = ["claude"]
+        out = mock.Mock()
+        out.read.return_value = ""
+        err = mock.Mock()
+        err.__iter__ = mock.Mock(return_value=iter([]))
+        proc.stdout = out
+        proc.stderr = err
+        self.popen_mock.return_value = proc
+        dead = {"v": False}
+        proc.poll.side_effect = lambda: -15 if dead["v"] else None
+        ticks = iter(float(i) * 3 for i in range(1000))
+        with mock.patch.object(
+            claude_cli._TruncationWatcher, "poll", return_value="thinking-only"
+        ), mock.patch(
+            "html_utility.claude_cli.os.getpgid", return_value=5151
+        ), mock.patch(
+            "html_utility.claude_cli.os.killpg",
+            side_effect=lambda pgid, sig: dead.__setitem__("v", True),
+        ) as killpg, mock.patch(
+            "html_utility.claude_cli.time.sleep"
+        ), mock.patch(
+            "html_utility.claude_cli.time.monotonic", side_effect=lambda: next(ticks)
+        ):
+            with self.assertLogs("test.claude_cli", level="INFO") as logs:
+                rc, text = claude_cli.run_claude_result(
+                    CWD, PROMPT, self.logger, skill="frame_html",
+                    trunc_kill=True)
+        self.assertEqual((rc, text), (claude_cli.TRUNCATED_RC, ""))
+        self.assertEqual(killpg.call_args_list[0].args, (5151, signal.SIGTERM))
+        self.assertIn("claude skill truncated", "\n".join(logs.output))
+        self.assertIn("--session-id", self.popen_mock.call_args.args[0])
+
+    def test_cancel_event_kills_and_returns_130(self) -> None:
+        import threading
+        from html_utility import claude_cli
+        proc = mock.Mock()
+        proc.pid = 6161
+        proc.returncode = None
+        proc.args = ["claude"]
+        out = mock.Mock()
+        out.read.return_value = ""
+        err = mock.Mock()
+        err.__iter__ = mock.Mock(return_value=iter([]))
+        proc.stdout = out
+        proc.stderr = err
+        self.popen_mock.return_value = proc
+        dead = {"v": False}
+        proc.poll.side_effect = lambda: -15 if dead["v"] else None
+        cancel = threading.Event()
+        cancel.set()
+        with mock.patch(
+            "html_utility.claude_cli.os.getpgid", return_value=6161
+        ), mock.patch(
+            "html_utility.claude_cli.os.killpg",
+            side_effect=lambda pgid, sig: dead.__setitem__("v", True),
+        ) as killpg, mock.patch("html_utility.claude_cli.time.sleep"):
+            with self.assertLogs("test.claude_cli", level="INFO") as logs:
+                rc, text = claude_cli.run_claude_result(
+                    CWD, PROMPT, self.logger, skill="frame_html",
+                    cancel_event=cancel)
+        self.assertEqual((rc, text), (claude_cli.CANCELLED_RC, ""))
+        self.assertEqual(killpg.call_args_list[0].args, (6161, signal.SIGTERM))
+        self.assertIn("claude skill cancelled", "\n".join(logs.output))
+
+
+class TruncationWatcherTests(unittest.TestCase):
+    SID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    def _watcher(self, entries, cap=48000):
+        import tempfile
+        from html_utility.claude_cli import _TruncationWatcher
+        cfg = tempfile.mkdtemp(prefix="cfg-")
+        proj = "/tmp/some/project"
+        slug = "-tmp-some-project"
+        os.makedirs(os.path.join(cfg, "projects", slug))
+        path = os.path.join(cfg, "projects", slug, f"{self.SID}.jsonl")
+        with open(path, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+        w = _TruncationWatcher(self.SID, proj, cfg, cap, logging.getLogger("t"))
+        return w, path
+
+    @staticmethod
+    def _asst(mid, types, out, stop="end_turn"):
+        return {"type": "assistant", "message": {
+            "id": mid, "stop_reason": stop, "usage": {"output_tokens": out},
+            "content": [{"type": t} for t in types]}}
+
+    def test_meta_nudge_detected(self):
+        w, _ = self._watcher([
+            self._asst("m1", ["thinking"], 48000),
+            {"type": "user", "isMeta": True, "message": {"role": "user", "content":
+             "[Your previous response had no visible output. Please continue and produce a user-visible response.]"}},
+        ])
+        self.assertIn("no-visible-output", w.poll() or "")
+
+    def test_thinking_only_at_cap_detected_on_next_user_line(self):
+        w, _ = self._watcher([
+            self._asst("m1", ["thinking"], 48000),
+            {"type": "user", "message": {"role": "user", "content": "next"}},
+        ])
+        self.assertIn("output cap", w.poll() or "")
+
+    def test_cap_with_tool_use_is_not_truncation(self):
+        w, _ = self._watcher([
+            self._asst("m1", ["thinking"], 48000, stop="tool_use"),
+            self._asst("m1", ["text"], 48000, stop="tool_use"),
+            self._asst("m1", ["tool_use"], 48000, stop="tool_use"),
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "x", "content": "ok"}]}},
+            self._asst("m2", ["thinking"], 900),
+            {"type": "user", "isMeta": True, "message": {"role": "user", "content": [
+                {"type": "text", "text": "Base directory for this skill: /x"}]}},
+        ])
+        self.assertIsNone(w.poll())
+
+    def test_incremental_tail_and_partial_lines(self):
+        w, path = self._watcher([self._asst("m1", ["thinking"], 100)])
+        self.assertIsNone(w.poll())
+        line = json.dumps({"type": "user", "isMeta": True, "message": {
+            "content": "[Your previous response had no visible output. x]"}})
+        with open(path, "a") as f:
+            f.write(line[:20])
+        self.assertIsNone(w.poll())
+        with open(path, "a") as f:
+            f.write(line[20:] + "\n")
+        self.assertIsNotNone(w.poll())
+
+    def test_missing_file_and_garbage_are_silent(self):
+        from html_utility.claude_cli import _TruncationWatcher
+        w = _TruncationWatcher(self.SID, "/nope", "/nonexistent-cfg", 100,
+                               logging.getLogger("t"))
+        self.assertIsNone(w.poll())
+        w2, path = self._watcher([])
+        with open(path, "a") as f:
+            f.write("not json\n{broken\n")
+        self.assertIsNone(w2.poll())
+        self.assertFalse(w2.disabled)
+
 
 if __name__ == "__main__":
     unittest.main()
