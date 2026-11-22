@@ -12,6 +12,7 @@ import glob
 import hashlib
 import logging
 import os
+import re
 import subprocess
 
 from html_utility.claude_cli import _env_positive_int, run_claude
@@ -113,6 +114,31 @@ def _build_fix_prompt(scan_output: str) -> str:
         + scan_output
         + "\n── end scan output ──\n"
     )
+
+
+_GATE_FAIL_RE = re.compile(r"^GATE:\s*FAIL\b", re.M)
+_ZERO_ERROR_FINDINGS_RE = re.compile(r"\b0\s+error finding\(s\)", re.I)
+_NUMBERED_ACTION_RE = re.compile(r"^ {2}\d+\) ", re.M)
+_PARSER_INFRA_RE = re.compile(r"PARSER/INFRA:", re.I)
+
+
+def scan_looks_unactionable(output: str) -> bool:
+    """True when the scan failed the gate but listed nothing the model can fix.
+
+    Matches the 2026-11-22 failure mode: ``GATE: FAIL`` + ``0 error finding(s)``
+    while the actionable summary only says ``No action`` (no ``  N)`` items).
+    Calling the model then burns ~minutes and digests to a zero-edit raise.
+    """
+    text = output or ""
+    if _PARSER_INFRA_RE.search(text):
+        return True
+    if not _GATE_FAIL_RE.search(text):
+        return False
+    if not _ZERO_ERROR_FINDINGS_RE.search(text):
+        return False
+    if _NUMBERED_ACTION_RE.search(text):
+        return False
+    return True
 
 
 def _composition_html_digest(project_dir: str) -> str:
@@ -223,6 +249,14 @@ def verify_frame(
             raise RuntimeError(
                 "verify-all infrastructure failure: " + output[-2000:]
             )
+        # rc == 1 but nothing actionable → do not burn a model turn
+        # (parser miss / empty playbook). Treat as infrastructure.
+        if scan_looks_unactionable(output):
+            raise RuntimeError(
+                "verify-all gate FAIL with 0 actionable findings — refusing to "
+                "invoke the model on an empty fix list (upstream scan/parser "
+                "bug). Tail:\n" + output[-2000:]
+            )
         # rc == 1: findings. One model turn applies the mechanical fixes.
         logger.info(
             "verify-all findings (round %d) — invoking claude for batched fixes",
@@ -237,7 +271,8 @@ def verify_frame(
         if after_digest == before_digest:
             raise RuntimeError(
                 f"verify fix round {round_no} made no changes to "
-                "compositions/**/*.html — refusing to re-dispatch the same scan"
+                "compositions/**/*.html — refusing to re-dispatch the same scan "
+                "(model produced no Edit, or scan findings were non-actionable)"
             )
         rc, output = _run_verify_all(project_dir, logger)
 
