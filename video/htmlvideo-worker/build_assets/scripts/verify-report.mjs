@@ -39,6 +39,10 @@ import {
   parseCheckText,
   extractJsonObject,
   checkParseContradiction,
+  checkParseMismatch,
+  jsonDeclaredErrorCount,
+  jsonLintErrorCount,
+  triageOverlaps,
 } from "./lib/verify-check-parse.mjs";
 
 const argv = process.argv.slice(2);
@@ -329,19 +333,24 @@ const checkOk = check.status === 0;
 let chk = { errors: [], warns: [], infos: [] };
 let checkParseMode = "none";
 let checkContradiction = false;
+let checkMismatch = null;
 if (check.error) {
   say(`  ⚠ cannot run check: ${check.error}`);
 } else {
   const json = extractJsonObject(check.stdout);
+  const contradictionOpts = {};
   if (json) {
     chk = parseCheckJson(json, { root: videodir });
     checkParseMode = "json";
+    contradictionOpts.declaredErrorCount = jsonDeclaredErrorCount(json);
+    contradictionOpts.lintErrorCount = jsonLintErrorCount(json);
+    checkMismatch = checkParseMismatch(contradictionOpts.declaredErrorCount, chk.errors.length);
   } else {
     chk = parseCheckText(`${check.stdout}\n${check.stderr}`);
     checkParseMode = "text-fallback";
     say("  ⚠ check --json unparseable; used text fallback parser");
   }
-  checkContradiction = checkParseContradiction(check.status, chk);
+  checkContradiction = checkParseContradiction(check.status, chk, contradictionOpts);
   const isCaptionFP = (c) =>
     c.code === "text_box_overflow" && /#caption-word|\.caption-line/.test(c.msg);
   say(
@@ -364,11 +373,19 @@ if (check.error) {
     for (const c of chk.infos) agg.set(c.code, (agg.get(c.code) || 0) + 1);
     say("  infos (count only): " + [...agg].map(([c, n]) => `${c}×${n}`).join(", "));
   }
-  if (checkContradiction) {
+  if (checkMismatch) {
+    say(
+      `  ✗ PARSER/INFRA: check JSON declares errorCount that parsed findings do not match — `
+      + `declared=${checkMismatch.declared} parsed=${checkMismatch.parsed} `
+      + "(partial miss; fix the parser before trusting the actionable list)",
+    );
+  } else if (checkContradiction) {
     say(
       "  ✗ PARSER/INFRA: check exited non-zero but 0 error findings were parsed — "
       + "refusing GATE FAIL with empty actionable list (would burn a no-op model turn)",
     );
+  }
+  if (checkContradiction) {
     const tail = (check.stdout || check.stderr || "").split("\n").filter(Boolean).slice(-8);
     for (const line of tail) say(`    ${trunc(line, 160)}`);
   }
@@ -402,7 +419,23 @@ if (lintErrors.some((e) => e.code === "font_family_without_font_face")) {
   say(`  ${++n}) Known failure #3 residual — verify-all step 0 already ran font-imports. Hand-fix only what it left.`);
   for (const line of fontActionLines(videodir, lintErrors)) say(line);
 }
-if (chk.errors.some((c) => c.code.includes("overlap"))) say(`  ${++n}) Known failure #4 candidate — content_overlap: add data-layout-allow-overlap to designed overlays; reposition only for real collisions.`);
+if (chk.errors.some((c) => c.code.includes("overlap"))) {
+  const tri = triageOverlaps(chk.errors);
+  const where = (list) => {
+    const parts = list.slice(0, 4).map((e) => {
+      const side = e.container ? `${e.selector} inside ${e.container}` : (e.selector || e.msg.split(" — ")[0]);
+      return `${e.file || "?"}: ${trunc(side, 70)}`;
+    });
+    if (list.length > 4) parts.push(`…+${list.length - 4}`);
+    return parts.join("; ");
+  };
+  const rows = [];
+  if (tri.designed_overlay.length) rows.push(`designed_overlay×${tri.designed_overlay.length} (${where(tri.designed_overlay)}): add data-layout-allow-overlap on the text or an inner container (not the scene root)`);
+  if (tri.real_collision.length) rows.push(`real_collision×${tri.real_collision.length} (${where(tri.real_collision)}): reposition / reduce size; do NOT blanket-allow`);
+  if (tri.ambiguous.length) rows.push(`ambiguous×${tri.ambiguous.length} (${where(tri.ambiguous)}): inspect midpoints for design intent before choosing allow-overlap vs reposition`);
+  say(`  ${++n}) Known failure #4 — content_overlap triage — ${rows[0]}`);
+  for (const r of rows.slice(1)) say(`     ${r}`);
+}
 if (!tv.error && tv.status !== 0) say(`  ${++n}) transitions verify failures — if "no injected block found": run transitions.mjs inject, then rerun this report. If the block exists but mismatches: re-inject is safe (idempotent since 2026-11-14 — re-derives id references and tracks, removes the stale block first, and durations only converge toward the STORYBOARD contract).`);
 const realErrors = chk.errors.length + lintErrors.length + self.digit.length;
 const gate = (lintOk === true) && checkOk && self.digit.length === 0 && missingFrames.length === 0 && !tv.error && tv.status === 0;
