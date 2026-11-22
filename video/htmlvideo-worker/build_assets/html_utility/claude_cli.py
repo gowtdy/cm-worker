@@ -105,7 +105,10 @@ _PROFILES: dict[str, dict[str, object]] = {
         "max_turns": 40, "timeout": 1800, "deny_agent": True,
         # Findings + playbook are inlined; Bash/Glob/Grep only re-explore.
         # Keep Read/Edit/Write so the model can open and patch frame HTML.
-        "deny_tools": ["Bash", "Glob", "Grep"],
+        # Deny Skill: SessionStart hooks may say "always invoke a skill", which
+        # contradicts the fix prompt — tool denial wins without needing --bare
+        # (bare would also break ANTHROPIC_AUTH_TOKEN-only auth).
+        "deny_tools": ["Bash", "Glob", "Grep", "Skill"],
     },
 }
 # TodoWrite is the legacy name; task-tracking now lives in TaskCreate/Update/
@@ -161,10 +164,19 @@ _THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
 _TRUNC_POLL_SECONDS = 2.0
 
 
+# Exit code for a session killed because the caller set its cancel_event
+# (hedge race loser).
+CANCELLED_RC = 130
+
+
 class _TruncatedKill(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+class _CancelledKill(Exception):
+    pass
 
 
 def _session_jsonl_candidates(config_dir: str, project_dir: str, session_id: str) -> list[str]:
@@ -607,11 +619,13 @@ def _wait_claude_proc(
     skill: str,
     label: str | None,
     watcher: _TruncationWatcher | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     """Wait for the Claude child while emitting heartbeat + stderr progress.
 
     ``watcher`` (optional) is polled every few seconds; a truncation verdict
     raises ``_TruncatedKill`` so the caller can kill the process group.
+    ``cancel_event`` (optional) being set raises ``_CancelledKill``.
 
     Shared by every skill profile (intent / storyboard / visual / frame_html /
     repair / verify): ``communicate()`` buffers until exit, so long adaptive-
@@ -677,6 +691,8 @@ def _wait_claude_proc(
                 raise subprocess.TimeoutExpired(
                     proc.args if proc.args is not None else ["claude"], timeout
                 )
+            if cancel_event is not None and cancel_event.is_set():
+                raise _CancelledKill()
             if heartbeat and (now - last_beat) >= heartbeat:
                 logger.info(
                     "claude skill running label=%s skill=%s elapsed=%ss "
@@ -748,6 +764,7 @@ def _run_profile(
     trunc_kill: bool = False,
     max_turns_override: int | None = None,
     timeout_override: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[int, str]:
     profile = _resolve_profile(skill, logger)
     if max_turns_override and max_turns_override > 0:
@@ -845,7 +862,24 @@ def _run_profile(
     )
     try:
         stdout = _wait_claude_proc(
-            proc, timeout, logger, skill, label, watcher=watcher)
+            proc, timeout, logger, skill, label, watcher=watcher,
+            cancel_event=cancel_event)
+    except _CancelledKill:
+        logger.warning(
+            "claude skill cancelled label=%s skill=%s — killing process group "
+            "(rc=%s)", tag, skill, CANCELLED_RC)
+        _kill_process_group(proc, logger)
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=_TIMEOUT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+        return CANCELLED_RC, ""
     except _TruncatedKill as trunc:
         logger.warning(
             "claude skill truncated label=%s skill=%s session=%s reason=%s "
@@ -905,13 +939,15 @@ def run_claude_result(
     trunc_kill: bool = False,
     max_turns: int | None = None,
     timeout: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[int, str]:
     """run_claude + the parsed terminal 'result' text.
 
     ``session_id`` pins ``--session-id``; ``trunc_kill`` tails that session's
     jsonl and kills a hard-truncated (thinking-only, output-cap) turn,
     returning ``(TRUNCATED_RC, "")``. ``max_turns`` / ``timeout`` override the
-    profile values for this one call (salvage passes).
+    profile values for this one call (salvage passes). Setting
+    ``cancel_event`` kills the session and returns ``(CANCELLED_RC, "")``.
 
     Frame workers gate on their final reply (`done OK <frame_id>`), which the
     CLI surfaces in the JSON stdout's `result` field — callers that need that
@@ -932,6 +968,7 @@ def run_claude_result(
         project_dir, prompt, logger, extra_env, skill, label,
         session_id=session_id, trunc_kill=trunc_kill,
         max_turns_override=max_turns, timeout_override=timeout,
+        cancel_event=cancel_event,
     )
 
 
