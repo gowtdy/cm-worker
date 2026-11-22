@@ -4,6 +4,8 @@
  *
  * Drives the whole deterministic phase in a single call so the orchestrating
  * model makes ONE decision instead of re-running the individual gates:
+ *   0. font-imports — idempotent marked @import / brand @font-face.
+ *      Non-fatal. Skipped when HTMLVIDEO_FONT_IMPORTS is 0/false/off/no.
  *   1. transitions inject guard — `verify`; if "no injected block" run the
  *      idempotent `inject`, then `verify` again. (The report re-checks anyway.)
  *   2. verify-report (full)     — the single diagnosis + gate. Its exit code is
@@ -20,7 +22,7 @@
  *   2 = infrastructure / project blocker -> surface and stop
  *
  * Runs every child with cwd = videodir (never trusts the caller's shell cwd).
- * Mutates: transitions inject (idempotent) + snapshot output — same as the skill.
+ * Mutates: font-imports (idempotent, step 0) + transitions inject + snapshot.
  */
 
 import { spawnSync } from "node:child_process";
@@ -53,6 +55,28 @@ const combined = (r) => (r.stdout + "\n" + r.stderr).trim();
 
 console.log("══ verify-all ══");
 console.log("videodir:", videodir);
+
+/* ── 0. font-imports (non-fatal) ────────────────────────────────────────── */
+console.log("\n── 0. font-imports ──");
+const fontFlag = (process.env.HTMLVIDEO_FONT_IMPORTS || "").trim().toLowerCase();
+if (fontFlag === "0" || fontFlag === "false" || fontFlag === "off" || fontFlag === "no") {
+  console.log(`  ⚠ skipped (HTMLVIDEO_FONT_IMPORTS=${fontFlag})`);
+} else {
+  const fi = run(
+    "node",
+    ["/app/scripts/font-imports.mjs", "--videodir", videodir, "--scope", "all"],
+    { timeout: 60_000 },
+  );
+  const text = combined(fi);
+  if (fi.error || fi.status == null || fi.status > 1) {
+    console.log("  ⚠ font-imports failed: " + (fi.error || text || `exit ${fi.status}`));
+  } else if (fi.status === 1) {
+    console.log("  ⚠ unresolved families (non-fatal):\n  " + text.split("\n").join("\n  "));
+  } else {
+    console.log("  " + (text || "ok").split("\n").join("\n  "));
+    console.log("  ✓ font-imports");
+  }
+}
 
 /* ── 1. transitions inject guard ────────────────────────────────────────── */
 console.log("\n── transitions inject guard ──");
