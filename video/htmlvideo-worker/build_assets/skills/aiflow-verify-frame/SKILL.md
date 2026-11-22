@@ -34,11 +34,12 @@ Goal: Verify the assembled video — inject transitions, pass lint/check, snapsh
 3. output contains `no injected block found` → run `inject` once, then `verify` again (must exit 0);
 4. boundary failures (block exists but mismatches) → don't guess; run the full report — its gate and actionable summary decide. Re-`inject` is safe (idempotent since 2026-11-14: re-derives id references and tracks from the current index, removes the stale block first, and frame durations only converge toward the STORYBOARD contract, never drift).
 
-**One-command loop (preferred):** `node /app/scripts/verify-all.mjs --videodir ${videodir}` runs the whole mechanical phase — inject guard → full report → (on gate pass) midpoints + snapshot + verify-pixels — and returns one verdict. Use it first; fall back to the individual commands below only when its exit code already says which single step to rerun.
+**One-command loop (preferred):** `node /app/scripts/verify-all.mjs --videodir ${videodir}` runs the whole mechanical phase — font-imports (step 0, non-fatal) → inject guard → full report → (on gate pass) midpoints + snapshot + verify-pixels — and returns one verdict. Use it first; fall back to the individual commands below only when its exit code already says which single step to rerun.
 
 **First command is `verify-all.mjs` — no pre-exploration.** This skill's content is already loaded into context, and `verify-all.mjs` prints every finding, the GATE verdict, and the `verify-pixels` result in one shot. Do not `find`/`cat` the skill files, do not `ls` the frames or project first, do not build a task list (it is blocked by the profile anyway).
 
 ```bash
+node /app/scripts/font-imports.mjs --videodir ${videodir} --scope all   # step 0; also runs inside verify-all (non-fatal)
 node /app/scripts/verify-all.mjs --videodir ${videodir}   # exit 0 = gate+snapshot done; 1 = findings, fix & rerun; 2 = blocker
 node /app/scripts/verify-report.mjs --videodir ${videodir} --preflight   # ~3s: prerequisites, stub check, frames vs STORYBOARD
 node /app/scripts/transitions.mjs verify --videodir ${videodir}          # inject guard above
@@ -85,7 +86,15 @@ Digit-led id/class selectors (`#07-the-harder-half-p1`, `.01-two-questions-float
 
 **3. `font_family_without_font_face` errors (didot / bodoni moda / space grotesk)**
 
-A dead `Didot` fallback in a frame's font stack → remove the name. `captions.html` lacking the Google Fonts `@import` the frames carry → add that same `@import` line. Nothing more: font delivery is the render compiler's job; do not add `@font-face`, do not search local fonts, do not fetch URL fonts.
+`verify-all` step 0 already ran `font-imports.mjs` (idempotent, non-fatal). Hand-fix only residuals it left. A dead fallback such as `Didot` in a non-primary slot of a `font-family` stack → delete that name. A ramp family that is still missing → paste this marked block (both marker lines — the next font-imports run rewrites it in place) at the top of the first `<style>` inside `<template>` (after `@charset` if present):
+
+```css
+/* aiflow:font-imports v1 */
+@import url('https://fonts.googleapis.com/css2?family=Bodoni+Moda&family=Space+Grotesk&display=swap');
+/* aiflow:font-imports end */
+```
+
+Nothing more: do not add `@font-face`, do not search local fonts, do not fetch URL fonts. `google_fonts_import` stays a warning.
 
 **4. `content_overlap` on a designed overlay (e.g. the stamp over card "?" in frame 06)**
 
