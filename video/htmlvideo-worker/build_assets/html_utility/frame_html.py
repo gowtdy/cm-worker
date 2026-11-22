@@ -3,17 +3,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+import threading
+import time
+import uuid
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from html_utility.claude_cli import (
+    TRUNCATED_RC,
     _env_positive_int,
     run_claude,
     run_claude_result,
 )
+from html_utility.fonts import run_font_imports
 
 STORYBOARD_FILENAME = "STORYBOARD.md"
 FRAME_FILENAME = "frame.md"
@@ -194,6 +200,10 @@ def build_frame_html(
         if rc != 0:
             raise RuntimeError(f"claude build-frame-html failed rc:{rc}")
 
+    # Driver-owned font delivery. Workers write family names only; this
+    # inserts the marked @import / brand @font-face before assemble.
+    # Non-fatal: run_font_imports never raises (logger may be None).
+    run_font_imports(project_dir, logger, scope="frames")
     _assemble_index(project_dir, logger)
     return _validate_frame_html_outputs(project_dir)
 
@@ -290,6 +300,20 @@ DEFAULT_REPAIR_ROUNDS = 1  # assemble repair; HTMLVIDEO_FRAME_HTML_REPAIR_ROUNDS
 # Kept as alias for older tests/docs that counted "1 retry".
 MAX_RETRY_ROUNDS = DEFAULT_MAX_ATTEMPTS - 1
 FRAME_SELFCHECK_SCRIPT = "/app/scripts/frame-selfcheck.mjs"
+# Per-frame pipeline (default) vs. legacy wave barrier (WAVE_MODE=1 rollback).
+WAVE_MODE_ENV = "HTMLVIDEO_FRAME_HTML_WAVE_MODE"
+# No new attempt is submitted once the stage has run this long (seconds).
+STAGE_DEADLINE_ENV = "HTMLVIDEO_FRAME_HTML_STAGE_DEADLINE"
+DEFAULT_STAGE_DEADLINE = 2400
+# Kill a worker whose turn hit the output cap with thinking only (rc 125) and
+# re-dispatch it with TRUNC_RETRY_MAX_OUTPUT.
+TRUNC_KILL_ENV = "HTMLVIDEO_FRAME_HTML_TRUNC_KILL"
+TRUNC_RETRY_MAX_OUTPUT = "64000"
+# rc 124/125 with a changed, selfcheck-clean file → short finish pass.
+SALVAGE_ENV = "HTMLVIDEO_FRAME_HTML_SALVAGE"
+SALVAGE_MAX_OUTPUT = "16000"
+SALVAGE_MAX_TURNS = 10
+SALVAGE_TIMEOUT = 300
 CUT_CATALOG_PATH = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "skills",
     "aiflow-build-frame-html", "references", "cut-catalog.md"))
@@ -337,7 +361,8 @@ def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None
         f"A pre-built skeleton already exists at {frame_file} (a `{SKELETON_MARK}` "
         "comment marks it). Your job is to FILL it, not design from scratch: edit in "
         "chunks — style block → body → script block, each payload under ~20 KB. You may "
-        "add/remove any node or rewrite the file wholly (last write wins)."
+        "add/remove any node or rewrite the file wholly (last write wins). Do NOT write "
+        "a new minimal skeleton first — it is already there."
         if skeleton_mode else
         f"You must create {frame_file}: build it in chunks — style block → body → "
         "script block, each payload under ~20 KB."
@@ -359,19 +384,25 @@ re-dispatch you (bounded) with FAIL findings if needed. When you have written
 the fill, reply exactly: done OK {frame_id}
 On an unrecoverable failure instead reply: fail {frame_id}: <reason>
 
-The dispatch is self-sufficient: it already inlines the frame.md design-token
-excerpt, this rule card, your blueprint, and every rule recipe this frame cites.
-Do not re-derive what it states, and never open frame.md or _role.md — open
-those only costs turns and cannot add what the dispatch already carries.
+What the dispatch inlines: the frame.md design-token excerpt, the rule card,
+your storyboard block, and the selected blueprint body. Rule recipes are NOT
+inlined — the dispatch carries only a `## Rule index` of `RULES_DIR/<id>.md`
+paths. In your FIRST tool turn, Read every recipe listed in the Rule index in
+one parallel batch (all Read calls in that same turn), then do not re-read
+them; never open frame.md or _role.md — they cannot add what the dispatch
+already carries. Optional, at most once: {CUT_CATALOG_PATH}
+(only for within-scene cut seams).
 
-Escape hatches — open ONLY when a specific recipe is genuinely absent from the
-dispatch, and read at most the one you need:
-  RULES_DIR/<id>.md                              (a cited motion recipe missing from your packet)
-  {CUT_CATALOG_PATH}   (only for within-scene cut seams)
+Conflict priority (higher wins): the time-coded Scene list in your storyboard
+block > `## Video direction` / design contract > the blueprint body > frame.md
+narrative prose. frame.md token VALUES (hex, font families) are always exact.
+If the block lists several `- blueprint:` lines, the one under
+`## Selected blueprint` is authoritative.
+
 Never edit STORYBOARD.md. Turn discipline: every turn ends with a tool call or
-visible text; your first edit must land within your first 1–2 turns; keep each
-turn's thinking to at most one short paragraph — never burn a turn on marathon
-deliberation.
+visible text; your first edit must land by your second turn (right after the
+recipe batch read); keep each turn's thinking to at most one short paragraph —
+never burn a turn on marathon deliberation.
 
 ## Dispatch (authoritative — already complete)
 
@@ -421,6 +452,11 @@ def _failure_note(
     parts: list[str] = []
     if rc == 124:
         parts.append("prior attempt hit its wall-clock timeout")
+    elif rc == TRUNCATED_RC:
+        parts.append(
+            "prior attempt was killed: a turn hit the output cap with thinking "
+            "only (hard truncation, nothing visible). This retry has a larger "
+            "output cap — still write early and keep each turn's thinking short")
     elif rc != 0:
         parts.append(f"prior attempt exited non-zero (rc={rc})")
     elif not _worker_done_ok(frame_id, text):
@@ -434,7 +470,15 @@ def _failure_note(
     return " | ".join(parts) if parts else "prior attempt failed gate"
 
 
+_STORYBOARD_LOCK = threading.Lock()
+
+
 def _mark_animated_storyboard(project_dir, frame_id):
+    with _STORYBOARD_LOCK:
+        return _mark_animated_storyboard_locked(project_dir, frame_id)
+
+
+def _mark_animated_storyboard_locked(project_dir, frame_id):
     path = os.path.join(project_dir, STORYBOARD_FILENAME)
     with open(path, "r", encoding="utf-8") as f:
         text = f.read()
@@ -504,7 +548,196 @@ def _assemble_index(project_dir, logger):
     raise RuntimeError(f"assemble failed after {max_repair} repair round(s): {msg}")
 
 
+def _frame_path(project_dir, frame_id):
+    return os.path.join(project_dir, "compositions", "frames", f"{frame_id}.html")
+
+
+def _file_hash(path):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def _redispatch_suffix(note):
+    return (
+        f"\n[RE-DISPATCH] {note}\n"
+        "The frame file may already hold a skeleton or your own "
+        "partial content — fix the findings above; first edit by your second "
+        "turn; no single-turn marathon. Do NOT run selfcheck "
+        "yourself — the driver will re-check after you reply."
+    )
+
+
+def _salvage_prompt(frame_id, project_dir, reason):
+    frame_file = f"compositions/frames/{frame_id}.html"
+    try:
+        with open(_frame_path(project_dir, frame_id), encoding="utf-8") as f:
+            current = f.read()
+    except OSError:
+        current = "(unreadable)"
+    dispatch_text = _load_dispatch_text(project_dir, frame_id)
+    return f"""You are finishing ONE HyperFrames frame: {frame_file}.
+The previous worker session for this frame was cut off ({reason}) after it had
+already written substantial work; the file passes frame-selfcheck. This is a
+short FINISH pass, not a rebuild:
+
+- Compare the current file (inlined below) against the dispatch (inlined
+  below). Complete only what is missing or obviously unfinished (Scenes with
+  no timeline phase, placeholder comments, empty containers). Keep everything
+  that already works; do not redesign or rewrite from scratch.
+- Do NOT Read anything — no recipe, packet, dispatch, frame.md or sibling
+  frame; everything you need is inlined. Edit only {frame_file}.
+- Do NOT run frame-selfcheck and do NOT use Bash; the driver re-checks.
+- Use a few small Edits at most, keep thinking short, then reply exactly:
+  done OK {frame_id}
+  If the file already covers every Scene, reply done OK {frame_id} at once.
+  If it cannot be finished: fail {frame_id}: <reason>
+
+## Current file ({frame_file})
+
+```html
+{current.rstrip()}
+```
+
+## Dispatch (authoritative)
+
+{dispatch_text.rstrip()}
+"""
+
+
 def _build_frame_html_driver(project_dir, logger):
+    if _env_on(WAVE_MODE_ENV, default=False):
+        return _build_frame_html_driver_waves(project_dir, logger)
+    return _build_frame_html_driver_pipeline(project_dir, logger)
+
+
+def _build_frame_html_driver_pipeline(project_dir, logger):
+    """Per-frame pipeline: each frame retries independently (no wave barrier)."""
+    log = logger.info if logger else lambda *a, **k: None
+    env_logger = logger or logging.getLogger("frame-html")
+    frame_ids = _frame_ids(project_dir)
+    if not frame_ids:
+        raise RuntimeError(f"no frame packets found under {project_dir}/{FRAME_PACKETS_DIR}")
+    skeleton_mode = _env_on(SKELETON_ENV)
+    _preflight_dispatch(project_dir, frame_ids, skeleton_mode)
+    max_workers = _env_positive_int(
+        "HTMLVIDEO_FRAME_HTML_MAX_CONCURRENCY", DEFAULT_MAX_WORKERS, env_logger)
+    max_attempts = _env_positive_int(
+        "HTMLVIDEO_FRAME_HTML_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS, env_logger)
+    deadline_s = _env_positive_int(
+        STAGE_DEADLINE_ENV, DEFAULT_STAGE_DEADLINE, env_logger)
+    trunc_kill = _env_on(TRUNC_KILL_ENV)
+    salvage_on = _env_on(SALVAGE_ENV)
+    started = time.monotonic()
+    log(
+        "frame-html driver start mode=pipeline frames=%s skeleton=%s "
+        "max_attempts=%s deadline=%ss trunc_kill=%s salvage=%s",
+        len(frame_ids), skeleton_mode, max_attempts, deadline_s,
+        trunc_kill, salvage_on,
+    )
+
+    def run_attempt(fid, attempt_no, note, prev_rc, salvage):
+        frame_path = _frame_path(project_dir, fid)
+        hash_before = _file_hash(frame_path)
+        extra_env = {"CLAUDE_CODE_SUBAGENT_EFFORT": "high"}
+        kwargs = {}
+        if trunc_kill:
+            kwargs["session_id"] = str(uuid.uuid4())
+            kwargs["trunc_kill"] = True
+        if salvage:
+            prompt = _salvage_prompt(fid, project_dir, note or "cut off")
+            extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = SALVAGE_MAX_OUTPUT
+            kwargs["max_turns"] = SALVAGE_MAX_TURNS
+            kwargs["timeout"] = SALVAGE_TIMEOUT
+        else:
+            prompt = _worker_prompt(fid, skeleton_mode, project_dir=project_dir)
+            if note:
+                prompt += _redispatch_suffix(note)
+            if prev_rc == TRUNCATED_RC:
+                extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = TRUNC_RETRY_MAX_OUTPUT
+        label = f"{fid}#{attempt_no}{'-salvage' if salvage else ''}"
+        rc, text = run_claude_result(
+            project_dir, prompt, logger,
+            extra_env=extra_env, skill="frame_html", label=label, **kwargs)
+        sc_ok, sc_out = _run_frame_selfcheck(project_dir, fid)
+        done = _worker_done_ok(fid, text)
+        ok = rc == 0 and done and sc_ok and os.path.isfile(frame_path)
+        if ok:
+            _mark_animated_storyboard(project_dir, fid)
+        changed = _file_hash(frame_path) != hash_before
+        return {
+            "fid": fid, "rc": rc, "text": text, "sc_ok": sc_ok, "sc_out": sc_out,
+            "done": done, "ok": ok, "changed": changed, "salvage": salvage,
+        }
+
+    attempts = {fid: 0 for fid in frame_ids}
+    notes: dict[str, str] = {}
+    failed: dict[str, str] = {}
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+    futures = {}
+    try:
+        for fid in frame_ids:
+            attempts[fid] = 1
+            futures[pool.submit(run_attempt, fid, 1, None, None, False)] = fid
+        while futures:
+            done_set, _ = wait(list(futures), return_when=FIRST_COMPLETED)
+            for fut in done_set:
+                fid = futures.pop(fut)
+                res = fut.result()
+                n = attempts[fid]
+                kind = "salvage" if res["salvage"] else "attempt"
+                if res["ok"]:
+                    log("worker ok %s (%s %s/%s selfcheck=PASS)",
+                        fid, kind, n, max_attempts)
+                    continue
+                log(
+                    "worker fail %s rc=%s done_ok=%s selfcheck=%s changed=%s "
+                    "(%s %s/%s)",
+                    fid, res["rc"], res["done"],
+                    "PASS" if res["sc_ok"] else "FAIL", res["changed"],
+                    kind, n, max_attempts,
+                )
+                note = _failure_note(
+                    fid, res["rc"], res["text"], res["sc_ok"], res["sc_out"])
+                notes[fid] = note
+                if n >= max_attempts:
+                    failed[fid] = note
+                    continue
+                elapsed = time.monotonic() - started
+                if elapsed >= deadline_s:
+                    failed[fid] = (
+                        f"{note} | stage deadline {deadline_s}s reached "
+                        f"(elapsed {int(elapsed)}s) — no new attempt")
+                    log("stage deadline reached; not retrying %s", fid)
+                    continue
+                salvage = (
+                    salvage_on
+                    and not res["salvage"]
+                    and res["rc"] in (124, TRUNCATED_RC)
+                    and res["changed"]
+                    and res["sc_ok"]
+                )
+                attempts[fid] = n + 1
+                log("retry %s as %s %s/%s", fid,
+                    "salvage" if salvage else "attempt", n + 1, max_attempts)
+                futures[pool.submit(
+                    run_attempt, fid, n + 1, note, res["rc"], salvage)] = fid
+    except BaseException:
+        for fut in futures:
+            fut.cancel()
+        raise
+    finally:
+        pool.shutdown(wait=True)
+    if failed:
+        reasons = ", ".join(f"{fid}: {failed[fid]}" for fid in sorted(failed))
+        raise RuntimeError(
+            f"frames still broken after {max_attempts} attempts: {reasons}")
+
+
+def _build_frame_html_driver_waves(project_dir, logger):
+    """Legacy wave loop (HTMLVIDEO_FRAME_HTML_WAVE_MODE=1 rollback)."""
     log = logger.info if logger else lambda *a, **k: None
     frame_ids = _frame_ids(project_dir)
     if not frame_ids:
@@ -528,13 +761,7 @@ def _build_frame_html_driver(project_dir, logger):
             prompt = _worker_prompt(
                 fid, skeleton_mode, project_dir=project_dir)
             if notes.get(fid):
-                prompt += (
-                    f"\n[RE-DISPATCH] {notes[fid]}\n"
-                    "The frame file may already hold a skeleton or your own "
-                    "partial content — fix the findings above; first edit within "
-                    "1–2 turns; no single-turn marathon. Do NOT run selfcheck "
-                    "yourself — the driver will re-check after you reply."
-                )
+                prompt += _redispatch_suffix(notes[fid])
             rc, text = run_claude_result(
                 project_dir, prompt, logger,
                 extra_env={"CLAUDE_CODE_SUBAGENT_EFFORT": "high"},
