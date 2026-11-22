@@ -29,26 +29,64 @@ and `../hyperframes-animation/`.
    `*.dispatch.md`).
 2. Fan out one `claude -p` worker per frame, concurrency
    `HTMLVIDEO_FRAME_HTML_MAX_CONCURRENCY` (default 16); per-worker env:
-   cap/turns/timeout from the `frame_html` claude profile (64000/60/1500).
-3. A frame is **done** iff rc==0 ∧ result contains `done OK <frame_id>`
-   (skeleton off additionally requires the file on disk). Artifact existence
-   alone is NOT a completion signal while skeletons pre-exist.
-4. Collect every failure, re-dispatch the whole failing batch in parallel with
-   the failure reason appended, at most 1 round. Then raise — never hand-fix.
-5. Mark landed frames `animated` in STORYBOARD (regex, deterministic).
+   cap/turns/timeout from the `frame_html` claude profile (48000/60/1500);
+   Bash/Glob/Grep denied (driver owns the gate). Per-frame pipeline
+   (`as_completed`, no wave barrier): each frame has its own attempt counter
+   and its retry is submitted the moment it fails; no new attempt starts after
+   `HTMLVIDEO_FRAME_HTML_STAGE_DEADLINE` (default 2400s).
+   `HTMLVIDEO_FRAME_HTML_WAVE_MODE=1` restores the old wave loop.
+3. After each worker return the driver runs
+   `node frame-selfcheck.mjs compositions/frames/<frame_id>.html`. A frame is
+   **done** iff rc==0 ∧ `done OK <frame_id>` ∧ selfcheck PASS ∧ file on disk.
+   Artifact existence / skeleton selfcheck alone is NOT completion. A file
+   still carrying `skeleton-v1` with an empty `#root` or no timeline tween
+   FAILs `skeleton_unfilled`.
+4. Failures (missing done OK, non-zero rc, or selfcheck FAIL) are re-dispatched
+   with findings appended — bounded by
+   `HTMLVIDEO_FRAME_HTML_MAX_ATTEMPTS` (default 3). Then raise — never unbounded.
+   - Truncation early-kill: each worker runs with a fixed `--session-id`; the
+     driver tails its session jsonl and kills a thinking-only output-cap turn
+     (rc 125). The retry after rc 125 runs with a 64000 output cap.
+     `HTMLVIDEO_FRAME_HTML_TRUNC_KILL=0` disables.
+   - Salvage: rc 124/125 with a changed frame file that passes selfcheck (or
+     fails only `skeleton_unfilled` with body content) gets a short finish
+     pass (current file inlined; 16000 cap / 10 turns / 300s) instead of a
+     fresh re-dispatch. `HTMLVIDEO_FRAME_HTML_SALVAGE=0` disables.
+   - Switches (docs/2026-11-22-frame-html-critical-path-hardening.md):
+     rich skeleton / hedge **default ON**
+     (`HTMLVIDEO_FRAME_HTML_RICH_SKELETON` / `_HEDGE`; set `0` to disable);
+     two-phase **default OFF** (`_TWO_PHASE=1` opts in — on the deepseek
+     backend each worker is one long single-request marathon, so splitting A+B
+     only adds a cold start); single-phase workers run at the frame_html
+     profile cap of 64000. `_DEGRADE` default ON; `_MAX_OUTPUT` / `_EFFORT`
+     optional overrides. One `frame-html stage summary` INFO line per stage.
+5. Mark landed frames `animated` in STORYBOARD as each frame completes
+   (regex, deterministic, serialized by a lock).
 6. Assemble via `assemble-index.mjs`; on failure run ONE `repair`-profile
    session (cheapest safe structural edit to frame files only), re-assemble
    once, else raise with stderr.
 
 ## Worker contract (sub-agents/frame-worker.md + frame-worker-card.md)
 
-Read `.dispatch.md` fully (the only required input) → fill the
-`compositions/frames/<frame_id>.html` file —— skeleton already on disk:
-chunked edits style → body → script, each ≤ ~20 KB, first edit in 1–2 turns →
-`node /app/scripts/frame-selfcheck.mjs` → fix all FAILs → reply
-`done OK <frame_id>` (or `fail <frame_id>: <reason>`). Escape hatches:
-`_role.md` (full contract), `frame.md`, cut catalog, `RULES_DIR/*.md` — open
-only when a dispatch rule is unclear.
+Driver inlines `.dispatch.md` into the worker prompt (do not Read it again).
+The dispatch inlines the rule card, storyboard block, selected blueprint and
+frame.md token excerpt — rule recipes default to **snippet** inlining under
+`## Rule recipes (snippets)` (`HTMLVIDEO_FRAME_PACKETS_INLINE_RECIPES=snippet`;
+set `off` to index-only, or `full` for complete recipes). When snippets/full
+are present, Read a full `RULES_DIR/<id>.md` only if a detail is missing; when
+`off`, the first tool turn Reads every indexed recipe in one parallel batch.
+A trailing `## Resolved conflicts` block carries final packet-time rulings. Then FILL the pre-built skeleton at
+`compositions/frames/<frame_id>.html` (never write a new skeleton): chunked
+Edit/Write style → body → script, each ≤ ~20 KB, first edit by turn 2 →
+reply `done OK <frame_id>` (or `fail <frame_id>: <reason>`). Do **not** run
+`frame-selfcheck` or Bash — the driver runs the gate and re-dispatches with
+FAIL findings when needed. Cut catalog only for within-scene cut seams; never
+open `frame.md` / `_role.md`.
+
+Conflict priority (higher wins): Scene list > `## Video direction` / design
+contract > blueprint body > frame.md narrative prose (token values exact).
+When a block carries several `- blueprint:` lines, the packet builder picks
+the last `(Adapt|Reproduce)` one and names it under `## Selected blueprint`.
 
 ## Gates
 

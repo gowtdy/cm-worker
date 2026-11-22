@@ -34,7 +34,13 @@ Goal: Verify the assembled video — inject transitions, pass lint/check, snapsh
 3. output contains `no injected block found` → run `inject` once, then `verify` again (must exit 0);
 4. boundary failures (block exists but mismatches) → don't guess; run the full report — its gate and actionable summary decide. Re-`inject` is safe (idempotent since 2026-11-14: re-derives id references and tracks from the current index, removes the stale block first, and frame durations only converge toward the STORYBOARD contract, never drift).
 
+**One-command loop (preferred):** `node /app/scripts/verify-all.mjs --videodir ${videodir}` runs the whole mechanical phase — font-imports (step 0, non-fatal) → inject guard → full report → (on gate pass) midpoints + snapshot + verify-pixels — and returns one verdict. Use it first; fall back to the individual commands below only when its exit code already says which single step to rerun.
+
+**First command is `verify-all.mjs` — no pre-exploration.** This skill's content is already loaded into context, and `verify-all.mjs` prints every finding, the GATE verdict, and the `verify-pixels` result in one shot. Do not `find`/`cat` the skill files, do not `ls` the frames or project first, do not build a task list (it is blocked by the profile anyway).
+
 ```bash
+node /app/scripts/font-imports.mjs --videodir ${videodir} --scope all   # step 0; also runs inside verify-all (non-fatal)
+node /app/scripts/verify-all.mjs --videodir ${videodir}   # exit 0 = gate+snapshot done; 1 = findings, fix & rerun; 2 = blocker
 node /app/scripts/verify-report.mjs --videodir ${videodir} --preflight   # ~3s: prerequisites, stub check, frames vs STORYBOARD
 node /app/scripts/transitions.mjs verify --videodir ${videodir}          # inject guard above
 node /app/scripts/transitions.mjs inject --videodir ${videodir}          # only per guard step 3
@@ -52,6 +58,8 @@ If a command fails (`transitions inject` / `transitions verify` / `lint` / `chec
 
 **Gate:** `lint` + `check` + structural gate + transitions all pass (the full `verify-report.mjs` run exits 0) and the snapshots were inspected before render. Stop when the gate passes — do not render.
 
+**Known non-issue — frame `data-duration` differs between a frame file and its `index.html` wrapper.** The transition injector extends the OUTGOING frame's wrapper (and its tail clips) by the transition overlap, by design. A mismatch is NOT a bug; `transitions verify` is the gate. Do not grep or hexdump `data-duration` across frames to "confirm" it — that drift is owned by `transitions.mjs`, not verify.
+
 ---
 
 ## Known failures — mechanical playbook
@@ -64,6 +72,8 @@ If a command fails (`transitions inject` / `transitions verify` / `lint` / `chec
 4. **Do not chase warnings.** Warnings that are known non-blockers (`google_fonts_import`, and `id_requires_css_escape` once you have confirmed the file has no digit-led *selectors*) are not grounds for edits.
 5. **Batch independent tool calls.** In one message, issue every Read/grep/Bash that does NOT depend on another call's output — reading five frames is five parallel Reads in one round, not five rounds. Only a call whose input comes from a previous result waits for that result.
 6. **Absolute paths, no cwd trust.** Every Bash command uses absolute paths; the shell cwd can reset between calls in this environment. Need a different directory? `cd /abs/path && …` inside that same compound command, nothing persists.
+7. **Trust the merged report — do not re-run its internals.** `verify-report.mjs` already runs the per-frame structural gate (`frame-selfcheck`), `lint --json`, `check`, and `transitions verify` inside ONE command. Re-issuing `npx hyperframes lint` / `check` / `transitions verify` yourself duplicates its work and spawns extra rounds. Run the report, act on its findings, rerun ONLY the report (or `verify-all.mjs`).
+8. **Never read `/app/scripts/*.mjs` source.** `transitions.mjs`, `verify-report.mjs`, `frame-midpoints.mjs`, `frame-selfcheck.mjs` are deterministic gates; their behaviour is documented above and in their exit codes. Reading them to "understand" a failure is a rabbit-hole (discipline #3) — the smoking gun is already in the output you just ran.
 
 **1. `transitions inject` fails: `✗ no frame clips found in index.html`**
 
@@ -76,7 +86,15 @@ Digit-led id/class selectors (`#07-the-harder-half-p1`, `.01-two-questions-float
 
 **3. `font_family_without_font_face` errors (didot / bodoni moda / space grotesk)**
 
-A dead `Didot` fallback in a frame's font stack → remove the name. `captions.html` lacking the Google Fonts `@import` the frames carry → add that same `@import` line. Nothing more: font delivery is the render compiler's job; do not add `@font-face`, do not search local fonts, do not fetch URL fonts.
+`verify-all` step 0 already ran `font-imports.mjs` (idempotent, non-fatal). Hand-fix only residuals it left. A dead fallback such as `Didot` in a non-primary slot of a `font-family` stack → delete that name. A ramp family that is still missing → paste this marked block (both marker lines — the next font-imports run rewrites it in place) at the top of the first `<style>` inside `<template>` (after `@charset` if present):
+
+```css
+/* aiflow:font-imports v1 */
+@import url('https://fonts.googleapis.com/css2?family=Bodoni+Moda&family=Space+Grotesk&display=swap');
+/* aiflow:font-imports end */
+```
+
+Nothing more: do not add `@font-face`, do not search local fonts, do not fetch URL fonts. `google_fonts_import` stays a warning.
 
 **4. `content_overlap` on a designed overlay (e.g. the stamp over card "?" in frame 06)**
 

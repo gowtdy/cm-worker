@@ -107,7 +107,6 @@ def _print_env_knobs(logger) -> None:
             "HTMLVIDEO_FRAME_PACKETS_DISPATCH_VER", ""
         ),
         "ANTHROPIC_LOG": os.environ.get("ANTHROPIC_LOG", "<unset>"),
-        "HTMLVIDEO_CLAUDE_PROFILE": os.environ.get("HTMLVIDEO_CLAUDE_PROFILE", ""),
     }
     logger.info("env knobs: %s", " ".join(f"{k}={v or '<default>'}" for k, v in knobs.items()))
 

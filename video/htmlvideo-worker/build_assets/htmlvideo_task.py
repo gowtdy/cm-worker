@@ -154,6 +154,7 @@ def video_intent(payload):
                 'name': 'Buy, Hold, Sell',
                 'message': "Analyzing a stock's fundamentals and market signals tells you whether it's worth buying and when it's time to sell.",
                 'angle': "how-to",
+                'arc': "",
                 'audience': "Beginner to intermediate individual investors who want a practical framework for buy and sell decisions",
                 'summary': "A practical how-to on evaluating stocks: how to judge whether a stock is worth buying, and how to recognize the right time to sell. Aimed at everyday investors, it turns a common question into a clear, actionable decision framework.",
                 'customization': "Two-part structure: first, how to analyze whether a stock is worth buying; second, how to determine when to sell."
@@ -202,6 +203,7 @@ def video_create(payload):
     modelname = payload.get('modelname', '')
     message = payload.get('message', '') 
     angle = payload.get('angle', '')
+    arc = payload.get('arc', '')
     audience = payload.get('audience', '')
     name = payload.get('name', '')
     summary = payload.get('summary', '')
@@ -214,7 +216,7 @@ def video_create(payload):
         logger.info(
             f'task_id:{task_id} htmlvideo start aspect:{aspect} style:{style} '
             f'duration:{duration} language:{language} modelcat:{modelcat} modelname:{modelname}'
-            f'message:{message} angle:{angle} audience:{audience} name:{name} intent_taskid:{intent_taskid}'
+            f'message:{message} angle:{angle} arc:{arc} audience:{audience} name:{name} intent_taskid:{intent_taskid}'
             f'summary:{summary} customization:{customization} notes:{notes}'
         )
         if len(content.strip()) == 0:
@@ -265,6 +267,7 @@ def video_create(payload):
             customization=customization,
             notes=notes,
             style_preset=style,
+            arc=arc,
             task_id=task_id,
         )
         cost_init = r.cost

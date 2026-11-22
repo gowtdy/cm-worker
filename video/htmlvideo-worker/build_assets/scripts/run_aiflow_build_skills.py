@@ -39,13 +39,14 @@ Work in this HyperFrames project directory. BRIEF.md, frame.md, and
 capture/extracted/visible-text.txt already exist — do not re-init, do not run
 build-frame, audio, or render.
 
-Follow the aiflow-build-storyboard skill: read BRIEF.md (message + intent),
-visible-text.txt, and frame.md; write STORYBOARD.md (outline frames with
-required narrative fields) and SCRIPT.md when narration is needed.
+Follow the aiflow-build-storyboard skill: write STORYBOARD.md (outline frames
+with required narrative fields). First tool call MUST be Write("STORYBOARD.md").
+Do not Bash/Read inlined inputs; do not Write SCRIPT.md (the harness derives it
+from voiceover fields).
 
 flow is automation → autonomous: post a short frame-sequence summary as a
 heads-up and proceed without waiting for approval. Stop when the skill gate
-passes (STORYBOARD.md exists; SCRIPT.md when narration is needed).
+passes (STORYBOARD.md exists with required narrative fields).
 """
 
 FRAME_VISUAL_PROMPT = """\
@@ -298,6 +299,14 @@ def run_aiflow_build_storyboard(project_dir: Path) -> int:
             f"{storyboard_path}",
             file=sys.stderr,
         )
+        return 1
+    try:
+        sys.path.insert(0, "/app")
+        from html_utility.storyboard import finalize_storyboard_outputs
+
+        finalize_storyboard_outputs(str(project_dir))
+    except Exception as exc:
+        print(f"error: storyboard postprocess failed: {exc}", file=sys.stderr)
         return 1
     return 0
 

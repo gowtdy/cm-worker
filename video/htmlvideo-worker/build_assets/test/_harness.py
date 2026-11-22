@@ -203,7 +203,6 @@ def claude_skill_knobs(skill: str) -> dict[str, str]:
     """Env overrides read by ``html_utility.claude_cli._resolve_profile``."""
     prefix = f"HTMLVIDEO_CLAUDE_{skill.upper()}"
     names = [
-        "HTMLVIDEO_CLAUDE_PROFILE",
         f"{prefix}_EFFORT",
         f"{prefix}_THINKING_TOKENS",
         f"{prefix}_MAX_OUTPUT_TOKENS",

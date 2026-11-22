@@ -156,33 +156,17 @@ Pick 2–3 types for the whole video and repeat them. Ordered steps → consiste
 
 No `asset_candidates` lines. The only real asset is a user-supplied image already at `public/<basename>` — then add `asset_candidates: public/<basename> — <what it is, ≤25 words>`. Never invent paths or reference `capture/`.
 
-## SCRIPT.md — shape (write when narration is needed)
+## Voiceover lines (SCRIPT.md is derived by the harness)
 
-Header block:
+Do **not** Write `SCRIPT.md`. After this run the harness copies each non-empty
+frame `voiceover` into `SCRIPT.md` (header + `## Line N — <title> (Frame N)` +
+indented spoken text). Silent frames (`voiceover` empty) are omitted from
+SCRIPT.md — their `narrativeRole` + `persuasion` carry the explanation.
 
-```md
-# SCRIPT — <project-id or name>
+Write each `voiceover` as the final spoken line:
 
-**Voice:** Rachel (ElevenLabs) — or the frame.md-implied voice
-**Voice settings:** stability 0.35 · similarity 0.75 · style 0.20
-**Voice direction:** Warm, assured, a little playful.
-```
-
-Per spoken line:
-
-```md
-## Line N — <label> (Frame N)
-
-**Time:** 0.0 – 5.0s
-**Delivery:** Per-line delivery note.
-
-    The indented spoken text — the ONLY part fed to TTS.
-```
-
-- **Time** is a rough window guide; real timing comes from TTS word timestamps.
-- Only spoken frames appear. Silent frames: `voiceover` empty, omitted from SCRIPT.md — their `narrativeRole` + `persuasion` then carry the explanation.
-- 1–2 sentences per line, usually 6–20 words; concrete and human — teach, don't read the article aloud.
-- **Phrase-segment each line into discrete cues** ("First the snowball — then the hill — then the speed") so each on-screen piece can reveal when the voiceover names it; never one run-on breath.
+- 1–2 sentences, usually 6–20 words; concrete and human — teach, don't read the article aloud.
+- **Phrase-segment into discrete cues** ("First the snowball — then the hill — then the speed") so each on-screen piece can reveal when the voiceover names it; never one run-on breath.
 - `VO_MODE: restructure` (inlined by caller when present): user_script.txt is source material — rewrite/reorder to fit. `verbatim`: don't change words, only segment at sentence/clause boundaries.
 
 ## Music
@@ -194,8 +178,8 @@ Per spoken line:
 
 ## Output protocol (this run)
 
-1. Compose the plan: structure → hook → frame list with all required fields → script lines.
-2. Write `STORYBOARD.md` and `SCRIPT.md` in the SAME assistant response: issue **both Write tool calls together** in one turn (SCRIPT.md whenever any frame has a non-empty `voiceover`). Never split the two files across turns, never end the turn between the two Writes, and never re-read either file after writing — the write result already confirms the file state.
+1. Compose the plan: structure → hook → frame list with all required fields (quality `voiceover` lines included).
+2. **First tool call MUST be** `Write("STORYBOARD.md")`. Do not Bash/Read/Glob project or skill files — every input is already inlined. Do not Write `SCRIPT.md`.
 3. End with the heads-up summary as the final text: echo **"This video tells [audience] that [message]"**, then a frame table — one row per frame: `frame · beat (type, duration) · on screen · why (its narrativeRole traced to the message)` — plus the chosen structure/hook/transition set. No board, no approval questions, no waiting.
 
 ## Self-check before writing

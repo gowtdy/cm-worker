@@ -27,9 +27,9 @@ export function padFrameInternalDuration(hyperframesDir, frameSrc, frameId, newD
   while ((m = tagRe.exec(html)) !== null) {
     const tag = m[0];
     if (!tag.includes(`data-composition-id="${frameId}"`)) continue;
-    if (!/data-duration="[\d.]+"/.test(tag)) continue;
-    const newTag = tag.replace(/data-duration="[\d.]+"/, `data-duration="${newDuration}"`);
-    if (newTag === tag) return;
+    if (!/data-duration="[\d.]+s?"/.test(tag)) continue;
+    // Normalize any unit suffix to a plain number (transitions inject contract).
+    const newTag = tag.replace(/data-duration="[\d.]+s?"/, `data-duration="${newDuration}"`);    if (newTag === tag) return;
     writeFileSync(framePath, html.slice(0, m.index) + newTag + html.slice(m.index + tag.length));
     return;
   }

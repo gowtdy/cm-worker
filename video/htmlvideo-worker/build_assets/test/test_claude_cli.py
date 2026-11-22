@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Profile, rollback, and usage-log behavior of run_claude."""
+"""Profile and usage-log behavior of run_claude."""
 
 from __future__ import annotations
 
@@ -17,15 +17,16 @@ PROMPT = "PROMPT_SECRET_DO_NOT_LOG"
 CWD = "/tmp/htmlvideo-proj"
 
 # Mirrors html_utility.claude_cli._PROFILES (post-clamp thinking where needed).
+# Tuple: effort, thinking, max_turns, timeout, deny_agent, max_output
 _PROFILES = {
     "intent": ("high", "32000", "100", 1800, True, "32000"),
-    "storyboard": ("high", "64000", "100", 1800, True, "32000"),
-    "visual": ("high", "64000", "100", 1800, True, "32000"),
+    "storyboard": ("high", "64000", "8", 1800, True, "16000"),
+    "visual": ("high", "24000", "100", 1800, True, "32000"),
+    "visual_legacy": ("high", "64000", "100", 1800, True, "32000"),
     "frame_html": ("high", "64000", "60", 1500, True, "64000"),
     "repair": ("high", "40000", "40", 600, True, "16000"),
-    "verify": ("medium", "32000", "100", 1800, True, "32000"),
+    "verify": ("medium", "32000", "40", 1800, True, "16000"),
 }
-_BASE_DENY = ["WebFetch", "WebSearch", "NotebookEdit", "TodoWrite"]
 _AGENT_DENY = ["Agent", "Task"]
 _FORBIDDEN = [
     "--effort",
@@ -44,6 +45,7 @@ _CLEAR_ENV = (
     "CLAUDE_CODE_MAX_THINKING_TOKENS",
     "ANTHROPIC_LOG",
     "BUN_OPTIONS",
+    "HTMLVIDEO_CLAUDE_HEARTBEAT_SECONDS",
 )
 
 
@@ -88,24 +90,24 @@ class RunClaudeTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._env.stop()
 
-    def _completed_run(self, stdout: str = "", rc: int = 0) -> None:
-        proc = mock.Mock()
-        proc.returncode = rc
-        proc.stdout = stdout
-        self.run_mock.return_value = proc
-
     def _completed_popen(self, stdout: str = "", rc: int = 0) -> mock.Mock:
         proc = mock.Mock()
         proc.pid = 4242
         proc.returncode = rc
-        proc.communicate.return_value = (stdout, None)
-        proc.poll.return_value = rc
+        proc.args = ["claude"]
+        proc.poll.return_value = rc  # already exited → wait loop returns immediately
+        out = mock.Mock()
+        out.read.return_value = stdout
+        err = mock.Mock()
+        err.__iter__ = mock.Mock(return_value=iter([]))
+        proc.stdout = out
+        proc.stderr = err
         self.popen_mock.return_value = proc
         return proc
 
     def _invoke(
         self,
-        skill: str | None = "intent",
+        skill: str = "intent",
         extra_env: dict[str, str] | None = None,
         stdout: str | None = None,
         rc: int = 0,
@@ -113,44 +115,13 @@ class RunClaudeTests(unittest.TestCase):
     ):
         if stdout is None:
             stdout = _result_json()
-        if skill is None or os.environ.get(
-            "HTMLVIDEO_CLAUDE_PROFILE", ""
-        ).strip().lower() == "off":
-            self._completed_run(stdout=stdout, rc=rc)
-        else:
-            self._completed_popen(stdout=stdout, rc=rc)
+        self._completed_popen(stdout=stdout, rc=rc)
         with self.assertLogs("test.claude_cli", level="INFO") as logs:
             code = run_claude(
                 CWD, prompt, self.logger, extra_env=extra_env, skill=skill
             )
-        if skill is None or os.environ.get(
-            "HTMLVIDEO_CLAUDE_PROFILE", ""
-        ).strip().lower() == "off":
-            args, kwargs = self.run_mock.call_args
-            return code, logs, args[0], kwargs
         args, kwargs = self.popen_mock.call_args
         return code, logs, args[0], kwargs
-
-    def _assert_legacy(self, cmd: list[str], kwargs: dict) -> None:
-        self.assertEqual(
-            cmd,
-            [
-                "claude",
-                "--print",
-                "--dangerously-skip-permissions",
-                "--permission-mode",
-                "bypassPermissions",
-                "--output-format",
-                "text",
-                PROMPT,
-            ],
-        )
-        self.assertNotIn("stdout", kwargs)
-        self.assertNotIn("timeout", kwargs)
-        self.assertNotIn("text", kwargs)
-        self.assertNotIn("stderr", kwargs)
-        self.assertEqual(kwargs["cwd"], CWD)
-        self.popen_mock.assert_not_called()
 
     def test_missing_cli_raises(self) -> None:
         self.which.return_value = None
@@ -159,60 +130,25 @@ class RunClaudeTests(unittest.TestCase):
         self.run_mock.assert_not_called()
         self.popen_mock.assert_not_called()
 
-    def test_skill_none_matches_legacy_invocation(self) -> None:
-        os.environ["HTMLVIDEO_CLAUDE_INTENT_EFFORT"] = "low"
-        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
-        code, logs, cmd, kwargs = self._invoke(skill=None)
-        self.assertEqual(code, 0)
-        self._assert_legacy(cmd, kwargs)
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "max")
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"], "1")
-        self.assertEqual(os.environ["CLAUDE_CODE_EFFORT_LEVEL"], "max")
-        joined = "\n".join(logs.output)
-        self.assertIn("--output-format text <prompt>", joined)
-        self.assertNotIn(PROMPT, joined)
-
-    def test_skill_none_merges_extra_env_only(self) -> None:
-        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
-        code, logs, cmd, kwargs = self._invoke(
-            skill=None, extra_env={"CLAUDE_CODE_SUBAGENT_EFFORT": "high"}
-        )
-        self.assertEqual(code, 0)
-        self._assert_legacy(cmd, kwargs)
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "max")
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_SUBAGENT_EFFORT"], "high")
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"], "1")
-        self.assertNotIn("MAX_THINKING_TOKENS", kwargs["env"])
-        self.assertIsNot(kwargs["env"], os.environ)
-
-    def test_profile_off_restores_legacy_even_with_skill(self) -> None:
-        os.environ["HTMLVIDEO_CLAUDE_PROFILE"] = " OFF "
-        os.environ["HTMLVIDEO_CLAUDE_INTENT_EFFORT"] = "low"
-        os.environ["HTMLVIDEO_CLAUDE_INTENT_MODEL"] = "deepseek-v4-pro"
-        os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
-        code, logs, cmd, kwargs = self._invoke(
-            skill="intent", extra_env={"FOO": "bar"}
-        )
-        self.assertEqual(code, 0)
-        self._assert_legacy(cmd, kwargs)
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "max")
-        self.assertEqual(kwargs["env"]["FOO"], "bar")
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"], "1")
-        self.assertNotIn("MAX_THINKING_TOKENS", kwargs["env"])
-        self.assertNotIn("--model", cmd)
-        self.assertNotIn(PROMPT, "\n".join(logs.output))
-
-    def test_profile_off_unknown_skill_stays_legacy(self) -> None:
-        os.environ["HTMLVIDEO_CLAUDE_PROFILE"] = "off"
-        code, _, cmd, kwargs = self._invoke(skill="not-a-skill")
-        self.assertEqual(code, 0)
-        self._assert_legacy(cmd, kwargs)
-
     def test_unknown_skill_raises(self) -> None:
         with self.assertRaises(ValueError):
             run_claude(CWD, PROMPT, self.logger, skill="not-a-skill")
         self.run_mock.assert_not_called()
         self.popen_mock.assert_not_called()
+
+    def test_skill_none_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            run_claude(CWD, PROMPT, self.logger)
+        self.run_mock.assert_not_called()
+        self.popen_mock.assert_not_called()
+
+    def test_profile_env_off_is_ignored(self) -> None:
+        os.environ["HTMLVIDEO_CLAUDE_PROFILE"] = "off"
+        code, _, cmd, kwargs = self._invoke(skill="intent")
+        self.assertEqual(code, 0)
+        self.assertEqual(cmd[cmd.index("--output-format") + 1], "json")
+        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "high")
+        self.run_mock.assert_not_called()
 
     def test_each_skill_profile(self) -> None:
         os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
@@ -225,7 +161,7 @@ class RunClaudeTests(unittest.TestCase):
                 self.assertEqual(kwargs["stdout"], subprocess.PIPE)
                 self.assertTrue(kwargs["text"])
                 self.assertTrue(kwargs["start_new_session"])
-                self.assertIsNone(kwargs["stderr"])
+                self.assertEqual(kwargs["stderr"], subprocess.PIPE)
                 self.assertEqual(cmd[0], "claude")
                 self.assertIn("--dangerously-skip-permissions", cmd)
                 self.assertEqual(
@@ -237,9 +173,12 @@ class RunClaudeTests(unittest.TestCase):
                 self.assertNotIn("--model", cmd)
                 for flag in _FORBIDDEN:
                     self.assertNotIn(flag, cmd)
+                from html_utility.claude_cli import _BASE_DENY, _PROFILES as REAL
+
                 deny = list(_BASE_DENY)
                 if deny_agent:
                     deny.extend(_AGENT_DENY)
+                deny.extend(REAL[skill].get("deny_tools") or [])
                 deny_at = cmd.index("--disallowedTools")
                 self.assertEqual(cmd[deny_at + 1 : deny_at + 1 + len(deny)], deny)
                 self.assertEqual(cmd[deny_at + 1 + len(deny)], "--")
@@ -254,7 +193,7 @@ class RunClaudeTests(unittest.TestCase):
                 self.assertNotIn("CLAUDE_CODE_MAX_THINKING_TOKENS", env)
                 self.assertEqual(os.environ["CLAUDE_CODE_EFFORT_LEVEL"], "max")
                 proc = self.popen_mock.return_value
-                proc.communicate.assert_called_once_with(timeout=timeout)
+                proc.poll.assert_called()
                 joined = "\n".join(logs.output)
                 self.assertIn(f"skill={skill}", joined)
                 self.assertIn(f"effort={effort}", joined)
@@ -286,9 +225,44 @@ class RunClaudeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS": "128000"}):
             prof = _resolve_profile("frame_html", logger)
             self.assertEqual(prof["max_output"], "128000")
-        # serial stages pinned at 32000
-        for skill in ("intent", "storyboard", "visual", "verify"):
+        # serial stages: intent/visual at 32000; storyboard/verify tightened to 16000
+        for skill in ("intent", "visual"):
             self.assertEqual(_resolve_profile(skill, logger)["max_output"], "32000")
+        for skill in ("storyboard", "verify"):
+            self.assertEqual(_resolve_profile(skill, logger)["max_output"], "16000")
+
+    def test_visual_thinking_default_per_call_and_env_rollback(self):
+        from html_utility.claude_cli import _PROFILES as REAL, _resolve_profile
+        logger = logging.getLogger("t")
+        self.assertEqual(_resolve_profile("visual", logger)["thinking"], "24000")
+        self.assertEqual(
+            _resolve_profile("visual", logger, "32000")["thinking"], "32000")
+        self.assertIn("Skill", REAL["visual"]["deny_tools"])
+        self.assertNotIn("deny_tools", REAL["visual_legacy"])  # legacy edits STORYBOARD
+        with mock.patch.dict(
+                os.environ, {"HTMLVIDEO_CLAUDE_VISUAL_THINKING_TOKENS": "64000"}):
+            self.assertEqual(_resolve_profile("visual", logger)["thinking"], "64000")
+            self.assertEqual(
+                _resolve_profile("visual", logger, "32000")["thinking"], "64000")
+
+    def test_run_claude_result_thinking_default_reaches_env(self):
+        from html_utility.claude_cli import run_claude_result
+        self._completed_popen(stdout=_result_json())
+        with self.assertLogs("test.claude_cli", level="INFO"):
+            run_claude_result(CWD, PROMPT, self.logger, skill="visual",
+                              thinking_default="32000")
+        env = self.popen_mock.call_args.kwargs["env"]
+        self.assertEqual(env["MAX_THINKING_TOKENS"], "32000")
+
+    def test_thinking_usage_logged_when_present(self):
+        usage = {"input_tokens": 1, "output_tokens": 2,
+                 "output_tokens_details": {"reasoning_tokens": 7}}
+        _, logs, _, _ = self._invoke(skill="visual", stdout=_result_json(usage=usage))
+        self.assertIn(
+            "claude skill thinking label=- skill=visual "
+            "output_tokens_details.reasoning_tokens=7", "\n".join(logs.output))
+        _, logs, _, _ = self._invoke(skill="visual")
+        self.assertNotIn("claude skill thinking", "\n".join(logs.output))
 
     def test_debug_request_env_sets_anthropic_log_and_bun_preload(self) -> None:
         os.environ["HTMLVIDEO_CLAUDE_DEBUG_REQUEST"] = "1"
@@ -327,11 +301,8 @@ class RunClaudeTests(unittest.TestCase):
         os.environ["HTMLVIDEO_CLAUDE_VISUAL_TIMEOUT"] = "30"
         os.environ["HTMLVIDEO_CLAUDE_VISUAL_MODEL"] = "deepseek-v4-pro"
         _, logs, cmd, kwargs = self._invoke(skill="visual")
-        self.assertEqual(
-            self.popen_mock.return_value.communicate.call_args.kwargs["timeout"],
-            30,
-        )
         self.assertEqual(cmd[cmd.index("--max-turns") + 1], "7")
+        self.assertIn("timeout=30", "\n".join(logs.output))
         self.assertEqual(
             cmd[cmd.index("--model") : cmd.index("--")],
             ["--model", "deepseek-v4-pro"],
@@ -348,11 +319,8 @@ class RunClaudeTests(unittest.TestCase):
         os.environ["HTMLVIDEO_CLAUDE_STORYBOARD_TIMEOUT"] = "soon"
         os.environ["HTMLVIDEO_CLAUDE_STORYBOARD_THINKING_TOKENS"] = "abc"
         _, logs, cmd, kwargs = self._invoke(skill="storyboard")
-        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "100")
-        self.assertEqual(
-            self.popen_mock.return_value.communicate.call_args.kwargs["timeout"],
-            1800,
-        )
+        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "8")
+        self.assertIn("timeout=1800", "\n".join(logs.output))
         self.assertEqual(kwargs["env"]["MAX_THINKING_TOKENS"], "64000")
         joined = "\n".join(logs.output)
         self.assertIn("invalid HTMLVIDEO_CLAUDE_STORYBOARD_MAX_TURNS", joined)
@@ -364,12 +332,9 @@ class RunClaudeTests(unittest.TestCase):
         os.environ["HTMLVIDEO_CLAUDE_VERIFY_MAX_TURNS"] = "0"
         os.environ["HTMLVIDEO_CLAUDE_VERIFY_TIMEOUT"] = "-3"
         _, logs, cmd, _ = self._invoke(skill="verify")
-        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "100")
-        self.assertEqual(
-            self.popen_mock.return_value.communicate.call_args.kwargs["timeout"],
-            1800,
-        )
+        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "40")
         joined = "\n".join(logs.output)
+        self.assertIn("timeout=1800", joined)
         self.assertIn("HTMLVIDEO_CLAUDE_VERIFY_MAX_TURNS=0 <= 0", joined)
         self.assertIn("HTMLVIDEO_CLAUDE_VERIFY_TIMEOUT=-3 <= 0", joined)
 
@@ -448,21 +413,30 @@ class RunClaudeTests(unittest.TestCase):
         proc = mock.Mock()
         proc.pid = 7777
         proc.returncode = None
-        proc.communicate.side_effect = [
-            subprocess.TimeoutExpired(cmd=["claude"], timeout=1800),
-            ("", None),
-        ]
-        proc.poll.side_effect = [None, None, -9]
+        proc.args = ["claude"]
+        out = mock.Mock()
+        out.read.return_value = ""
+        err = mock.Mock()
+        err.__iter__ = mock.Mock(return_value=iter([]))
+        proc.stdout = out
+        proc.stderr = err
         self.popen_mock.return_value = proc
+        dead = {"v": False}
+
+        def killpg_side_effect(pgid, sig):
+            dead["v"] = True
+
+        proc.poll.side_effect = lambda: -9 if dead["v"] else None
+        # started=0, deadline=1800; loop sees now=1800 → TimeoutExpired
+        mono = mock.Mock(side_effect=[0.0, 0.0, 1800.0, 1800.0, 1805.1])
         with mock.patch(
             "html_utility.claude_cli.os.getpgid", return_value=7777
         ) as getpgid, mock.patch(
-            "html_utility.claude_cli.os.killpg"
+            "html_utility.claude_cli.os.killpg", side_effect=killpg_side_effect
         ) as killpg, mock.patch(
             "html_utility.claude_cli.time.sleep"
         ), mock.patch(
-            "html_utility.claude_cli.time.monotonic",
-            side_effect=[0.0, 0.0, 10.0],
+            "html_utility.claude_cli.time.monotonic", mono
         ):
             with self.assertLogs("test.claude_cli", level="INFO") as logs:
                 code = run_claude(CWD, PROMPT, self.logger, skill="intent")
@@ -563,9 +537,18 @@ class RunClaudeTests(unittest.TestCase):
 
         logger = logging.getLogger("t")
         with mock.patch("subprocess.Popen") as popen_mock:
-            popen_mock.return_value.communicate.return_value = (
-                _result_json(result="done OK 01-hook"), "")
-            popen_mock.return_value.returncode = 0
+            proc = mock.Mock()
+            proc.pid = 1
+            proc.returncode = 0
+            proc.args = ["claude"]
+            proc.poll.return_value = 0
+            out = mock.Mock()
+            out.read.return_value = _result_json(result="done OK 01-hook")
+            err = mock.Mock()
+            err.__iter__ = mock.Mock(return_value=iter([]))
+            proc.stdout = out
+            proc.stderr = err
+            popen_mock.return_value = proc
             rc, text = run_claude_result(CWD, PROMPT, logger, skill="frame_html")
             self.assertEqual(rc, 0)
             self.assertIn("done OK 01-hook", text)
@@ -607,6 +590,222 @@ class RunClaudeTests(unittest.TestCase):
         env = kwargs["env"]
         self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "128000")
         self.assertEqual(env["CLAUDE_CODE_EFFORT_LEVEL"], "high")
+
+    def test_heartbeat_logs_while_running(self) -> None:
+        proc = mock.Mock()
+        proc.pid = 99
+        proc.returncode = None
+        proc.args = ["claude"]
+        # still running for a few polls, then exit
+        proc.poll.side_effect = [None, None, None, 0]
+        out = mock.Mock()
+        out.read.return_value = _result_json()
+        err = mock.Mock()
+        err.__iter__ = mock.Mock(return_value=iter([]))
+        proc.stdout = out
+        proc.stderr = err
+        self.popen_mock.return_value = proc
+        os.environ["HTMLVIDEO_CLAUDE_HEARTBEAT_SECONDS"] = "10"
+        # started=0; after 10s heartbeat; then exit on next poll
+        mono = mock.Mock(side_effect=[0.0, 0.0, 10.0, 10.5, 11.0, 11.0])
+        with mock.patch("html_utility.claude_cli.time.sleep"), mock.patch(
+            "html_utility.claude_cli.time.monotonic", mono
+        ):
+            with self.assertLogs("test.claude_cli", level="INFO") as logs:
+                code = run_claude(CWD, PROMPT, self.logger, skill="verify")
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "claude skill running label=- skill=verify elapsed=10s",
+            "\n".join(logs.output),
+        )
+
+    def test_stderr_progress_lines_are_logged(self) -> None:
+        proc = mock.Mock()
+        proc.pid = 99
+        proc.returncode = 0
+        proc.args = ["claude"]
+        proc.poll.return_value = 0
+        out = mock.Mock()
+        out.read.return_value = _result_json()
+        err = mock.Mock()
+        err.__iter__ = mock.Mock(
+            return_value=iter(
+                [
+                    "[INFO] [Stall] tool_dispatch_start tool=Edit\n",
+                    "noise line without markers\n",
+                    '[claude-code:unrecognized_model] {"model":"x"}\n',
+                ]
+            )
+        )
+        proc.stdout = out
+        proc.stderr = err
+        self.popen_mock.return_value = proc
+        with self.assertLogs("test.claude_cli", level="INFO") as logs:
+            code = run_claude(CWD, PROMPT, self.logger, skill="verify")
+        self.assertEqual(code, 0)
+        joined = "\n".join(logs.output)
+        self.assertIn("claude skill progress", joined)
+        self.assertIn("tool_dispatch_start", joined)
+        self.assertIn("unrecognized_model", joined)
+        self.assertNotIn("noise line without markers", joined)
+
+    def test_session_id_flag_and_overrides(self) -> None:
+        from html_utility.claude_cli import run_claude_result
+        self._completed_popen(stdout=_result_json())
+        with self.assertLogs("test.claude_cli", level="INFO"):
+            run_claude_result(
+                CWD, PROMPT, self.logger, skill="frame_html",
+                session_id="11111111-2222-3333-4444-555555555555",
+                max_turns=10, timeout=300)
+        cmd = self.popen_mock.call_args.args[0]
+        i = cmd.index("--session-id")
+        self.assertEqual(cmd[i + 1], "11111111-2222-3333-4444-555555555555")
+        self.assertLess(i, cmd.index("--"))
+        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "10")
+
+    def test_truncation_watcher_kills_and_returns_125(self) -> None:
+        from html_utility import claude_cli
+        proc = mock.Mock()
+        proc.pid = 5151
+        proc.returncode = None
+        proc.args = ["claude"]
+        out = mock.Mock()
+        out.read.return_value = ""
+        err = mock.Mock()
+        err.__iter__ = mock.Mock(return_value=iter([]))
+        proc.stdout = out
+        proc.stderr = err
+        self.popen_mock.return_value = proc
+        dead = {"v": False}
+        proc.poll.side_effect = lambda: -15 if dead["v"] else None
+        ticks = iter(float(i) * 3 for i in range(1000))
+        with mock.patch.object(
+            claude_cli._TruncationWatcher, "poll", return_value="thinking-only"
+        ), mock.patch(
+            "html_utility.claude_cli.os.getpgid", return_value=5151
+        ), mock.patch(
+            "html_utility.claude_cli.os.killpg",
+            side_effect=lambda pgid, sig: dead.__setitem__("v", True),
+        ) as killpg, mock.patch(
+            "html_utility.claude_cli.time.sleep"
+        ), mock.patch(
+            "html_utility.claude_cli.time.monotonic", side_effect=lambda: next(ticks)
+        ):
+            with self.assertLogs("test.claude_cli", level="INFO") as logs:
+                rc, text = claude_cli.run_claude_result(
+                    CWD, PROMPT, self.logger, skill="frame_html",
+                    trunc_kill=True)
+        self.assertEqual((rc, text), (claude_cli.TRUNCATED_RC, ""))
+        self.assertEqual(killpg.call_args_list[0].args, (5151, signal.SIGTERM))
+        self.assertIn("claude skill truncated", "\n".join(logs.output))
+        self.assertIn("--session-id", self.popen_mock.call_args.args[0])
+
+    def test_cancel_event_kills_and_returns_130(self) -> None:
+        import threading
+        from html_utility import claude_cli
+        proc = mock.Mock()
+        proc.pid = 6161
+        proc.returncode = None
+        proc.args = ["claude"]
+        out = mock.Mock()
+        out.read.return_value = ""
+        err = mock.Mock()
+        err.__iter__ = mock.Mock(return_value=iter([]))
+        proc.stdout = out
+        proc.stderr = err
+        self.popen_mock.return_value = proc
+        dead = {"v": False}
+        proc.poll.side_effect = lambda: -15 if dead["v"] else None
+        cancel = threading.Event()
+        cancel.set()
+        with mock.patch(
+            "html_utility.claude_cli.os.getpgid", return_value=6161
+        ), mock.patch(
+            "html_utility.claude_cli.os.killpg",
+            side_effect=lambda pgid, sig: dead.__setitem__("v", True),
+        ) as killpg, mock.patch("html_utility.claude_cli.time.sleep"):
+            with self.assertLogs("test.claude_cli", level="INFO") as logs:
+                rc, text = claude_cli.run_claude_result(
+                    CWD, PROMPT, self.logger, skill="frame_html",
+                    cancel_event=cancel)
+        self.assertEqual((rc, text), (claude_cli.CANCELLED_RC, ""))
+        self.assertEqual(killpg.call_args_list[0].args, (6161, signal.SIGTERM))
+        self.assertIn("claude skill cancelled", "\n".join(logs.output))
+
+
+class TruncationWatcherTests(unittest.TestCase):
+    SID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    def _watcher(self, entries, cap=48000):
+        import tempfile
+        from html_utility.claude_cli import _TruncationWatcher
+        cfg = tempfile.mkdtemp(prefix="cfg-")
+        proj = "/tmp/some/project"
+        slug = "-tmp-some-project"
+        os.makedirs(os.path.join(cfg, "projects", slug))
+        path = os.path.join(cfg, "projects", slug, f"{self.SID}.jsonl")
+        with open(path, "w") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+        w = _TruncationWatcher(self.SID, proj, cfg, cap, logging.getLogger("t"))
+        return w, path
+
+    @staticmethod
+    def _asst(mid, types, out, stop="end_turn"):
+        return {"type": "assistant", "message": {
+            "id": mid, "stop_reason": stop, "usage": {"output_tokens": out},
+            "content": [{"type": t} for t in types]}}
+
+    def test_meta_nudge_detected(self):
+        w, _ = self._watcher([
+            self._asst("m1", ["thinking"], 48000),
+            {"type": "user", "isMeta": True, "message": {"role": "user", "content":
+             "[Your previous response had no visible output. Please continue and produce a user-visible response.]"}},
+        ])
+        self.assertIn("no-visible-output", w.poll() or "")
+
+    def test_thinking_only_at_cap_detected_on_next_user_line(self):
+        w, _ = self._watcher([
+            self._asst("m1", ["thinking"], 48000),
+            {"type": "user", "message": {"role": "user", "content": "next"}},
+        ])
+        self.assertIn("output cap", w.poll() or "")
+
+    def test_cap_with_tool_use_is_not_truncation(self):
+        w, _ = self._watcher([
+            self._asst("m1", ["thinking"], 48000, stop="tool_use"),
+            self._asst("m1", ["text"], 48000, stop="tool_use"),
+            self._asst("m1", ["tool_use"], 48000, stop="tool_use"),
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "x", "content": "ok"}]}},
+            self._asst("m2", ["thinking"], 900),
+            {"type": "user", "isMeta": True, "message": {"role": "user", "content": [
+                {"type": "text", "text": "Base directory for this skill: /x"}]}},
+        ])
+        self.assertIsNone(w.poll())
+
+    def test_incremental_tail_and_partial_lines(self):
+        w, path = self._watcher([self._asst("m1", ["thinking"], 100)])
+        self.assertIsNone(w.poll())
+        line = json.dumps({"type": "user", "isMeta": True, "message": {
+            "content": "[Your previous response had no visible output. x]"}})
+        with open(path, "a") as f:
+            f.write(line[:20])
+        self.assertIsNone(w.poll())
+        with open(path, "a") as f:
+            f.write(line[20:] + "\n")
+        self.assertIsNotNone(w.poll())
+
+    def test_missing_file_and_garbage_are_silent(self):
+        from html_utility.claude_cli import _TruncationWatcher
+        w = _TruncationWatcher(self.SID, "/nope", "/nonexistent-cfg", 100,
+                               logging.getLogger("t"))
+        self.assertIsNone(w.poll())
+        w2, path = self._watcher([])
+        with open(path, "a") as f:
+            f.write("not json\n{broken\n")
+        self.assertIsNone(w2.poll())
+        self.assertFalse(w2.disabled)
 
 
 if __name__ == "__main__":

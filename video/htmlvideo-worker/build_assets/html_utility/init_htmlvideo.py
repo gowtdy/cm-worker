@@ -21,6 +21,7 @@ def init_htmlvideo(
     customization,
     notes,
     style_preset=None,
+    arc=None,
     task_id: str = "",
 ):
     # 下面的初始化顺序不能颠倒
@@ -38,7 +39,7 @@ def init_htmlvideo(
         create_html_brief(
             project_dir, message, aspect, duration, language,
             audience, angle, summary, customization, notes,
-            style_preset=style_preset,
+            style_preset=style_preset, arc=arc,
         )
     except Exception as e:
         msg = f"Failed to write BRIEF.md: {e}"
@@ -65,7 +66,7 @@ def yaml_quote(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
-def create_html_brief(video_dir, message, aspect, duration, language, audience, angle, summary, customization, notes, style_preset, assets=None):
+def create_html_brief(video_dir, message, aspect, duration, language, audience, angle, summary, customization, notes, style_preset, assets=None, arc=None):
     brief_path = f'{video_dir}/BRIEF.md'
     workflow = 'aiflow-htmlvideo'
     # Who drives execution.  取值为：automation or companion
@@ -87,6 +88,8 @@ def create_html_brief(video_dir, message, aspect, duration, language, audience, 
     lines.append(f"language: {language}")
     lines.append(f"length: {duration}s")
     lines.append(f"angle: {yaml_quote(angle)}")
+    if arc:
+        lines.append(f"arc: {yaml_quote(arc)}")
     lines.append(f"style_preset: {style_preset}")
     #lines.append(f"tone: {tone}")
     lines.append("---")

@@ -48,28 +48,28 @@ flowchart TD
   frameHtml[frame_html.py] --> runClaude
   verify[verify.py] --> runClaude
   script[run_aiflow_build_skills.py] --> runClaude
-  runClaude -->|profile on| profilePath["_run_profile: json + caps"]
-  runClaude -->|skill None or PROFILE=off| legacyPath["_run_legacy: text"]
+  runClaude -->|skill required| profilePath["_run_profile: json + caps"]
   profilePath --> claudeBin[claude --print]
-  legacyPath --> claudeBin
 ```
 
-`skill=None` 或 `HTMLVIDEO_CLAUDE_PROFILE=off` 时命令与环境与改动前一致（`--output-format text`，不设 timeout，不 PIPE stdout）。
+`skill` 必填；`None` 或未知名抛 `ValueError`。`HTMLVIDEO_CLAUDE_PROFILE` 已移除（设置也不生效）。
 
 ## 4. Profile 表与取值理由
 
 | skill | effort | thinking | max_output | max_turns | timeout(s) | deny Agent/Task | 理由 |
 |---|---|---|---|---|---|---|---|
-| intent | high | 32000 | 32000 | 100 | 1800 | 是 | 2026-11-18 cap A/B 实证地板（16.7s 历史最优），显式固化 |
-| storyboard | high | 64000 | 32000 | 100 | 1800 | 是 | 同上（3.0m 近地板） |
-| visual | high | 64000 | 32000 | 100 | 1800 | 是 | 同上（7.1m 历史最优） |
-| frame_html | high | 64000 | 64000 | 60 | 1500 | 是 | 每帧一个进程：64000 防截断档；1500s 墙钟断电闸（2026-11-19 实测 720s 杀 4/6 帧，逐级抬到 ~25m）；B 架构无需 Agent |
+| intent | high | 32000 | 32000 | 100 | 1800 | 是；另禁 Write/Edit/Bash/Read/Glob/Grep（纯文本 → Python 落盘） | 2026-11-18 cap A/B 实证地板（16.7s 历史最优），显式固化 |
+| storyboard | high | 64000 | 16000 | 8 | 1800 | 是；另禁 Bash/Read/Glob/Grep/Edit（Write-only；SCRIPT.md 由 Python 从 voiceover 派生） | 契约卡内联后几乎 1 次 Write；8 轮 fail-fast；禁探盘 + SCRIPT 外提 |
+| visual | high | 64000 | 32000 | 100 | 1800 | 是；另禁 Bash/Glob/Grep/Write/Edit（保留 Read 作 rules 逃生口；文本回复合并） | 同上（7.1m 历史最优）；硬禁对齐 frame_html，停掉 ls/find |
+| frame_html | high | 64000 | 48000 | 60 | 1500 | 是；另禁 Bash/Glob/Grep（保留 Read/Edit/Write；driver 跑 frame-selfcheck，有界 ≤3 次重派） | 每帧一进程；48000 防截断探档（64000 一键回退）；1500s 墙钟；dispatch 内联，模型不读 `.dispatch.md` |
 | repair | high | 40000 | 16000 | 40 | 600 | 是 | 仅 assemble 失败的一次性修复会话 |
-| verify | medium | 32000 | 32000 | 100 | 1800 | 是 | 固化 |
+| verify | medium | 32000 | 16000 | 40 | 1800 | 是；另禁 Bash/Glob/Grep（保留 Read/Edit/Write；scan 由 Python 跑） | 修色/加 data-layout 的 fix 角色；40 轮 fail-fast；压探盘与 Todo 空转 |
 
 `frame_html` 另由调用方注入 `CLAUDE_CODE_SUBAGENT_EFFORT=high`（`frame_html.py` 与脚本 `--skill html` 一致；B 架构下仅 legacy 回退路径有意义，见 §9.7）。
 
-基准禁用工具：`WebFetch`、`WebSearch`、`NotebookEdit`、`TodoWrite`；六个 profile 再禁 `Agent`、`Task`（B 架构下无 stage 派生子代理；工具名按 CLI 2.1.316；版本漂移时未知名通常为空操作）。
+**frame_html 成功门禁（driver，非模型）**：`rc==0` ∧ 结果含 `done OK <frame_id>` ∧ `frame-selfcheck` PASS ∧ 帧文件存在。骨架自带 `skeleton-v1` 会通过 selfcheck，因此 **不能** 用「文件已存在 / selfcheck PASS」单独短路——必须等模型 `done OK`。
+
+基准禁用工具：`WebFetch`、`WebSearch`、`NotebookEdit`、`TodoWrite`、`TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`；六个 profile 再禁 `Agent`、`Task`（B 架构下无 stage 派生子代理；工具名按 CLI 2.1.316；版本漂移时未知名通常为空操作）。
 
 ## 5. 命令与 env 组装
 
@@ -106,23 +106,23 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 - 值 ≥ 该输出 cap：cap > 127000 时压到 127000，否则压到 `cap - 1`。
 - profile `max_output` 注入在 clamp 之后，`extra_env` 里的输出 cap 最后再应用（最后赢家）；注入后 thinking 可能仍 ≥ 子进程最终输出 cap——本后端 adaptive 剥 budget_tokens，此项 inert。
 
-超时：`Popen(start_new_session=True)` + `communicate(timeout=)`；超时对进程组 `SIGTERM` → 宽限 → `SIGKILL`，返回 **124**。
+超时 / 进度：`Popen(start_new_session=True, stdout/stderr=PIPE)` + `_wait_claude_proc`（轮询 + 心跳，**不用** `communicate()`——否则 adaptive thinking 长回合会在 worker 日志里静默数分钟）。超时对进程组 `SIGTERM` → 宽限 → `SIGKILL`，返回 **124**。该等待路径对全部 skill（intent / storyboard / visual / frame_html / repair / verify）共用。
 
 ## 6. 运维接口
 
 | 变量 | 作用 |
 |---|---|
-| `HTMLVIDEO_CLAUDE_PROFILE=off` | 一键回滚到 legacy 命令与环境 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_EFFORT` | 覆盖 effort；白名单 `low\|medium\|high\|xhigh\|max` |
 | `HTMLVIDEO_CLAUDE_<SKILL>_THINKING_TOKENS` | 覆盖思考预算 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_MAX_OUTPUT_TOKENS` | 覆盖输出上限（max_output）；未设置用 profile 默认，设空则不注入（沿用父进程 cap） |
 | `HTMLVIDEO_CLAUDE_<SKILL>_MAX_TURNS` | 覆盖轮数；≤0 回退默认 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_TIMEOUT` | 覆盖超时秒；≤0 回退默认 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_MODEL` | 设置则追加 `--model`；默认不设 |
+| `HTMLVIDEO_CLAUDE_HEARTBEAT_SECONDS` | 全局：等待 Claude 时心跳间隔（默认 15）；`0` 关闭 |
 
 `<SKILL>`：`INTENT` / `STORYBOARD` / `VISUAL` / `FRAME_HTML` / `VERIFY` / `REPAIR`。
 
-全局 `CLAUDE_CODE_EFFORT_LEVEL=max`（见 `conf/env_htmlvideo_example`）在 **profile 开启时被各 skill 覆盖**；仅 `PROFILE=off` 或未传 `skill` 时作为兜底。
+全局 `CLAUDE_CODE_EFFORT_LEVEL`（见 `conf/env_htmlvideo_example`）在 `run_claude` 子进程中总被各 skill profile 覆盖，仅对手工直接运行 `claude` 生效。
 
 非法 effort / 非正 turns / timeout：打 warning 并回退 profile 默认，不致命失败。
 
@@ -138,9 +138,14 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 
 日志：
 
-- start：`claude skill start cwd=… skill=… effort=… thinking=… max_turns=… model=… timeout=…`（不打 prompt 正文）
+- start：`claude skill start label=… cwd=… skill=… effort=… thinking=… max_turns=… model=… timeout=…`（不打 prompt 正文）
+- invoke：`cmd=[…, '--', '<prompt>']`（prompt 正文替换为占位符）+ 子进程 env
+- running：等待中每 N 秒 `claude skill running label=… skill=… elapsed=…s`（防长思考静默）
+- progress：stderr 匹配 tool/API/`unrecognized_model` 等行时即时 `claude skill progress …`（flush 到 worker 日志）
 - done：`… subtype=… is_error=… num_turns=… duration_ms=… input=… output=… cache_read=… cache_create=…`
 - result：截断 2000 字符（替代原先 text 模式刷到 stdout 的可见摘要）
+
+观测：B 架构下 frame-html / visual worker 是 `run_claude` 直调（无 `<command-name>`）。`stat/skill-timing.py` 用首条用户消息的提示词签名补标（如 `aiflow-build-frame-html:01-…`），避免 list 表 skill 列全是 `-`。另报 `first_write_s`（t0→首个 Write|Edit）与 `first_write_tool_turn`，用于观测 frame-html「1–2 回合落盘」软纪律是否被遵守（尚未硬约束 max_turns）。
 
 ## 8. 验收与 A/B
 
@@ -174,8 +179,4 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 
 ## 10. 回滚
 
-```bash
-HTMLVIDEO_CLAUDE_PROFILE=off
-```
-
-行为恢复为：`--output-format text`，不注入 profile env / max-turns / disallowedTools / timeout。
+已无全量 env 开关。单项回退走 `HTMLVIDEO_CLAUDE_<SKILL>_*`（§6）；整体回退需 revert 代码。

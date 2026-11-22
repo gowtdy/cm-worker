@@ -30,16 +30,31 @@
  *   - no digit-led id/class selectors ("#07-…", ".01-…") in CSS or JS
  *     selector strings (id_requires_css_escape — promoted to FAIL: CSS drops
  *     the rule and querySelectorAll throws at runtime)
+ *   - skeleton_unfilled: a `skeleton-v1` file whose #root has no real content
+ *     or whose timeline has no tween (driver-only code, not a lint rule)
  *   WARN (do not fail exit code): css transition usage, background painted
- *     on #root, data-composition-id != basename
+ *     on #root, data-composition-id != basename, font_out_of_ramp,
+ *     font_dead_fallback
  */
 
 import fs from "node:fs";
+import path from "node:path";
+import {
+  GENERIC_FAMILIES,
+  extractDeclaredFamilies,
+  extractFontStacks,
+  extractGoogleFamilies,
+  extractUsedFamilies,
+  loadCliAliases,
+  normFamily,
+  parseFrameFamilies,
+} from "./lib/fonts.mjs";
 
 const [fileArg] = process.argv.slice(2);
-const findings = [];
-function fail(msg) { findings.push(`[FAIL] ${msg}`); }
-function warn(msg) { findings.push(`[WARN] ${msg}`); }
+const fails = [];
+const warns = [];
+function fail(msg) { fails.push(`[FAIL] ${msg}`); }
+function warn(msg) { warns.push(`[WARN] ${msg}`); }
 
 if (!fileArg) {
   console.error("usage: node frame-selfcheck.mjs compositions/frames/<frame_id>.html");
@@ -73,7 +88,12 @@ if (!rootM) {
   else if (compId[1] !== frameId) warn(`root data-composition-id "${compId[1]}" != file id "${frameId}"`);
   const dur = /data-duration="([^"]*)"/.exec(rootTag);
   if (!dur) fail("root missing data-duration (missing_root_duration — breaks transitions inject)");
-  else if (!(parseFloat(dur[1]) > 0)) fail(`root data-duration "${dur[1]}" is not a positive number`);
+  else if (!/^\d+(\.\d+)?$/.test(dur[1])) {
+    fail(
+      `root data-duration "${dur[1]}" must be a plain number with no unit suffix ` +
+        `(use data-duration="N", not "Ns") — transitions inject requires a bare numeric value`,
+    );
+  } else if (!(parseFloat(dur[1]) > 0)) fail(`root data-duration "${dur[1]}" is not a positive number`);
   if (/<div\b[^>]*\bclass="[^"]*"\s[^>]*id="root"/.test(html) || /<div\b[^>]*id="root"[^>]*\bclass="[^"]*"/.test(html)) {
     fail("root styled via class — style the frame root via #root, never a class (subcomposition_root_styled_by_class)");
   }
@@ -122,6 +142,45 @@ if (!/gsap\.timeline\s*\(/.test(html) || !/\bpaused\s*:\s*true\b/.test(html)) {
 const reg = new RegExp(`__timelines\\s*\\[\\s*["']${frameId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']\\s*\\]`);
 if (!reg.test(html)) fail(`timeline not registered at window.__timelines["${frameId}"] (timeline_not_registered)`);
 
+// --- skeleton_unfilled -------------------------------------------------------
+// The marker alone proves nothing (a filled frame may keep the comment); it only
+// arms the check. FAIL needs unfilled evidence: #root without real children
+// (elements tagged data-skeleton are scaffold, not content) or a timeline with
+// no tween. An empty style block alone is only a WARN.
+function rootInner(src, from) {
+  const tagRe = /<(\/?)div\b[^>]*>/gi;
+  tagRe.lastIndex = from;
+  let depth = 1;
+  for (let m = tagRe.exec(src); m; m = tagRe.exec(src)) {
+    depth += m[1] ? -1 : 1;
+    if (depth === 0) return src.slice(from, m.index);
+  }
+  return src.slice(from);
+}
+const SKELETON_MARK = "skeleton-v1";
+if (html.includes(SKELETON_MARK) && rootM) {
+  const evidence = [];
+  const inner = rootInner(html, rootM.index + rootM[0].length).replace(/<!--[\s\S]*?-->/g, "");
+  const realTags = [...inner.matchAll(/<([a-zA-Z][\w-]*)\b([^>]*)>/g)]
+    .filter((m) => !/\bdata-skeleton\b/.test(m[2]));
+  if (realTags.length === 0 && inner.replace(/<[^>]*>/g, "").trim() === "") evidence.push("root-empty");
+  const stripJs = (s) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(?<!:)\/\/[^\n]*/g, "");
+  const inlineJs = [...html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
+    .map((m) => stripJs(m[1])).join("\n");
+  const hasTween = /\.(?:to|from|fromTo|set|call|staggerTo|staggerFrom|staggerFromTo)\s*\(/.test(inlineJs)
+    || /\b(?:tl|timeline)\.add\s*\(/.test(inlineJs);
+  if (!hasTween) evidence.push("no-tween");
+  const css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)]
+    .map((m) => m[1].replace(/\/\*[\s\S]*?\*\//g, "")).join("").trim();
+  const placeholderStyle = css === "";
+  if (evidence.length) {
+    if (placeholderStyle) evidence.push("placeholder-style");
+    fail(`skeleton_unfilled: file still carries the ${SKELETON_MARK} marker and is not filled (evidence: ${evidence.join(", ")}) — write the #root body markup and the timeline tweens (skeleton_unfilled)`);
+  } else if (placeholderStyle) {
+    warn(`${SKELETON_MARK} marker with an empty <style> block — styles still the skeleton placeholder?`);
+  }
+}
+
 // --- digit-led id/class selectors (id_requires_css_escape) -----------------
 // CSS silently DROPS an entire selector rule when the id/class starts with a
 // digit ("#07-the-harder-half-p1 { … }"), and querySelector(All) / GSAP
@@ -163,10 +222,51 @@ if (rootBg && !/^\s*(transparent|none|initial)\s*$/.test(rootBg[1])) {
   warn("background painted on #root — full-bleed ground should be a class=\"clip\" layer, not the root");
 }
 
-if (findings.length === 0) {
+// Font ramp warnings. frame.md is the ramp; CLI aliases are bundled and silent.
+// font_dead_fallback only fires when alias keys loaded (otherwise a real alias
+// could look orphan). Neither warning changes the exit code.
+try {
+  let dir = path.dirname(path.resolve(fileArg));
+  let frameMd = null;
+  for (let i = 0; i < 4; i++) {
+    const cand = path.join(dir, "frame.md");
+    if (fs.existsSync(cand)) { frameMd = cand; break; }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  if (frameMd) {
+    const ramp = new Set(parseFrameFamilies(fs.readFileSync(frameMd, "utf8")).map((f) => normFamily(f)));
+    const { keys } = loadCliAliases();
+    const declared = extractDeclaredFamilies(html);
+    const google = extractGoogleFamilies(html);
+    const aliasHas = (n) => !!(keys && keys.has(n));
+    for (const name of extractUsedFamilies(html)) {
+      if (ramp.has(name) || aliasHas(name)) continue;
+      warn(`font_out_of_ramp: "${name}" is not in frame.md typography`);
+    }
+    if (keys) {
+      const seen = new Set();
+      for (const stack of extractFontStacks(html)) {
+        stack.forEach((name, i) => {
+          if (i === 0 || !name || seen.has(name) || GENERIC_FAMILIES.has(name)) return;
+          if (ramp.has(name) || declared.has(name) || google.has(name) || keys.has(name)) return;
+          seen.add(name);
+          warn(`font_dead_fallback: "${name}" is an orphan fallback (not primary) — drop it`);
+        });
+      }
+    }
+  }
+} catch {
+  /* font warnings are best-effort and never fail the structural gate */
+}
+
+if (fails.length === 0) {
+  for (const w of warns) console.error(w);
   console.log(`PASS ${frameId}`);
   process.exit(0);
 }
-for (const f of findings) console.error(f);
-console.error(`FAIL ${frameId} (${findings.length} finding${findings.length > 1 ? "s" : ""})`);
+for (const f of fails) console.error(f);
+for (const w of warns) console.error(w);
+console.error(`FAIL ${frameId} (${fails.length} finding${fails.length > 1 ? "s" : ""})`);
 process.exit(1);

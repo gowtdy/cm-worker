@@ -70,6 +70,7 @@ Identify any constraints or requirements mentioned in the input, including conte
   "audience": "string — intended audience / target viewers",
   "name": "string — title, max 15 characters",
   "summary": "string — short paragraph; preserve user tone",
+  "arc": "string | omit if none — story structure, e.g. \"how-to-process (Hook → Thesis → Steps → CTA)\"",
   "customization": "string | omit if none",
   "notes": "string | omit if none"
 }
@@ -78,7 +79,7 @@ Identify any constraints or requirements mentioned in the input, including conte
 Rules:
 
 - Always include `message`, `angle`, `audience`, `name`, `summary`.
-- Omit `customization` / `notes` when empty (do not write null or `""`).
+- Omit `arc` / `customization` / `notes` when empty (do not write null or `""`).
 - `name` must be ≤ 15 characters (count Unicode code points; CJK counts as 1 each).
 - Do not wrap the file contents in markdown fences; the output file must be valid JSON only.
 - Prefer the input language for all string values unless the user asks otherwise.

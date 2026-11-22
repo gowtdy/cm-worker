@@ -25,6 +25,25 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  canonicalImport,
+  renderBlock,
+  loadCliAliases,
+  normFamily,
+  parseBrandFaces,
+  parseFrameFamilies,
+  planFile,
+} from "./lib/fonts.mjs";
+import {
+  parseCheckJson,
+  parseCheckText,
+  extractJsonObject,
+  checkParseContradiction,
+  checkParseMismatch,
+  jsonDeclaredErrorCount,
+  jsonLintErrorCount,
+  triageOverlaps,
+} from "./lib/verify-check-parse.mjs";
 
 const argv = process.argv.slice(2);
 const vi = argv.indexOf("--videodir");
@@ -46,6 +65,68 @@ function run(cmd, args, { timeout = 300_000 } = {}) {
 }
 
 const trunc = (s, n = 140) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+function fontActionLines(root, errors) {
+  const lines = [];
+  try {
+    const mdPath = path.join(root, "frame.md");
+    const md = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, "utf8") : "";
+    const frameFamilies = parseFrameFamilies(md);
+    const ramp = new Set(frameFamilies.map((f) => normFamily(f)));
+    const brandFaces = parseBrandFaces(md);
+    const aliases = loadCliAliases();
+    const files = [...new Set(
+      errors.filter((e) => e.code === "font_family_without_font_face").map((e) => e.file),
+    )];
+    const injected = [];
+    const seenImp = new Set();
+    const faceRules = [];
+    const drops = [];
+    for (const relFile of files) {
+      const abs = path.resolve(root, relFile);
+      if (!fs.existsSync(abs)) continue;
+      const plan = planFile(fs.readFileSync(abs, "utf8"), {
+        frameFamilies, brandFaces, aliases, prune: true,
+      });
+      for (const fam of plan.faces) {
+        const n = normFamily(fam);
+        if (!n || seenImp.has(n)) continue;
+        seenImp.add(n);
+        for (const rule of brandFaces.get(n)?.rules || []) faceRules.push(rule);
+      }
+      for (const fam of plan.injected) {
+        const n = normFamily(fam);
+        if (n && !seenImp.has(n)) { seenImp.add(n); injected.push(fam); }
+      }
+      for (const fam of plan.unresolved) {
+        const hit = frameFamilies.find((f) => normFamily(f) === fam);
+        if (hit && !seenImp.has(normFamily(hit))) {
+          seenImp.add(normFamily(hit));
+          injected.push(hit);
+        }
+      }
+      const names = new Set([
+        ...plan.dropped,
+        ...plan.unresolved.filter((u) => !ramp.has(u)),
+      ]);
+      for (const name of names) drops.push(`${name} (${relFile})`);
+    }
+    const block = renderBlock(canonicalImport(injected), faceRules);
+    if (block) {
+      lines.push("     paste at the top of the first <style> inside <template> (after @charset):");
+      for (const l of block.split("\n")) lines.push("     " + l);
+    }
+    if (drops.length) {
+      lines.push("     drop:");
+      for (const d of drops) lines.push("     " + d);
+    } else if (!block) {
+      lines.push("     no paste line — ramp families are already covered; drop dead non-primary fallbacks named in the lint message.");
+    }
+  } catch (err) {
+    lines.push("     font plan unavailable (" + (err && err.message ? err.message : err) + ") — rerun node /app/scripts/font-imports.mjs --videodir <project> --scope all --dry-run for the plan.");
+  }
+  return lines;
+}
 
 let infraError = null;
 
@@ -245,37 +326,43 @@ if (lint.error) {
 /* ── check ──────────────────────────────────────────────────────────────── */
 say("");
 say("── check ──");
-const check = run("npx", ["hyperframes", "check", "."], { timeout: 300_000 });
+// Prefer --json: Layout lines are `✗ t=… content_overlap …` without `code:`,
+// so the old text regex silently dropped every layout error (2026-11-22).
+const check = run("npx", ["hyperframes", "check", ".", "--json"], { timeout: 300_000 });
 const checkOk = check.status === 0;
-const chk = { sections: [], errors: [], warns: [], infos: [] };
+let chk = { errors: [], warns: [], infos: [] };
+let checkParseMode = "none";
+let checkContradiction = false;
+let checkMismatch = null;
 if (check.error) {
   say(`  ⚠ cannot run check: ${check.error}`);
 } else {
-  const lines = (check.stdout + "\n" + check.stderr).split("\n");
-  let section = "?";
-  let cur = null;
-  for (const raw of lines) {
-    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-    if (/^[A-Z][A-Za-z]+$/.test(line.trim()) && line === line.trim()) {
-      section = line.trim();
-      continue;
-    }
-    const m = /^\s*([✗⚠ℹ])\s+([a-z_]+):\s?(.*)$/.exec(line);
-    if (m) {
-      cur = { mark: m[1], code: m[2], msg: trunc(m[3] || "", 130), section, file: "" };
-      const bucket = m[1] === "✗" ? chk.errors : m[1] === "⚠" ? chk.warns : chk.infos;
-      bucket.push(cur);
-      continue;
-    }
-    const f = /^\s{2,}(\/\S+\.html)\s+(.+)$/.exec(line) || /^\s{2,}(\S+\.html)\s*/.exec(line);
-    if (f && cur && !cur.file) cur.file = rel(f[1]);
+  const json = extractJsonObject(check.stdout);
+  const contradictionOpts = {};
+  if (json) {
+    chk = parseCheckJson(json, { root: videodir });
+    checkParseMode = "json";
+    contradictionOpts.declaredErrorCount = jsonDeclaredErrorCount(json);
+    contradictionOpts.lintErrorCount = jsonLintErrorCount(json);
+    checkMismatch = checkParseMismatch(contradictionOpts.declaredErrorCount, chk.errors.length);
+  } else {
+    chk = parseCheckText(`${check.stdout}\n${check.stderr}`);
+    checkParseMode = "text-fallback";
+    say("  ⚠ check --json unparseable; used text fallback parser");
   }
-  const isCaptionFP = (c) => c.code === "text_box_overflow" && /#caption-word|\.caption-line/.test(c.msg);
-  say(`  exit=${check.status}  ✗=${chk.errors.length}  ⚠=${chk.warns.length}  ℹ=${chk.infos.length}`);
+  checkContradiction = checkParseContradiction(check.status, chk, contradictionOpts);
+  const isCaptionFP = (c) =>
+    c.code === "text_box_overflow" && /#caption-word|\.caption-line/.test(c.msg);
+  say(
+    `  exit=${check.status}  parse=${checkParseMode}  ✗=${chk.errors.length}  ⚠=${chk.warns.length}  ℹ=${chk.infos.length}`,
+  );
+  // Use "in <file>" — never "@path". Claude Code treats @mentions as file
+  // attachments and auto-injects whole HTML into the fix prompt (~70KB).
   const printGroup = (list) => {
     for (const c of list) {
       const tag = isCaptionFP(c) ? "  (expected false-positive per playbook #5)" : "";
-      say(`  ${c.mark} [${c.section}] ${c.code} ${c.file ? "@" + c.file : ""} — ${c.msg}${tag}`);
+      const where = c.file ? ` in ${c.file}` : "";
+      say(`  ${c.mark} [${c.section}] ${c.code}${where} — ${c.msg}${tag}`);
     }
     if (list.length > 20) say(`    …+${list.length - 20} more`);
   };
@@ -285,6 +372,22 @@ if (check.error) {
     const agg = new Map();
     for (const c of chk.infos) agg.set(c.code, (agg.get(c.code) || 0) + 1);
     say("  infos (count only): " + [...agg].map(([c, n]) => `${c}×${n}`).join(", "));
+  }
+  if (checkMismatch) {
+    say(
+      `  ✗ PARSER/INFRA: check JSON declares errorCount that parsed findings do not match — `
+      + `declared=${checkMismatch.declared} parsed=${checkMismatch.parsed} `
+      + "(partial miss; fix the parser before trusting the actionable list)",
+    );
+  } else if (checkContradiction) {
+    say(
+      "  ✗ PARSER/INFRA: check exited non-zero but 0 error findings were parsed — "
+      + "refusing GATE FAIL with empty actionable list (would burn a no-op model turn)",
+    );
+  }
+  if (checkContradiction) {
+    const tail = (check.stdout || check.stderr || "").split("\n").filter(Boolean).slice(-8);
+    for (const line of tail) say(`    ${trunc(line, 160)}`);
   }
 }
 
@@ -312,10 +415,27 @@ if (self.digit.length) {
 } else if (digitTell.size) {
   say(`  #2 tell only — digit-led ids exist but no digit-led selectors (structural gate clean). No action.`);
 }
-for (const e of lintErrors) {
-  if (e.code === "font_family_without_font_face") { say(`  ${++n}) Known failure #3 candidate — font errors: drop dead Didot fallbacks; add the frames' Google @import to captions.html.`); break; }
+if (lintErrors.some((e) => e.code === "font_family_without_font_face")) {
+  say(`  ${++n}) Known failure #3 residual — verify-all step 0 already ran font-imports. Hand-fix only what it left.`);
+  for (const line of fontActionLines(videodir, lintErrors)) say(line);
 }
-if (chk.errors.some((c) => c.code.includes("overlap"))) say(`  ${++n}) Known failure #4 candidate — content_overlap: add data-layout-allow-overlap to designed overlays; reposition only for real collisions.`);
+if (chk.errors.some((c) => c.code.includes("overlap"))) {
+  const tri = triageOverlaps(chk.errors);
+  const where = (list) => {
+    const parts = list.slice(0, 4).map((e) => {
+      const side = e.container ? `${e.selector} inside ${e.container}` : (e.selector || e.msg.split(" — ")[0]);
+      return `${e.file || "?"}: ${trunc(side, 70)}`;
+    });
+    if (list.length > 4) parts.push(`…+${list.length - 4}`);
+    return parts.join("; ");
+  };
+  const rows = [];
+  if (tri.designed_overlay.length) rows.push(`designed_overlay×${tri.designed_overlay.length} (${where(tri.designed_overlay)}): add data-layout-allow-overlap on the text or an inner container (not the scene root)`);
+  if (tri.real_collision.length) rows.push(`real_collision×${tri.real_collision.length} (${where(tri.real_collision)}): reposition / reduce size; do NOT blanket-allow`);
+  if (tri.ambiguous.length) rows.push(`ambiguous×${tri.ambiguous.length} (${where(tri.ambiguous)}): inspect midpoints for design intent before choosing allow-overlap vs reposition`);
+  say(`  ${++n}) Known failure #4 — content_overlap triage — ${rows[0]}`);
+  for (const r of rows.slice(1)) say(`     ${r}`);
+}
 if (!tv.error && tv.status !== 0) say(`  ${++n}) transitions verify failures — if "no injected block found": run transitions.mjs inject, then rerun this report. If the block exists but mismatches: re-inject is safe (idempotent since 2026-11-14 — re-derives id references and tracks, removes the stale block first, and durations only converge toward the STORYBOARD contract).`);
 const realErrors = chk.errors.length + lintErrors.length + self.digit.length;
 const gate = (lintOk === true) && checkOk && self.digit.length === 0 && missingFrames.length === 0 && !tv.error && tv.status === 0;
@@ -323,5 +443,5 @@ say("");
 say(`GATE: ${gate ? "PASS ✓ (lint+check+structural+transitions — go to snapshot)" : `FAIL ✗ (lint ok=${lintOk}, check exit=${check.status === null ? "n/a" : check.status}, digit-led selectors=${self.digit.length}, missing frames=${missingFrames.length}, transitions=${tv.error ? "n/a" : tv.status === 0 ? "ok" : tv.status}, ${realErrors} error finding(s))`}`);
 
 console.log(out.join("\n"));
-if (lint.error || check.error || tv.error) process.exit(2);
+if (lint.error || check.error || tv.error || checkContradiction) process.exit(2);
 process.exit(gate ? 0 : 1);

@@ -2,6 +2,7 @@ import os
 import subprocess
 
 from cmwk_common.module_enum import TaskStatus
+from html_utility.fonts import run_font_imports
 from cmwk_common.userserver_worker import update_task_status
 
 
@@ -143,4 +144,7 @@ def caption_generate(
         msg = f"cmd:{' '.join(cmd)}, returncode:{proc.returncode}, stdout:{proc.stdout}, stderr:{proc.stderr}"
         logger.error(f"caption_generate task_id:{task_id} {msg}")
         return ret, msg
+    # Captions HTML is on disk. Inject the marked font @import when the
+    # file has no local face. Non-fatal; never raises.
+    run_font_imports(project_dir, logger, scope="captions")
     return ret, msg

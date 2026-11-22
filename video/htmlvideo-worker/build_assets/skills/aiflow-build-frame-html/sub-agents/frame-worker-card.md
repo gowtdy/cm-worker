@@ -1,9 +1,13 @@
 # Frame worker — executable rule card (aiflow-build-frame-html)
 
-> Compact dispatch contract. The full `_role.md` (`.hyperframes/frame-packets/_role.md`)
-> is authoritative wherever this card is unclear — open it then, not before.
+> Compact dispatch contract: this card + frame block + inlined blueprint +
+> frame.md token excerpt. Recipes default to `## Rule recipes (snippets)` in
+> the dispatch; follow that note (full `RULES_DIR` Read only if a detail is
+> missing). Index-only packets: batch-Read every Rule index path once.
+> Never open `frame.md` / `_role.md`. Priority: `## Resolved conflicts` rulings >
+> Scene list > Video direction > blueprint > frame.md prose (token values always exact).
 
-## Hard structural gates (frame-selfcheck FAIL codes; fix all before replying)
+## Hard structural gates (frame-selfcheck FAIL codes; the driver checks them)
 
 - `missing_template_wrapper` — the file = one bare `<template>…</template>` fragment (no DOCTYPE/document); every `<style>`/`<script>` (incl. GSAP load) inside it — outside, the runtime drops it.
 - `missing_composition_id` / `missing_root_duration` — root carries `data-composition-id="<frame_id>"` + `data-duration="<duration>"`; never omit `data-duration` — `transitions inject` fails without it.
@@ -16,11 +20,12 @@
 
 ## Ruled conventions (do not re-derive)
 
-- **Fonts (Override).** Font delivery is the render compiler's job. Satisfy only static lint gates: each used family → matching `@font-face`, Google Fonts `@import`/`<link>`, or bundled/aliased name (`font_family_without_font_face`). All families from `frame.md`'s ramp (normal case): omit the import, write names verbatim; a shipped `@import` lists exactly the out-of-ramp families (`google_fonts_import` — warning only). No font-file searches; no URL debates.
+- **Fonts (Override).** Write only `frame.md` family names plus a generic fallback (`sans-serif` / `serif`). Never write `@import`, `<link>`, or `@font-face` — the driver runs `font-imports.mjs`. Lint still checks `font_family_without_font_face`; `google_fonts_import` is a warning only.
 - **GSAP.** Ship `<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>` inside `<template>`, pinned `3.14.2`.
 - **Template / root shape.** Root: `<div id="root" data-composition-id="<frame_id>" data-width="1920" data-height="1080" data-duration="<duration>">`; style via `#root`, never a class.
-- **Units.** Primary `cqw` / `cqh` (ramp is cqw-based; 1cqw = 19.2px at 1920-wide); fixed-size décor (4/6/8/12px shadows/dots/strokes) uses px. Pick per element, move on; no conversion tables.
+- **Units.** Primary `cqw` / `cqh` (ramp is cqw-based; 1cqw = 19.2px at 1920-wide); fixed-size décor (4/6/8/12px shadows/dots/strokes) uses px. Place on the card / frame.md cqw·cqh grid and tokens — no per-pixel math, no re-verifying positions, no conversion tables.
 - **Turn discipline.** Every turn ends with a tool call or visible text — never thinking-only (silent turns discarded); undecided upstream → pick sibling-consistent, proceed within this turn (≤ ~1 min).
+- **Thinking = layout/beat notes only.** Never draft CSS/HTML/JS in thinking; code appears only in Edit/Write arguments.
 
 ## Frame visual law
 
@@ -28,7 +33,7 @@
 - **Fill the content area.** Compose whole top-83% region, not one small cluster mid-frame; hero high (≈0.2–0.35 × height), supporting elements down with rhythm, hero toward full-bleed (landscape: center ~0.42 × height).
 - **Visible text is short motion-graphics copy** — hero word / stat / one-word emphasis, never a narration sentence (caption track already shows the spoken words; repeating double-prints).
 - **Whole shot — never front-load.** Reveal pieces as voiceover reaches them (esp. back ~50%), macro camera move underneath — full canvas from ~25% = slide. Mid-shot reveals free; exits banned (`exit_animation_on_non_final_scene` — root transition IS the exit; settle/fade-out only if final frame); stillness note → entrance + quiet settle. Entrances via `fromTo`, not CSS-hidden starts; hero visible by `t <= 0.5s`.
-- **Shot-sequence fidelity.** Every Scene is a timeline phase; named motions reproduce their inlined rule recipe — never name-guess; blueprint's signature move recognizable (`compose` = no template).
+- **Shot-sequence fidelity.** Every Scene is a timeline phase; named motions reproduce their `RULES_DIR` recipe — never name-guess; blueprint's signature move recognizable (`compose` = no template).
 - **Roles design** — all invented. `focal` = hero; `foreground subject` — eye lands there, keep-out respected, text around not over; `background` — full-bleed, dimmed ~30–50% for legibility; `supporting` — quiet. Built in SVG/CSS/type, never from a file. Only real media: user image in `roles:`/`focal:` — `[video]` `.mp4` → muted `<video class="clip">`, direct child of frame root (nested in a timed element it freezes); untagged → `<img>`.
 - **Same-track clips never overlap** (`timeline_track_too_dense`) — track = temporal lane, stacking = CSS `z-index`; concurrent layers → distinct tracks, or non-timed décor in parent clip; prefer nesting full-duration ambient wallpaper (pills/stickers/grain) in the background clip over N full-duration siblings on track `0`.
 - **Glow / badge décor: not a second timed sibling on the same track.** Glow/bloom/punch-glow/badge-glow/accent lines with a hero/badge are concurrent — never another `class="clip"` sharing the hero's `data-track-index` while windows overlap. Prefer nest: parent clip owns the window, glow/badge children no timing attrs, GSAP drives them on the parent timeline. Or split: each concurrent timed element its own `data-track-index`. Side-by-side badges → distinct tracks (or one parent clip) — a comment is not legal.
@@ -37,9 +42,9 @@
 
 ## Workflow
 
-- **Read** — packet top to bottom (frame block, blueprint, rule recipes), then `frame.md`; never `STORYBOARD.md` or skill files. Retry feedback (`lint`/`check`/`frame-selfcheck`): read first, re-author away — each is a hard constraint.
-- **Skeleton first, then chunked fill** — in first 1–2 turns write a minimal valid skeleton (`<template>` + `#root` attrs + comment) to `compositions/frames/<frame_id>.html` (file on disk = heartbeat), flesh out with edits; writes over ~20 KB truncate — style + structure, then body, then script.
-- **Self-check, then reply** — run `node /app/scripts/frame-selfcheck.mjs compositions/frames/<frame_id>.html` — enforces the gates on your unwired frame (assembled-project `hyperframes lint`/`check` is a false green); fix every FAIL, re-read this card, reply `done OK <frame_id>` — terminal action. No PASS → `fail <frame_id>: <what is still broken>`, never silent.
+- **Read** — the inlined dispatch; in your FIRST tool turn Read every `RULES_DIR/<id>.md` in the Rule index as one parallel batch, never re-read (with `## Rule recipes` inlined: no batch read, a full recipe only if a detail is missing). Never `frame.md`, `_role.md`, `STORYBOARD.md`, skill files. Retry findings (`frame-selfcheck`/lint): read first, re-author away.
+- **FILL the pre-built skeleton** — `compositions/frames/<frame_id>.html` already exists (`skeleton-v1`); do not write a new skeleton. First edit by turn 2; chunked edits ≤ ~20 KB — style, then body, then script.
+- **Reply** — `done OK <frame_id>` (terminal) or `fail <frame_id>: <reason>`. Do NOT run frame-selfcheck / Bash — the driver runs it and re-dispatches with FAIL findings.
 - **Not yours** — prefix authored ids & reusable classes with `<frame_id>-` (`#root` / `.clip` excepted); you don't decide narration, duration, between-frame transitions, audio, tokens, or motions/assets.
 
-Escape hatches — open only when unclear: full `_role.md` — authoritative; `RULES_DIR/<id>.md` if a cited recipe is missing from your packet; `frame.md` (project root) = design truth; cut catalog (path in your dispatch prompt) for Scene-seam swaps / scene cuts / text-to-text changes.
+Cut catalog (path in your dispatch prompt): open only for Scene-seam swaps / scene cuts / text-to-text changes.

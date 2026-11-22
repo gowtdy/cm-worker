@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 # Canonical card lives in the hyperframes skills copy and is synced (cp -a)
 # to the .claude skills copy -- same dual-copy convention as SKILL.md edits.
@@ -31,26 +32,32 @@ def _prompt_header() -> str:
         "no waiting.\n\n"
         "The complete storyboard contract card and all project inputs are inlined "
         "below. Treat the card as the authoritative contract for this run — do NOT "
-        "re-read any skill reference files; go straight to composing and writing "
-        "the two files.\n"
+        "re-read any skill reference files or re-cat project inputs (BRIEF.md / "
+        "visible-text / frame.md / meta); go straight to composing STORYBOARD.md.\n"
     )
 
 
 def _prompt_footer() -> str:
     return (
-        "Write outline-stage STORYBOARD.md (status: outline, required narrative "
-        "fields filled) and SCRIPT.md in ONE response: issue both Write tool "
-        "calls together in the same assistant turn (SCRIPT.md whenever any frame "
-        "has a non-empty voiceover). Never split the two files across turns, "
-        "never end the turn between the two Writes, and never re-read either "
-        "file after writing. Then end with the heads-up summary: "
+        "First tool call MUST be Write(\"STORYBOARD.md\"). Any Bash/Read/Glob/Grep "
+        "of project or skill files is a protocol fail — every input is already "
+        "inlined above. Do NOT Write SCRIPT.md; the harness derives it from each "
+        "frame's voiceover after you finish.\n\n"
+        "The STORYBOARD frontmatter is pre-computed and INLINED above (under "
+        "`## Pre-seeded STORYBOARD frontmatter`) — copy it EXACTLY into STORYBOARD.md. "
+        "Keep `format`/`duration`/`message`/`audience`/`mode` as written. When `arc` "
+        "is already a real structure (not `<FILL>`), treat it as the DECIDED story "
+        "structure and expand it into frames — do not re-decide it. Fill only "
+        "`music` and any `<FILL>` value, then write the frame blocks "
+        "(status: outline, required narrative fields filled, quality voiceover "
+        "lines — those lines become SCRIPT.md).\n\n"
+        "After the Write succeeds, end with the heads-up summary: "
         "'This video tells [audience] that [message]' + a frame table "
         "(frame · beat (type, duration) · on screen · why).\n\n"
         "Do not write ## Video direction or time-coded Scene shot blocks — those "
         "belong to /aiflow-build-frame-visual. Stop when the gate passes: "
         "STORYBOARD.md exists with every frame carrying the required narrative "
-        "fields, and SCRIPT.md exists whenever any frame has a non-empty "
-        "voiceover.\n"
+        "fields.\n"
     )
 
 
@@ -64,6 +71,60 @@ def load_contract_card(logger: logging.Logger | None = None) -> str:
     if logger is not None:
         logger.warning(msg)
     return ""
+
+
+def _frame_register(frame_md: str) -> str:
+    """Extract frame.md's identity + register (name/description/unit/principle)
+    and drop the design tokens (colors/typography/spacing/components).
+
+    The full frame.md is ~17KB of visual spec (palette/type/components) that
+    only the visual/frame-html stages consume; the storyboard stage needs just
+    the voice/register hint to tune narration tone, so inline the identity block
+    and leave the rest out of the reasoning surface.
+    """
+    if not frame_md:
+        return ""
+    m = re.match(r"---\r?\n([\s\S]*?)\r?\n---", frame_md)
+    if not m:
+        # No frontmatter delimiter — fall back to a bounded head.
+        return frame_md[:400]
+    fm = m.group(1)
+    idx = fm.find("\ncolors:")
+    if idx != -1:
+        fm = fm[:idx]
+    return fm.strip()
+
+
+def _brief_field(text: str, key: str) -> str:
+    m = re.search(rf"^{key}:\s*(.+?)\s*$", text, re.M)
+    return m.group(1).strip() if m else ""
+
+
+def build_skeleton_frontmatter(brief_text: str) -> str:
+    """Deterministic STORYBOARD.md frontmatter, pre-derived from BRIEF.md.
+
+    The frame structure (arc) and narration stay with the model, but the fixed
+    fields — format/duration/message/audience/mode — are mechanics a script can
+    pin so the model copies instead of re-derives. ``arc`` / ``music`` are left as
+    fill slots (both are creative).
+    """
+    fmt = _brief_field(brief_text, "aspect") or "1920x1080"
+    duration = _brief_field(brief_text, "length") or "60s"
+    message = _brief_field(brief_text, "message")
+    audience = _brief_field(brief_text, "audience")
+    # arc 上移: identify-intent 已产出故事结构时直接预填,省掉 storyboard 模型这步推导。
+    arc = _brief_field(brief_text, "arc") or "<FILL>"
+    return (
+        "---\n"
+        f"format: {fmt}\n"
+        f"duration: {duration}\n"
+        f"message: {message}\n"
+        f"audience: {audience}\n"
+        "mode: autonomous\n"
+        f"arc: {arc}\n"
+        "music: <FILL>\n"
+        "---\n"
+    )
 
 
 def _read_optional(path: str) -> str:
@@ -95,18 +156,35 @@ def build_storyboard_prompt(
             "Quick Reference and Prerequisites reads as written in SKILL.md, and "
             "still write both files in one response.\n"
         )
-    for rel, label, required in (
-        ("BRIEF.md", "## BRIEF.md", True),
-        ("frame.md", "## frame.md", True),
-        ("capture/extracted/visible-text.txt", "## visible-text.txt", False),
-        ("user_script.txt", "## user_script.txt", False),
-        ("VO_MODE", "## VO_MODE", False),
+    # BRIEF.md — needed both inlined AND as the source for the pre-seeded frontmatter.
+    brief_path = os.path.join(project_dir, "BRIEF.md")
+    brief_text = _read_optional(brief_path)
+    if not brief_text:
+        raise FileNotFoundError(f"BRIEF.md missing: {brief_path}")
+    parts.append("## BRIEF.md\n\n" + brief_text.strip())
+    # Pre-seed the frontmatter INLINE instead of writing a file the model Reads.
+    parts.append(
+        "## Pre-seeded STORYBOARD frontmatter (copy EXACTLY, fill only <FILL>)\n\n"
+        + build_skeleton_frontmatter(brief_text)
+    )
+    for rel, label in (
+        ("capture/extracted/visible-text.txt", "## visible-text.txt"),
+        ("user_script.txt", "## user_script.txt"),
+        ("VO_MODE", "## VO_MODE"),
     ):
-        abspath = os.path.join(project_dir, rel)
-        text = _read_optional(abspath)
+        text = _read_optional(os.path.join(project_dir, rel))
         if text:
             parts.append(f"{label}\n\n{text.strip()}")
-        elif required:
-            raise FileNotFoundError(f"{label.strip('# ')} missing: {abspath}")
+    # frame.md — register-only inline (see _frame_register): the visual spec is
+    # dead weight for narrative planning; keep only the voice/register hint.
+    frame_path = os.path.join(project_dir, "frame.md")
+    frame_md = _read_optional(frame_path)
+    if frame_md:
+        parts.append(
+            "## frame.md register (voice/style guide — full visual spec omitted)\n\n"
+            + _frame_register(frame_md)
+        )
+    else:
+        raise FileNotFoundError(f"frame.md missing: {frame_path}")
     parts.append(_prompt_footer())
     return "\n\n".join(parts)
