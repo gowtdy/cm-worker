@@ -21,7 +21,8 @@ CWD = "/tmp/htmlvideo-proj"
 _PROFILES = {
     "intent": ("high", "32000", "100", 1800, True, "32000"),
     "storyboard": ("high", "64000", "8", 1800, True, "16000"),
-    "visual": ("high", "64000", "100", 1800, True, "32000"),
+    "visual": ("high", "24000", "100", 1800, True, "32000"),
+    "visual_legacy": ("high", "64000", "100", 1800, True, "32000"),
     "frame_html": ("high", "64000", "60", 1500, True, "48000"),
     "repair": ("high", "40000", "40", 600, True, "16000"),
     "verify": ("medium", "32000", "40", 1800, True, "16000"),
@@ -229,6 +230,39 @@ class RunClaudeTests(unittest.TestCase):
             self.assertEqual(_resolve_profile(skill, logger)["max_output"], "32000")
         for skill in ("storyboard", "verify"):
             self.assertEqual(_resolve_profile(skill, logger)["max_output"], "16000")
+
+    def test_visual_thinking_default_per_call_and_env_rollback(self):
+        from html_utility.claude_cli import _PROFILES as REAL, _resolve_profile
+        logger = logging.getLogger("t")
+        self.assertEqual(_resolve_profile("visual", logger)["thinking"], "24000")
+        self.assertEqual(
+            _resolve_profile("visual", logger, "32000")["thinking"], "32000")
+        self.assertIn("Skill", REAL["visual"]["deny_tools"])
+        self.assertNotIn("deny_tools", REAL["visual_legacy"])  # legacy edits STORYBOARD
+        with mock.patch.dict(
+                os.environ, {"HTMLVIDEO_CLAUDE_VISUAL_THINKING_TOKENS": "64000"}):
+            self.assertEqual(_resolve_profile("visual", logger)["thinking"], "64000")
+            self.assertEqual(
+                _resolve_profile("visual", logger, "32000")["thinking"], "64000")
+
+    def test_run_claude_result_thinking_default_reaches_env(self):
+        from html_utility.claude_cli import run_claude_result
+        self._completed_popen(stdout=_result_json())
+        with self.assertLogs("test.claude_cli", level="INFO"):
+            run_claude_result(CWD, PROMPT, self.logger, skill="visual",
+                              thinking_default="32000")
+        env = self.popen_mock.call_args.kwargs["env"]
+        self.assertEqual(env["MAX_THINKING_TOKENS"], "32000")
+
+    def test_thinking_usage_logged_when_present(self):
+        usage = {"input_tokens": 1, "output_tokens": 2,
+                 "output_tokens_details": {"reasoning_tokens": 7}}
+        _, logs, _, _ = self._invoke(skill="visual", stdout=_result_json(usage=usage))
+        self.assertIn(
+            "claude skill thinking label=- skill=visual "
+            "output_tokens_details.reasoning_tokens=7", "\n".join(logs.output))
+        _, logs, _, _ = self._invoke(skill="visual")
+        self.assertNotIn("claude skill thinking", "\n".join(logs.output))
 
     def test_debug_request_env_sets_anthropic_log_and_bun_preload(self) -> None:
         os.environ["HTMLVIDEO_CLAUDE_DEBUG_REQUEST"] = "1"
