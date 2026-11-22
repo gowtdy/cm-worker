@@ -25,6 +25,15 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  canonicalImport,
+  renderBlock,
+  loadCliAliases,
+  normFamily,
+  parseBrandFaces,
+  parseFrameFamilies,
+  planFile,
+} from "./lib/fonts.mjs";
 
 const argv = process.argv.slice(2);
 const vi = argv.indexOf("--videodir");
@@ -46,6 +55,68 @@ function run(cmd, args, { timeout = 300_000 } = {}) {
 }
 
 const trunc = (s, n = 140) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+function fontActionLines(root, errors) {
+  const lines = [];
+  try {
+    const mdPath = path.join(root, "frame.md");
+    const md = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, "utf8") : "";
+    const frameFamilies = parseFrameFamilies(md);
+    const ramp = new Set(frameFamilies.map((f) => normFamily(f)));
+    const brandFaces = parseBrandFaces(md);
+    const aliases = loadCliAliases();
+    const files = [...new Set(
+      errors.filter((e) => e.code === "font_family_without_font_face").map((e) => e.file),
+    )];
+    const injected = [];
+    const seenImp = new Set();
+    const faceRules = [];
+    const drops = [];
+    for (const relFile of files) {
+      const abs = path.resolve(root, relFile);
+      if (!fs.existsSync(abs)) continue;
+      const plan = planFile(fs.readFileSync(abs, "utf8"), {
+        frameFamilies, brandFaces, aliases, prune: true,
+      });
+      for (const fam of plan.faces) {
+        const n = normFamily(fam);
+        if (!n || seenImp.has(n)) continue;
+        seenImp.add(n);
+        for (const rule of brandFaces.get(n)?.rules || []) faceRules.push(rule);
+      }
+      for (const fam of plan.injected) {
+        const n = normFamily(fam);
+        if (n && !seenImp.has(n)) { seenImp.add(n); injected.push(fam); }
+      }
+      for (const fam of plan.unresolved) {
+        const hit = frameFamilies.find((f) => normFamily(f) === fam);
+        if (hit && !seenImp.has(normFamily(hit))) {
+          seenImp.add(normFamily(hit));
+          injected.push(hit);
+        }
+      }
+      const names = new Set([
+        ...plan.dropped,
+        ...plan.unresolved.filter((u) => !ramp.has(u)),
+      ]);
+      for (const name of names) drops.push(`${name} (${relFile})`);
+    }
+    const block = renderBlock(canonicalImport(injected), faceRules);
+    if (block) {
+      lines.push("     paste at the top of the first <style> inside <template> (after @charset):");
+      for (const l of block.split("\n")) lines.push("     " + l);
+    }
+    if (drops.length) {
+      lines.push("     drop:");
+      for (const d of drops) lines.push("     " + d);
+    } else if (!block) {
+      lines.push("     no paste line — ramp families are already covered; drop dead non-primary fallbacks named in the lint message.");
+    }
+  } catch (err) {
+    lines.push("     font plan unavailable (" + (err && err.message ? err.message : err) + ") — rerun node /app/scripts/font-imports.mjs --videodir <project> --scope all --dry-run for the plan.");
+  }
+  return lines;
+}
 
 let infraError = null;
 
@@ -312,8 +383,9 @@ if (self.digit.length) {
 } else if (digitTell.size) {
   say(`  #2 tell only — digit-led ids exist but no digit-led selectors (structural gate clean). No action.`);
 }
-for (const e of lintErrors) {
-  if (e.code === "font_family_without_font_face") { say(`  ${++n}) Known failure #3 candidate — font errors: drop dead Didot fallbacks; add the frames' Google @import to captions.html.`); break; }
+if (lintErrors.some((e) => e.code === "font_family_without_font_face")) {
+  say(`  ${++n}) Known failure #3 residual — verify-all step 0 already ran font-imports. Hand-fix only what it left.`);
+  for (const line of fontActionLines(videodir, lintErrors)) say(line);
 }
 if (chk.errors.some((c) => c.code.includes("overlap"))) say(`  ${++n}) Known failure #4 candidate — content_overlap: add data-layout-allow-overlap to designed overlays; reposition only for real collisions.`);
 if (!tv.error && tv.status !== 0) say(`  ${++n}) transitions verify failures — if "no injected block found": run transitions.mjs inject, then rerun this report. If the block exists but mismatches: re-inject is safe (idempotent since 2026-11-14 — re-derives id references and tracks, removes the stale block first, and durations only converge toward the STORYBOARD contract).`);
