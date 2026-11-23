@@ -4,16 +4,19 @@
  *
  * Replaces the model-driven "poke one file / run one grep per round" discovery
  * phase with a single command that prints everything the playbook needs:
- *   --preflight : prerequisites + assembly state + frames vs STORYBOARD (~3s)
- *   (full)       : preflight + transitions-verify echo + lint --json (errors +
- *                  the two tell warnings per file) + check findings grouped
- *                  and annotated + frame midpoints + AT line
+ * Mechanical gates only: per-frame structural + transitions-verify +
+ * lint --json + check findings + actionable summary.
+ *
+ * Assumed done upstream (not re-checked here):
+ *   project files / frame completeness — verify.py::_validate_prerequisites
+ *   index assembly — frame-html (_assemble_index) + prepare autofix
+ *   midpoints / snapshot — verify-all visual gate (only after GATE PASS)
  *
  * Usage:
- *   node /app/scripts/verify-report.mjs --videodir /abs/project [--preflight]
+ *   node /app/scripts/verify-report.mjs --videodir /abs/project
  *
  * Exit codes:
- *   0 = gates pass (preflight: all ok)          -> go straight to snapshot
+ *   0 = gates pass                               -> go straight to snapshot
  *   1 = findings with a mechanical fix          -> playbook, batched fixes,
  *                                                  rerun ONLY this report
  *   2 = infrastructure/project blocker          -> surface and stop
@@ -41,7 +44,6 @@ import { matchKnownFailures, renderPrompt } from "./known-failures.mjs";
 const argv = process.argv.slice(2);
 const vi = argv.indexOf("--videodir");
 const videodir = path.resolve(vi >= 0 ? argv[vi + 1] || "" : process.cwd());
-const preflightMode = argv.includes("--preflight");
 
 const out = [];
 const say = (...a) => out.push(a.join(" "));
@@ -59,99 +61,13 @@ function run(cmd, args, { timeout = 300_000 } = {}) {
 
 const trunc = (s, n = 140) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
-let infraError = null;
-
 say("══ verify-report ══");
 say("videodir:", videodir);
-say("mode:", preflightMode ? "--preflight" : "full");
-
-/* ── prerequisites ──────────────────────────────────────────────────────── */
-say("");
-say("── prerequisites ──");
-const needFiles = ["hyperframes.json", "index.html", "STORYBOARD.md"];
-let missingProject = [];
-for (const f of needFiles) {
-  const ok = fs.existsSync(path.join(videodir, f));
-  say(`  ${ok ? "✓" : "✗"} ${f}`);
-  if (!ok) missingProject.push(f);
-}
 
 const framesDir = path.join(videodir, "compositions", "frames");
 const diskFrames = fs.existsSync(framesDir)
   ? fs.readdirSync(framesDir).filter((f) => f.endsWith(".html"))
   : [];
-if (!fs.existsSync(framesDir)) {
-  say("  ✗ compositions/frames/ missing");
-  missingProject.push("compositions/frames/");
-} else {
-  say(`  frames on disk: ${diskFrames.length}`);
-}
-
-/* storyboard frames from `- src:` lines */
-let storySrcs = [];
-if (!missingProject.includes("STORYBOARD.md")) {
-  try {
-    const sb = fs.readFileSync(path.join(videodir, "STORYBOARD.md"), "utf8");
-    storySrcs = [...sb.matchAll(/^\s*-\s*src:\s*compositions\/frames\/([^\s]+\.html)/gm)].map((m) => m[1]);
-  } catch (e) {
-    infraError = `cannot read STORYBOARD.md: ${e.message}`;
-  }
-}
-let missingFrames = [];
-if (storySrcs.length) {
-  missingFrames = storySrcs.filter((s) => !diskFrames.includes(s));
-  const extraFrames = diskFrames.filter((f) => !storySrcs.includes(f));
-  say(`  STORYBOARD frames: ${storySrcs.length} (disk ${diskFrames.length})`);
-  if (missingFrames.length) say(`  ✗ MISSING on disk: ${missingFrames.join(", ")}`);
-  if (extraFrames.length) say(`  ⓘ extra on disk (not in STORYBOARD): ${extraFrames.join(", ")}`);
-} else {
-  say("  ⚠ STORYBOARD has no `- src:` frame lines — cannot cross-check frames against disk");
-}
-
-const preflightOk = missingProject.length === 0 && storySrcs.every((s) => diskFrames.includes(s));
-
-/* ── assembly state ─────────────────────────────────────────────────────── */
-say("");
-say("── assembly ──");
-let stub = false;
-if (!missingProject.includes("index.html")) {
-  const idx = fs.readFileSync(path.join(videodir, "index.html"), "utf8");
-  const refs = (idx.match(/data-composition-src="compositions\/frames\//g) || []).length;
-  if (refs === 0) {
-    stub = true;
-    say(`  ✗ index.html is the un-assembled STUB (0 composition refs)`);
-    say(`    → Known failure #1: node /app/scripts/assemble-index.mjs --videodir ${videodir}   (then rerun this report)`);
-  } else {
-    say(`  ✓ index.html assembled (${refs} composition refs)`);
-  }
-}
-
-if (preflightMode) {
-  if (infraError) {
-    console.error(`[report] ${infraError}`);
-    process.exit(2);
-  }
-  const ok = preflightOk && !stub;
-  say("");
-  say(ok ? "PREFLIGHT OK" : "PREFLIGHT: actionable findings above");
-  console.log(out.join("\n"));
-  process.exit(ok ? 0 : missingProject.length ? 2 : 1);
-}
-
-if (infraError) {
-  console.error(`[report] ${infraError}`);
-  process.exit(2);
-}
-if (missingProject.length) {
-  console.log(out.join("\n"));
-  console.error(`[report] blocker: missing ${missingProject.join(", ")} — stop and report, do not invent files.`);
-  process.exit(2);
-}
-if (stub) {
-  console.log(out.join("\n"));
-  console.error("[report] index is the stub — assemble first (see recovery line above), then rerun.");
-  process.exit(1);
-}
 
 /* ── per-frame structural gate (frame-selfcheck) ────────────────────────── */
 say("");
@@ -201,7 +117,6 @@ let lintErrors = [];
 let warnByCode = new Map();
 let digitTell = new Map();   // file -> count
 let googleImport = new Map(); // file -> count
-let otherWarnCount = 0;
 
 function parseLintJson(stdout) {
   const first = stdout.indexOf("{");
@@ -326,39 +241,25 @@ if (check.error) {
   }
 }
 
-/* ── midpoints ──────────────────────────────────────────────────────────── */
-say("");
-say("── frame midpoints ──");
-const mp = run("node", ["/app/scripts/frame-midpoints.mjs", "--videodir", videodir], { timeout: 30_000 });
-let atLine = "";
-if (mp.error || !mp.stdout.trim()) {
-  say(`  ⚠ unavailable: ${mp.error || "empty output"}`);
-} else {
-  say(mp.stdout.trimEnd());
-  const lines = mp.stdout.split("\n").filter((l) => l.trim());
-  atLine = lines[lines.length - 1];
-  say("  AT: " + atLine);
-}
-
 /* ── actionable summary (known-failures single source) ───────────────────── */
 say("");
 say("── actionable summary ──");
 const ctx = {
   videodir,
-  stub,
   digitSelectors: self.digit,
   lintErrors,
   checkErrors: chk.errors,
   transitions: { status: tv.status, error: tv.error },
-  missingFrames,
   digitTell,
   googleImport,
 };
 let n = 0;
 for (const { entry, hits } of matchKnownFailures(ctx)) {
+  // autofix entries are owned by verify-all prepare — do not surface them here.
+  if (entry.mode === "autofix") continue;
   const text = (renderPrompt(entry, ctx, hits) || "").trim();
   const [head, ...rest] = text.split("\n");
-  if (entry.mode === "model" || entry.mode === "autofix") {
+  if (entry.mode === "model") {
     say(`  ${++n}) ${entry.title} — ${head}`);
   } else {
     say(`  • ${entry.title} (${entry.mode === "ignore" ? "known false-positive" : "non-blocking"}) — ${head}`);
@@ -366,9 +267,9 @@ for (const { entry, hits } of matchKnownFailures(ctx)) {
   for (const line of rest) say(`     ${line}`);
 }
 const realErrors = chk.errors.length + lintErrors.length + self.digit.length;
-const gate = (lintOk === true) && checkOk && self.digit.length === 0 && missingFrames.length === 0 && !tv.error && tv.status === 0;
+const gate = (lintOk === true) && checkOk && self.digit.length === 0 && !tv.error && tv.status === 0;
 say("");
-say(`GATE: ${gate ? "PASS ✓ (lint+check+structural+transitions — go to snapshot)" : `FAIL ✗ (lint ok=${lintOk}, check exit=${check.status === null ? "n/a" : check.status}, digit-led selectors=${self.digit.length}, missing frames=${missingFrames.length}, transitions=${tv.error ? "n/a" : tv.status === 0 ? "ok" : tv.status}, ${realErrors} error finding(s))`}`);
+say(`GATE: ${gate ? "PASS ✓ (lint+check+structural+transitions — go to snapshot)" : `FAIL ✗ (lint ok=${lintOk}, check exit=${check.status === null ? "n/a" : check.status}, digit-led selectors=${self.digit.length}, transitions=${tv.error ? "n/a" : tv.status === 0 ? "ok" : tv.status}, ${realErrors} error finding(s))`}`);
 if (!gate) {
   const payload = findingsPayload(chk.errors);
   payload.lint_errors = lintErrors.length;
