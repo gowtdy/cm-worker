@@ -2,7 +2,7 @@
 """Verify assembled video helpers for htmlvideo worker.
 
 ``verify-all.mjs`` step 0 runs ``font-imports.mjs`` (scope=all) before the
-transitions inject guard. That step is non-fatal and is skipped when
+idempotent transitions inject. That step is non-fatal and is skipped when
 ``HTMLVIDEO_FONT_IMPORTS`` is ``0`` / ``false`` / ``off`` / ``no``.
 """
 
@@ -128,7 +128,7 @@ def _trim_scan_for_fix(scan_output: str) -> str:
     """Error lines (with their detail lines) + actionable summary through the
     end of the scan.
 
-    Drops the ✓ waterfall (font-imports, transitions inject guard,
+    Drops the ✓ waterfall (font-imports, transitions inject,
     prerequisites, warnings/infos, midpoints) the fix role never acts on.
     Falls back to the full scan when the summary header is missing.
     """
