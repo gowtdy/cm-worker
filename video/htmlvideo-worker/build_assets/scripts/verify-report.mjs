@@ -43,6 +43,8 @@ import {
   jsonDeclaredErrorCount,
   jsonLintErrorCount,
   triageOverlaps,
+  findingsPayload,
+  FINDINGS_JSON_PREFIX,
 } from "./lib/verify-check-parse.mjs";
 
 const argv = process.argv.slice(2);
@@ -441,6 +443,13 @@ const realErrors = chk.errors.length + lintErrors.length + self.digit.length;
 const gate = (lintOk === true) && checkOk && self.digit.length === 0 && missingFrames.length === 0 && !tv.error && tv.status === 0;
 say("");
 say(`GATE: ${gate ? "PASS ✓ (lint+check+structural+transitions — go to snapshot)" : `FAIL ✗ (lint ok=${lintOk}, check exit=${check.status === null ? "n/a" : check.status}, digit-led selectors=${self.digit.length}, missing frames=${missingFrames.length}, transitions=${tv.error ? "n/a" : tv.status === 0 ? "ok" : tv.status}, ${realErrors} error finding(s))`}`);
+if (!gate) {
+  const payload = findingsPayload(chk.errors);
+  payload.lint_errors = lintErrors.length;
+  payload.digit_led_selectors = self.digit.length;
+  payload.transitions_ok = !tv.error && tv.status === 0;
+  say(FINDINGS_JSON_PREFIX + JSON.stringify(payload));
+}
 
 console.log(out.join("\n"));
 if (lint.error || check.error || tv.error || checkContradiction) process.exit(2);
