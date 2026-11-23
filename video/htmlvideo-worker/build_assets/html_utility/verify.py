@@ -16,6 +16,11 @@ import re
 import subprocess
 
 from html_utility.claude_cli import _env_positive_int, run_claude
+from html_utility.verify_overlap_autofix import (
+    auto_overlap_enabled,
+    autofix_designed_overlays,
+    strip_findings_payload,
+)
 
 HYPERFRAMES_JSON = "hyperframes.json"
 INDEX_FILENAME = "index.html"
@@ -77,10 +82,13 @@ _FIX_PLAYBOOK = """Mechanical fix rules — apply the matching one, then stop:
 - root/clip `data-duration="Ns"` (unit suffix) → strip to plain number
   `data-duration="N"`; do NOT diagnose transitions by reading scripts.
 - `content_overlap` → follow the scan's triage line: `designed_overlay` (badge /
-  stamp / overlay / watermark …) → `data-layout-allow-overlap` on the text or an
-  inner container (not the scene root); `real_collision` (text vs text) →
+  stamp / overlay / watermark …) → add `data-layout-allow-overlap="true"` on the
+  text or an inner container (not the scene root); `real_collision` (text vs text) →
   reposition / shrink, do NOT allow-overlap; `ambiguous` → read the frame's
   layout intent first, then pick one. Never blanket-allow every overlap.
+- `content_overlap` with `#caption-word-*` on either side ("caption keep-out band")
+  → frame text sits in the caption band: move it above `--cap-band-top` or delete
+  the in-frame caption strip; NEVER add `data-layout-allow-overlap` for it.
 - caption `text_box_overflow` (~1–4px on `#caption-word-*` / `.caption-line`) → false positive, ignore.
 - `id_requires_css_escape` / `google_fonts_import` warnings → non-blockers, ignore.
 - transitions verify / inject mismatches → only strip duration unit suffixes if
@@ -93,30 +101,92 @@ _FIX_HARD_CONSTRAINTS = """Hard constraints for this fix role (override project 
 - Do NOT run verify-all / lint / check / snapshot / `npm run check`.
 - Project CLAUDE.md "Always invoke skill" / "ALWAYS RUN check" do NOT apply here.
 - Edit `compositions/**/*.html` only, in ONE batched pass (parallel Edits), then stop.
+- Read each target file (absolute path) at most ONCE, then Edit it. Do NOT
+  Grep / Glob / list directories or open files the findings do not name.
 """
 
+_FIX_REPLY = (
+    "After the Edits, reply with exactly `fixed <n>` (n = number of edits), or "
+    "`fixed 0` if nothing to do — no summary."
+)
 
-def _build_fix_prompt(scan_output: str) -> str:
-    """Prompt for the one model turn that is still genuinely needed: apply the
-    mechanical fixes the scan already enumerated. The scan output is inlined so
-    the model edits directly instead of re-running the scan / re-investigating,
-    and the playbook cheatsheet replaces the full skill load.
+_ACTIONABLE_HEADER = "── actionable summary ──"
+_ERROR_LINE_RE = re.compile(r"^\s+✗ ")
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "on", "yes")
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _error_blocks(head: str) -> list[str]:
+    """``✗`` lines plus the deeper-indented detail lines right under them
+    (e.g. transitions verify failure lines), up to a blank or shallower line.
     """
+    out: list[str] = []
+    depth = -1
+    for line in head.splitlines():
+        if _ERROR_LINE_RE.match(line):
+            out.append(line)
+            depth = _indent(line)
+        elif depth >= 0 and line.strip() and _indent(line) > depth:
+            out.append(line)
+        else:
+            depth = -1
+    return out
+
+
+def _trim_scan_for_fix(scan_output: str) -> str:
+    """Error lines (with their detail lines) + actionable summary through the
+    end of the scan.
+
+    Drops the ✓ waterfall (font-imports, transitions inject guard,
+    prerequisites, warnings/infos, midpoints) the fix role never acts on.
+    Falls back to the full scan when the summary header is missing.
+    """
+    text = strip_findings_payload(scan_output)
+    idx = text.find(_ACTIONABLE_HEADER)
+    if idx < 0:
+        return text
+    head, tail = text[:idx], text[idx:]
+    errors = _error_blocks(head)
+    parts = []
+    if errors:
+        parts.append("── error findings ──\n" + "\n".join(errors) + "\n\n")
+    parts.append(tail.strip("\n") + "\n")
+    return "".join(parts)
+
+
+def _build_fix_prompt(scan_output: str, project_dir: str = "") -> str:
+    """Prompt for the one model turn that is still genuinely needed: apply the
+    mechanical fixes the scan already enumerated. Only the actionable part of
+    the scan is inlined (``HTMLVIDEO_VERIFY_FIX_FULL_SCAN=1`` restores the full
+    output) so the model edits directly instead of re-investigating.
+    """
+    if _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN"):
+        scan_text, label = strip_findings_payload(scan_output), "scan output"
+    else:
+        scan_text, label = _trim_scan_for_fix(scan_output), "scan findings"
+    root_line = f"Project root (absolute): {project_dir}\n\n" if project_dir else ""
     return (
         "Fix the verification findings below in this HyperFrames project root. "
         "The deterministic scan (`node /app/scripts/verify-all.mjs`) has ALREADY "
-        "run and returned gate findings (exit 1); its output — findings plus a "
-        "ready-to-use «actionable summary» — is appended.\n\n"
+        "run and returned gate findings (exit 1); its error findings and "
+        "«actionable summary» are appended.\n\n"
+        + root_line
         + _FIX_HARD_CONSTRAINTS
         + "\nApply the cheapest safe fix to compositions/frames/NN-*.html in ONE "
         "batched pass, using absolute paths. Do NOT re-run verify-all / lint / "
         "check / snapshot (the harness re-runs the scan itself); do NOT re-init, "
         "build, assemble, preview or render.\n\n"
         + _FIX_PLAYBOOK
-        + "\n\nStop after the fixes are applied, then list — one line each — what you changed.\n\n"
-        "── scan output (already run — do not re-run) ──\n"
-        + scan_output
-        + "\n── end scan output ──\n"
+        + "\n\n" + _FIX_REPLY + "\n\n"
+        f"── {label} (already run — do not re-run) ──\n"
+        + scan_text
+        + f"\n── end {label} ──\n"
     )
 
 
@@ -215,6 +285,33 @@ def _validate_verify_outputs(project_dir: str) -> str:
     return ", ".join(non_empty)
 
 
+def _auto_fix_overlaps(
+    project_dir: str,
+    rc: int,
+    output: str,
+    round_no: int,
+    logger: logging.Logger,
+) -> tuple[int, str]:
+    """Deterministically mark safe ``designed_overlay`` rows, then rescan if
+    any file was written. Returns the (possibly unchanged) ``(rc, output)``;
+    an auto-fix crash is logged and never fails verify.
+    """
+    try:
+        result = autofix_designed_overlays(project_dir, output, logger)
+    except Exception:
+        logger.exception("auto-overlap (round %d) crashed — continuing without it", round_no)
+        return rc, output
+    if not result.changed:
+        return rc, output
+    logger.info(
+        "auto-overlap (round %d): marked %d node(s) in %d file(s) [%s] for %d "
+        "designed_overlay row(s); %d unresolved — rescanning",
+        round_no, result.nodes_marked, len(result.files_changed),
+        ", ".join(result.files_changed), result.handled, len(result.unresolved),
+    )
+    return _run_verify_all(project_dir, logger)
+
+
 def verify_frame(
     project_dir: str,
     logger: logging.Logger,
@@ -233,6 +330,13 @@ def verify_frame(
     at all. Only when the scan reports findings (exit 1) does the model get a
     single batched-fix turn, after which the scan re-runs; this repeats up to
     ``_MAX_FIX_ROUNDS``.
+
+    Before each model turn, ``designed_overlay`` rows from the scan's
+    ``VERIFY_FINDINGS_JSON`` line with ``autofix_ok`` + ``mark_side`` are
+    fixed deterministically on that side only (attribute
+    insert + rescan); a scan that then passes never reaches the model. The
+    rescan after the last model round is checked too, with one more auto-fix
+    pass if it still fails. ``HTMLVIDEO_VERIFY_AUTO_OVERLAP=0`` disables this.
 
     Step 0 of that scan is ``font-imports.mjs --scope all`` (non-fatal;
     ``HTMLVIDEO_FONT_IMPORTS=0/false/off/no`` skips it). Residuals are what
@@ -253,6 +357,19 @@ def verify_frame(
             raise RuntimeError(
                 "verify-all infrastructure failure: " + output[-2000:]
             )
+        if auto_overlap_enabled():
+            rc, output = _auto_fix_overlaps(project_dir, rc, output, round_no, logger)
+            if rc == 0:
+                logger.info(
+                    "verify-all gate PASS after designed_overlay auto-fix "
+                    "(round %d) — no model needed",
+                    round_no,
+                )
+                return _validate_verify_outputs(project_dir)
+            if rc == 2:
+                raise RuntimeError(
+                    "verify-all infrastructure failure: " + output[-2000:]
+                )
         # rc == 1 but nothing actionable → do not burn a model turn
         # (parser miss / empty playbook). Treat as infrastructure.
         if scan_looks_unactionable(output):
@@ -267,7 +384,7 @@ def verify_frame(
             round_no,
         )
         before_digest = _composition_html_digest(project_dir)
-        prompt = _build_fix_prompt(output)
+        prompt = _build_fix_prompt(output, project_dir)
         fix_rc = run_claude(project_dir, prompt, logger, skill="verify")
         if fix_rc != 0:
             raise RuntimeError(f"claude verify fix failed rc:{fix_rc}")
@@ -280,6 +397,13 @@ def verify_frame(
             )
         rc, output = _run_verify_all(project_dir, logger)
 
+    if rc == 1 and auto_overlap_enabled():
+        rc, output = _auto_fix_overlaps(project_dir, rc, output, max_fix + 1, logger)
+    if rc == 0:
+        logger.info("verify-all gate PASS after final rescan — snapshots written")
+        return _validate_verify_outputs(project_dir)
+    if rc == 2:
+        raise RuntimeError("verify-all infrastructure failure: " + output[-2000:])
     raise RuntimeError(
-        f"verify-frame gate still failing after {_MAX_FIX_ROUNDS} fix rounds"
+        f"verify-frame gate still failing after {max_fix} fix rounds"
     )
