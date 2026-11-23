@@ -275,17 +275,22 @@ export const KNOWN_FAILURES = [
     mode: "model",
     prompt: (ctx, hits) => {
       const tri = triageOverlaps(hits);
-      const rows = ["Follow this triage (never blanket-allow):"];
+      const rows = [
+        "Follow this triage (never blanket-allow). Decide each finding in ≤2 sentences, then emit every Edit in your FIRST batched pass — do NOT re-derive cqw/cqh geometry or re-trace the GSAP timeline; the scan already measured the boxes.",
+      ];
       if (tri.designed_overlay.length) rows.push(`- designed_overlay×${tri.designed_overlay.length} (${where(tri.designed_overlay)}) → add data-layout-allow-overlap="true" on the text or an inner container (NOT the scene root).`);
       if (tri.real_collision.length) rows.push(`- real_collision×${tri.real_collision.length} (${where(tri.real_collision)}) → reposition / reduce size; do NOT allow-overlap.`);
-      if (tri.ambiguous.length) rows.push(`- ambiguous×${tri.ambiguous.length} (${where(tri.ambiguous)}) → inspect the frame layout intent first, then pick allow-overlap vs reposition.`);
+      if (tri.ambiguous.length) rows.push(`- ambiguous×${tri.ambiguous.length} (${where(tri.ambiguous)}) → sibling badges overlaying in the SAME circle/box (a number next to a check/tick) = data-layout-allow-overlap="true"; two text blocks that should sit APART or have no position = reposition. If still unsure, default to reposition — never re-read the file.`);
       rows.push(
-        "- caption keep-out band: if either side is a `#caption-word-*`, move the frame text above `--cap-band-top` or delete the in-frame caption strip — NEVER add data-layout-allow-overlap for it.",
+        "- caption keep-out band: if either side is a `#caption-word-*`, delete the frame's own in-frame caption strip (it duplicates the auto-caption) or move it above `--cap-band-top` — NEVER add data-layout-allow-overlap for it.",
+      );
+      rows.push(
+        "Then reply `fixed <n>` — no summary, no checklist.",
       );
       return rows.join("\n");
     },
     reason:
-      "Safe designed_overlay (strong decor tokens / dataAttributes) is auto-fixed deterministically upstream via VERIFY_FINDINGS_JSON + verify_overlap_autofix.py; what reaches the model is the residual (real / ambiguous / weak tokens).",
+      "Safe designed_overlay (strong decor tokens / dataAttributes / number+check status overlay) is auto-fixed deterministically upstream via VERIFY_FINDINGS_JSON + verify_overlap_autofix.py; what reaches the model is the residual (real / ambiguous / weak tokens). The prompt is a decision tree with a default so the fix worker edits on turn 1 instead of burning its output budget thinking (2026-11-23 6b044297059bf6d4: 2× 16000-token thinking-only turns, 0 edits).",
   },
 
   {

@@ -254,6 +254,13 @@ const TEXT_TOKENS = new Set([
   "headline", "heading", "title", "subtitle", "body", "line", "copy", "caption",
   "paragraph", "lede", "quote", "text", "h1", "h2", "h3", "h4", "p",
 ]);
+// A number + checkmark that sit on top of each other in the SAME badge circle
+// (`.f04-num` / `.f04-ck`) is a status overlay, not a collision: the check
+// fades in over the number. "ck"/"num" as standalone tokens (split on non-alnum)
+// are distinctive enough to autofix — a real two-number collision is num×num and
+// never hits the check token. `tick`/`check`/`number` cover the spelled-out forms.
+const CHECK_TOKENS = new Set(["ck", "check", "checkmark", "tick", "checked"]);
+const NUM_TOKENS = new Set(["num", "number"]);
 // Occlusion-only. Not consulted by triageContentOverlap. A card / CTA / label
 // sitting on text is usually intentional layering (allow-occlusion), unlike
 // two solid text blocks.
@@ -326,6 +333,16 @@ export function triageContentOverlap(item) {
     const strong = found.find((t) => AUTOFIX_DECOR_TOKENS.has(t));
     if (strong) return verdict("designed_overlay", `decorative token "${strong}"`, side);
     return verdict("designed_overlay", `weak decorative token "${found[0]}"`);
+  }
+  // Number + checkmark in the SAME badge = status overlay (check fades in over
+  // the number). Mark the check side so the overlay is allowed, deterministically.
+  const selCheck = selT.some((t) => CHECK_TOKENS.has(t));
+  const conCheck = conT.some((t) => CHECK_TOKENS.has(t));
+  const selNum = selT.some((t) => NUM_TOKENS.has(t));
+  const conNum = conT.some((t) => NUM_TOKENS.has(t));
+  if ((selCheck && conNum) || (conCheck && selNum)) {
+    const side = selCheck ? "selector" : "container";
+    return verdict("designed_overlay", "number + check status overlay", side);
   }
   return verdict("ambiguous", "no decorative or text-block signal");
 }
