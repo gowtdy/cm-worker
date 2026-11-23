@@ -102,7 +102,11 @@ _PROFILES: dict[str, dict[str, object]] = {
         "timeout": 1500,
         "deny_agent": True,    # B architecture: no stage dispatches subagents anymore
         # Driver runs frame-selfcheck; Bash was only used for that + exploration.
-        "deny_tools": ["Bash", "Glob", "Grep"],
+        # Skill: dispatch is inlined; a Skill call re-injects SKILL.md (2026-11-22:
+        # frame 01 ttfb 20s) — same rationale as verify.
+        # Effort/cap A/B: HTMLVIDEO_FRAME_HTML_EFFORT / _MAX_OUTPUT (frame_html.py,
+        # docs/2026-11-22-frame-html-effort-medium-ab.md); keep high×64000 until then.
+        "deny_tools": ["Bash", "Glob", "Grep", "Skill"],
     },
     "repair": {
         "effort": "high", "thinking": "40000",
