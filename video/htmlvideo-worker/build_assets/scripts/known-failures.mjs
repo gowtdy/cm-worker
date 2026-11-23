@@ -14,7 +14,9 @@
  *   match   (ctx) => hit[]   — return the matched findings (or [] if none)
  *   mode    "autofix" | "model" | "ignore" | "info"
  *       autofix → has `autofix(ctx, hits) => { changed, note }`, run by
- *                 verify-all's prepare-phase ordered autofix pass (deterministic, no model, once per verify session).
+ *                 verify-all's prepare-phase ordered autofix pass (deterministic,
+ *                 no model, once per verify session). Not rendered in the
+ *                 verify-report actionable summary.
  *       model   → has `prompt` (string, or (ctx, hits) => string); emitted into
  *                 the actionable summary and loaded into the model prompt only
  *                 when the finding is actually present.
@@ -31,12 +33,12 @@
  *   {
  *     videodir: string,            // absolute project root
  *     stub: boolean,               // index.html has 0 composition refs
+ *                                  // (prepare autofix only; report omits)
  *     digitSelectors: string[],    // e.g. ["02-x.html: digit-led selector …"]
  *     lintErrors: [{ code, msg, file }],
  *     checkErrors: [{ code, msg, selector, container, file, fixHint,
  *                     dataAttributes, mark, section }],
  *     transitions: { status: number|null, error: string|null, text: string },
- *     missingFrames: string[],     // frames in STORYBOARD but not on disk
  *     digitTell: Record<string,number>|Map,  // id_requires_css_escape per file
  *     googleImport: Record<string,number>|Map,
  *   }
