@@ -17,9 +17,7 @@ You are the orchestrator. Work in the HyperFrames project root.
 
 If `hyperframes.json`, `STORYBOARD.md` or the frames are missing → stop and report the blocker. Do not invent a storyboard, do not re-init.
 
-If `index.html` is the un-assembled stub → that is **Known failure #1**: apply its one-line recovery, then continue. Do not investigate the stub.
-
-**Out of scope:** `hyperframes init`, brief writing, storyboard narrative/script planning, writing shot sequences / `## Video direction`, writing HTML frames, `frame-packets.mjs`, `audio.mjs`, `hyperframes preview` / `render`. `assemble-index.mjs` runs in the pipeline, not here — the one exception is the recovery in Known failure #1.
+**Out of scope:** `hyperframes init`, brief writing, storyboard narrative/script planning, writing shot sequences / `## Video direction`, writing HTML frames, `frame-packets.mjs`, `audio.mjs`, assemble `index.html`, `hyperframes preview` / `render`. Assembly is owned by `/aiflow-build-frame-html` and the verify-all prepare autofix (`assemble-index-stub`) — do not investigate or re-assemble here.
 
 ---
 
@@ -44,7 +42,6 @@ node /app/scripts/font-imports.mjs --videodir ${videodir} --scope all   # also r
 node /app/scripts/verify-all.mjs --videodir ${videodir}                  # prepare + verify; 0 = gate+snapshot; 1 = findings; 2 = blocker
 node /app/scripts/verify-all.mjs --videodir ${videodir} --phase prepare  # once: autofix + fonts + inject; 0 ok / 2 blocker
 node /app/scripts/verify-all.mjs --videodir ${videodir} --phase verify   # rerun after fixes; exit 0/1/2 like verify-report
-node /app/scripts/verify-report.mjs --videodir ${videodir} --preflight   # ~3s: prerequisites, stub check, frames vs STORYBOARD
 node /app/scripts/transitions.mjs inject --videodir ${videodir}          # idempotent; also runs inside verify-all --phase prepare
 node /app/scripts/transitions.mjs verify --videodir ${videodir}          # diagnosis only; report also checks
 node /app/scripts/verify-report.mjs --videodir ${videodir}               # full one-shot diagnosis + gates
@@ -53,7 +50,7 @@ npx hyperframes snapshot ${videodir} --at "${AT}"
 python3 /app/scripts/verify-pixels.py --videodir ${videodir}
 ```
 
-`verify-report.mjs` is the mechanical gate — one diagnosis round: prerequisites, stub/assembly state, per-frame structural gate (`frame-selfcheck.mjs` verdicts per frame), transitions-verify echo, `lint --json` findings (errors + the two tell warnings per file), `check` findings grouped and annotated, frame midpoints with the ready-to-use `AT=` line. **Exit 0 = mechanical gate pass (lint + check + structural + transitions) → the visual gate (snapshot + verify-pixels) may open. Exit 1 = mechanical findings → one batched fix, then rerun `verify-all --phase verify` / `verify-report`. Do not call the model separately for lint, check, or snapshot, and do not rerun those commands on their own. Exit 2 = infrastructure error (missing files / CLI crash) → surface the stderr and stop.** The same codes apply to `--preflight`: 0 = proceed, 1 = actionable (stub → Known failure #1 recovery; frames missing vs STORYBOARD), 2 = project blocker. Prefer its findings over any new investigation: spend at most 2 extra investigation turns before editing.
+`verify-report.mjs` is the mechanical gate — one diagnosis round: per-frame structural gate (`frame-selfcheck.mjs` verdicts per frame), transitions-verify echo, `lint --json` findings (errors + the two tell warnings per file), `check` findings grouped and annotated. Midpoints / snapshot belong to the visual gate in `verify-all` (only after GATE PASS). **Exit 0 = mechanical gate pass (lint + check + structural + transitions) → the visual gate (snapshot + verify-pixels) may open. Exit 1 = mechanical findings → one batched fix, then rerun `verify-all --phase verify` / `verify-report`. Do not call the model separately for lint, check, or snapshot, and do not rerun those commands on their own. Exit 2 = infrastructure error (CLI crash) → surface the stderr and stop.** Prefer its findings over any new investigation: spend at most 2 extra investigation turns before editing.
 
 `snapshot` stitches the captured frames into a contact sheet: a single `snapshots/contact-sheet.jpg` when ≤9 frames were captured, otherwise paginated `snapshots/contact-sheet-1..N.jpg` sheets (9 per page) — both forms pass verification, do not rename or merge them. `verify-pixels.py` then runs the deterministic collapse/empty regression over the per-frame PNGs (corner-hug content-bbox check, empty-frame check, ink presence, content quadrant map): **exit 0 (`VISUAL_GATE: PASS`) → move on; a FAIL (`VISUAL_GATE: FAIL`) → one visual fix of that named snapshot's frame only, then rerun `verify-all --phase verify`** — never re-derive verdicts with ad-hoc image scripts, and do not reopen lint or check. If this session's model has vision, also glance at the sheet(s); if it does not, the verify-pixels report IS the glance — don't linger either way.
 
