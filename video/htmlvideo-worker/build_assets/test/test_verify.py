@@ -44,6 +44,53 @@ GATE: FAIL ✗ (…, 8 error finding(s))
         self.assertTrue(v.scan_looks_unactionable(out))
 
 
+def _visual_scan(with_payload: bool = False) -> str:
+    """Mechanical PASS teed above a pixels FAIL. Payload is a trap for auto-overlap."""
+    body = (
+        "══ verify-all [verify] ══\n"
+        "── mechanical gate (verify-report) ──\n"
+        "GATE: PASS ✓ (lint+check+structural+transitions)\n"
+        "── actionable summary ──\n"
+        "  No action. See known-failures.mjs\n"
+        "── visual gate (snapshot + pixels) ──\n"
+        "frame-03.png                         FAIL: collapse: narrow blob in corner\n"
+        "frame-05.png                         FAIL: empty frame (0.01% content)\n"
+        "SUMMARY: 2 snapshot(s), 2 FAIL finding(s)\n"
+        "\nverify-all: MECHANICAL PASS / VISUAL FAIL (pixels)\n"
+        "VISUAL_GATE: FAIL\n"
+    )
+    if with_payload:
+        body += _payload_line(_ROWS_SAMPLE) + "\n"
+    return body
+
+
+def _mechanical_scan() -> str:
+    return (
+        "── actionable summary ──\n"
+        "  1) Known failure #4 candidate — content_overlap\n\n"
+        "GATE: FAIL ✗ (…, 2 error finding(s))\n"
+        "verify-all: mechanical gate FAIL (report exit 1) — visual gate not opened.\n"
+    )
+
+
+class ScanFailureKindTest(unittest.TestCase):
+    def test_gate_fail_without_visual_marker_is_mechanical(self):
+        out = _mechanical_scan()
+        self.assertNotIn("VISUAL_GATE:", out)
+        self.assertEqual(v.classify_scan_failure(out), "mechanical")
+        self.assertEqual(v.classify_scan_failure(_scan([])), "mechanical")
+
+    def test_visual_gate_fail_is_visual_even_after_gate_pass(self):
+        out = _visual_scan()
+        self.assertEqual(v.classify_scan_failure(out), "visual")
+        self.assertFalse(v.scan_looks_unactionable(out))
+
+    def test_visual_gate_pass_is_not_a_failure_kind(self):
+        self.assertIsNone(
+            v.classify_scan_failure("GATE: PASS ✓\nVISUAL_GATE: PASS\n")
+        )
+
+
 class FixPlaybookTest(unittest.TestCase):
     def test_playbook_delegates_to_catalog_single_source(self):
         pb = v._FIX_PLAYBOOK
@@ -708,6 +755,86 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
         verify.assert_not_called()
         claude.assert_not_called()
 
+    def test_visual_gate_fail_uses_visual_prompt_skips_overlap(self):
+        prompts = []
+
+        def fake_claude(project_dir, prompt, logger, skill):
+            prompts.append(prompt)
+            with open(os.path.join(project_dir, "compositions", "frames",
+                                   "05-price.html"), "a") as f:
+                f.write("<!-- pixels -->\n")
+            return 0
+
+        passed = "verify-all: MECHANICAL+VISUAL PASS\nVISUAL_GATE: PASS\n"
+        with mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(v, "autofix_designed_overlays") as overlap, \
+             mock.patch.object(v, "_run_verify", side_effect=[
+                 (1, _visual_scan(with_payload=True)),
+                 (0, passed),
+             ]), \
+             mock.patch.object(v, "run_claude", side_effect=fake_claude) as claude, \
+             mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
+            os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
+            out = v.verify_frame(self.d, self.logger)
+        self.assertEqual(out, self.sheet)
+        overlap.assert_not_called()
+        claude.assert_called_once()
+        self.assertEqual(len(prompts), 1)
+        prompt = prompts[0]
+        self.assertIn("pixels", prompt.lower())
+        self.assertIn("visual", prompt.lower())
+        self.assertIn("collapse", prompt.lower())
+        self.assertIn("empty", prompt.lower())
+        self.assertIn("VISUAL_GATE: FAIL", prompt)
+        self.assertIn("frame-03.png", prompt)
+        self.assertNotIn("known-failures.mjs", prompt)
+        self.assertNotIn("── actionable summary ──", prompt)
+
+    def test_visual_zero_edit_raises_without_overlap(self):
+        with mock.patch.object(v, "autofix_designed_overlays") as overlap, \
+             mock.patch.object(v, "_run_verify", return_value=(1, _visual_scan())), \
+             mock.patch.object(v, "run_claude", return_value=0):
+            os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
+            with self.assertRaises(RuntimeError) as ctx:
+                v.verify_frame(self.d, self.logger)
+        overlap.assert_not_called()
+        self.assertIn("made no changes", str(ctx.exception))
+
+    def test_mechanical_numbered_action_uses_old_prompt(self):
+        prompts = []
+
+        def fake_claude(project_dir, prompt, logger, skill):
+            prompts.append(prompt)
+            with open(os.path.join(project_dir, "compositions", "frames",
+                                   "05-price.html"), "a") as f:
+                f.write("<!-- mechanical -->\n")
+            return 0
+
+        passed = "verify-all: MECHANICAL+VISUAL PASS\nVISUAL_GATE: PASS\n"
+        with mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(v, "_run_verify", side_effect=[
+                 (1, _mechanical_scan()),
+                 (0, passed),
+             ]), \
+             mock.patch.object(v, "run_claude", side_effect=fake_claude), \
+             mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
+            os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
+            self.assertEqual(v.verify_frame(self.d, self.logger), self.sheet)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("known-failures.mjs", prompts[0])
+        self.assertIn("── actionable summary ──", prompts[0])
+        self.assertIn("GATE: FAIL", prompts[0])
+        self.assertNotIn("VISUAL_GATE:", prompts[0])
+
+    def test_both_gates_pass_does_not_call_model(self):
+        passed = "GATE: PASS ✓\nVISUAL_GATE: PASS\nverify-all: MECHANICAL+VISUAL PASS\n"
+        before = self._read(self.d, "05-price.html")
+        out, scan, claude = self._run([(0, passed)])
+        self.assertEqual(out, self.sheet)
+        self.assertEqual(scan.call_count, 1)
+        claude.assert_not_called()
+        self.assertEqual(before, self._read(self.d, "05-price.html"))
+
 
 class VerifyFramePrepareTest(unittest.TestCase):
     def test_run_verify_phase_cmd_and_cwd(self):
@@ -806,6 +933,23 @@ class FixPromptTest(unittest.TestCase):
         self.assertNotIn("[Contrast]", p)
         self.assertNotIn("contrast detail must not leak", p)
         self.assertNotIn("✓ fine", p)
+
+    def test_visual_prompt_is_pixels_not_mechanical_playbook(self):
+        p = v._build_visual_fix_prompt(_visual_scan(), "/abs/proj")
+        self.assertIn("pixels", p.lower())
+        self.assertIn("visual", p.lower())
+        self.assertIn("collapse means layout collapse", p)
+        self.assertIn("empty means missing content", p)
+        self.assertIn("frame-03.png", p)
+        self.assertIn("frame-05.png", p)
+        self.assertIn("compositions/frames", p)
+        self.assertIn("fixed <n>", p)
+        self.assertIn("VISUAL_GATE: FAIL", p)
+        self.assertIn("Project root (absolute): /abs/proj", p)
+        self.assertIn("Do NOT run verify-all / lint / check / snapshot", p)
+        self.assertNotIn("known-failures.mjs", p)
+        self.assertNotIn("── actionable summary ──", p)
+        self.assertNotIn("GATE: PASS", p)
 
 
 if __name__ == "__main__":
