@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * verify-all.mjs — one-command mechanical verify loop for /aiflow-verify-frame.
+ * verify-all.mjs — two-gate verify loop for /aiflow-verify-frame.
  *
  * Two phases, selected with --phase all|prepare|verify (default all):
  *
@@ -12,10 +12,13 @@
  *      3. transitions inject — idempotent `inject` (strips any prior stamp
  *         first).
  *
- *   verify — the part the fix loop reruns. Exit 0/1/2 matches verify-report:
- *      full report (the single diagnosis + gate; its output is teed verbatim),
- *      then on gate pass only frame-midpoints → snapshot → verify-pixels, so
- *      the contact sheet exists on one run.
+ *   verify — the part the fix loop reruns. Two gates, in order, never split
+ *      into per-stage model rounds:
+ *      1. mechanical gate — verify-report (lint + check + structural +
+ *         transitions) is the single diagnosis. Its output is teed verbatim.
+ *         Non-zero returns immediately: no snapshot, no VISUAL_GATE line.
+ *      2. visual gate — only after mechanical exit 0: frame-midpoints →
+ *         snapshot → verify-pixels. Prints VISUAL_GATE: PASS or FAIL.
  *
  *   all (default) — prepare, then verify. A prepare exit 2 stops before verify.
  *
@@ -26,13 +29,15 @@
  *
  * Exit codes:
  *   prepare: 0 = ready, 2 = blocker
- *   verify / all (mirror verify-report):
- *     0 = gate pass + snapshot written + pixels no-FAIL
- *     1 = findings to fix (report exit 1, or pixels has a FAIL) -> fix & rerun
+ *   verify / all:
+ *     0 = mechanical pass + visual pass (snapshot written, pixels clean)
+ *     1 = findings to fix (mechanical report exit 1, or pixels FAIL) -> fix & rerun
  *     2 = infrastructure / project blocker -> surface and stop
+ *   A mechanical FAIL does not open the visual gate (no snapshot, no VISUAL_GATE).
  *
  * Runs every child with cwd = videodir (never trusts the caller's shell cwd).
- * Mutates: prepare: autofix + font-imports + transitions inject; verify: snapshot only.
+ * Mutates: prepare: autofix + font-imports + transitions inject;
+ *          verify: snapshot only, and only after the mechanical gate passes.
  */
 
 import { spawnSync } from "node:child_process";
@@ -159,9 +164,9 @@ function prepare() {
   return 0;
 }
 
-function verify() {
-  /* ── full report ─────────────────────────────────────────────────────── */
-  console.log("\n── verify-report (full) ──");
+function mechanicalGate() {
+  /* lint + check + structural + transitions. Non-zero: no snapshot, no VISUAL_GATE. */
+  console.log("\n── mechanical gate (verify-report) ──");
   const rep = run("node", ["/app/scripts/verify-report.mjs", "--videodir", videodir], { timeout: 600_000 });
   if (rep.stdout) process.stdout.write(rep.stdout + (rep.stdout.endsWith("\n") ? "" : "\n"));
   if (rep.stderr) process.stderr.write(rep.stderr + (rep.stderr.endsWith("\n") ? "" : "\n"));
@@ -170,12 +175,18 @@ function verify() {
     return 2;
   }
   if (rep.status !== 0) {
-    console.log(`\nverify-all: report exit ${rep.status} — fix the findings above, then rerun the verify phase (prepare already ran).`);
+    console.log(
+      `\nverify-all: mechanical gate FAIL (report exit ${rep.status}) — visual gate not opened. `
+      + "Fix the findings above, then rerun the verify phase (prepare already ran).",
+    );
     return rep.status;
   }
+  return 0;
+}
 
-  /* ── snapshot + pixels (gate passed) ──────────────────────────────────── */
-  console.log("\n── snapshot + pixels (gate passed) ──");
+function visualGate() {
+  /* midpoints → snapshot → pixels. Caller must only invoke after mechanicalGate() === 0. */
+  console.log("\n── visual gate (snapshot + pixels) ──");
   const mp = run("node", ["/app/scripts/frame-midpoints.mjs", "--videodir", videodir], { timeout: 30_000 });
   if (mp.error || !mp.stdout.trim()) {
     console.error(`verify-all: frame midpoints unavailable: ${mp.error || "empty output"}`);
@@ -199,8 +210,22 @@ function verify() {
     return 2;
   }
 
-  console.log(`\nverify-all: GATE PASS ✓ — contact sheet written, pixels ${vp.status === 0 ? "clean" : `FAIL (${vp.status})`}.`);
-  return vp.status === 0 ? 0 : 1;
+  if (vp.status === 0) {
+    console.log("\nverify-all: MECHANICAL+VISUAL PASS — contact sheet written, pixels clean.");
+    console.log("VISUAL_GATE: PASS");
+    return 0;
+  }
+  console.log(
+    `\nverify-all: MECHANICAL PASS / VISUAL FAIL (pixels) — contact sheet written, pixels FAIL (${vp.status}).`,
+  );
+  console.log("VISUAL_GATE: FAIL");
+  return 1;
+}
+
+function verify() {
+  const rc = mechanicalGate();
+  if (rc !== 0) return rc;
+  return visualGate();
 }
 
 console.log(`══ verify-all [${phase}] ══`);
