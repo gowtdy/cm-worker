@@ -84,7 +84,7 @@ report 硬编码 4 处),新增 finding 类型时三处都跟不上。本设计�
 | `content-overlap` | model | `triageOverlaps` 三分流 designed/real/ambiguous + caption 保留带禁令 |
 | `text-occluded` | **model(新增)** | `data-layout-allow-occlusion`(不是 overlap),或提 z-index —— 直接修掉 22点失败 |
 | `text-not-painted` | **model(新增)** | 修 `-webkit-text-fill-color` / `color` 透明填充 |
-| `transitions-verify` | info | 自愈(verify-all step1 inject guard);「s」后缀由 duration entry 处理 |
+| `transitions-verify` | info | 自愈(verify-all step1 总是幂等 inject);「s」后缀由 duration entry 处理 |
 | `caption-text-box-overflow` | ignore | 已知误报(贴合 line-height + 无 overflow:hidden) |
 | `id-requires-css-escape` | info | tell,非缺陷 |
 | `google-fonts-import` | info | 非阻塞 |
@@ -108,7 +108,7 @@ report 硬编码 4 处),新增 finding 类型时三处都跟不上。本设计�
 - 新增 `import fs` + `import { KNOWN_FAILURES }`。
 - 最前加「known-failure autofix pass」:构建最小 ctx,按 catalog 顺序跑 `mode=autofix` 且 match 的
   entry,changed 则日志。顺序保证:assemble → duration-strip →(既有 step0 font-imports → step1
-  transitions inject guard → step2 report)。font-imports / transitions 仍是显式 step,未重写,只在
+  transitions inject → step2 report)。font-imports / transitions 仍是显式 step,未重写,只在
   catalog 里声明归属。
 
 ### 3. `verify.py`
