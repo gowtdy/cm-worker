@@ -47,14 +47,14 @@ report 硬编码 4 处),新增 finding 类型时三处都跟不上。本设计�
 
 | mode | 含义 | 消费方 | 输出形态 |
 |---|---|---|---|
-| `autofix` | 确定性脚本修,不进模型 | `verify-all.mjs --phase prepare` 的 autofix pass(每会话一次) | 修掉即重扫;残留才回 report 打编号 item |
+| `autofix` | 确定性脚本修,不进模型 | `verify-all.mjs --phase prepare` 的 autofix pass(每会话一次) | 不进 report actionable summary |
 | `model` | 需模型判断 | `verify-report.mjs` → `verify.py` 的 fix prompt | actionable summary 里编号 `N)` item |
 | `ignore` | 已知误报/非问题 | 同 model,但不 blocking | `•`(不编号,不计入 actionable) |
 | `info` | tell / 非阻塞警告 | 同 ignore | `•`(不编号) |
 
 编号 `N)` 与非编号 `•` 的区分是**有语义的**:`verify.py::scan_looks_unactionable` 靠
-`^ {2}\d+\) ` 判断「是否有可操作项」,只有 model/autofix 产出编号 item,ignore/info 不会让
-空 finding 误触发一次模型调用。
+`^ {2}\d+\) ` 判断「是否有可操作项」,只有 model 产出编号 item;autofix 由 prepare 消化、
+不进 report;ignore/info 用 `•` 前缀,不会让空 finding 误触发一次模型调用。
 
 ### ctx shape
 
@@ -63,12 +63,11 @@ report 硬编码 4 处),新增 finding 类型时三处都跟不上。本设计�
 ```js
 {
   videodir,            // 绝对项目根
-  stub,                // index.html 0 个 composition ref
+  stub,                // index.html 0 个 composition ref（仅 prepare autofix）
   digitSelectors,      // frame-selfcheck 报的 digit-led 选择器
   lintErrors,          // [{ code, msg, file }]
   checkErrors,         // [{ code, msg, selector, container, file, fixHint, dataAttributes, ... }]
   transitions,         // { status, error }
-  missingFrames,
   digitTell, googleImport,   // Map|object,文件级 warning 计数
 }
 ```
@@ -98,8 +97,9 @@ report 硬编码 4 处),新增 finding 类型时三处都跟不上。本设计�
 
 - 顶部删掉 `fontActionLines` 及 `lib/fonts.mjs` 整套 import(迁入 catalog);删 `triageOverlaps` import。
 - 新增 `import { matchKnownFailures, renderPrompt } from "./known-failures.mjs"`。
-- 「actionable summary」段改为:构建 `ctx` → 循环 `matchKnownFailures(ctx)` → 每个命中 entry
-  按 mode 决定编号/非编号、`renderPrompt` 首行接标题后面、其余行缩进。
+- 「actionable summary」段改为:构建 `ctx` → 循环 `matchKnownFailures(ctx)` → 跳过
+  `autofix`(prepare 已消化)→ `model` 编号 / `ignore`·`info` 用 `•`、`renderPrompt`
+  首行接标题后面、其余行缩进。
 - `printGroup` 给每条 check error 渲染 `[hint: …]`(读取 `fixHint`;**`content_overlap` 除外**,
   它每条 hint 相同、无信号,交给 catalog 精确 triage)。
 
