@@ -26,15 +26,6 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import {
-  canonicalImport,
-  renderBlock,
-  loadCliAliases,
-  normFamily,
-  parseBrandFaces,
-  parseFrameFamilies,
-  planFile,
-} from "./lib/fonts.mjs";
-import {
   parseCheckJson,
   parseCheckText,
   extractJsonObject,
@@ -42,10 +33,10 @@ import {
   checkParseMismatch,
   jsonDeclaredErrorCount,
   jsonLintErrorCount,
-  triageOverlaps,
   findingsPayload,
   FINDINGS_JSON_PREFIX,
 } from "./lib/verify-check-parse.mjs";
+import { matchKnownFailures, renderPrompt } from "./known-failures.mjs";
 
 const argv = process.argv.slice(2);
 const vi = argv.indexOf("--videodir");
@@ -67,68 +58,6 @@ function run(cmd, args, { timeout = 300_000 } = {}) {
 }
 
 const trunc = (s, n = 140) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
-
-function fontActionLines(root, errors) {
-  const lines = [];
-  try {
-    const mdPath = path.join(root, "frame.md");
-    const md = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, "utf8") : "";
-    const frameFamilies = parseFrameFamilies(md);
-    const ramp = new Set(frameFamilies.map((f) => normFamily(f)));
-    const brandFaces = parseBrandFaces(md);
-    const aliases = loadCliAliases();
-    const files = [...new Set(
-      errors.filter((e) => e.code === "font_family_without_font_face").map((e) => e.file),
-    )];
-    const injected = [];
-    const seenImp = new Set();
-    const faceRules = [];
-    const drops = [];
-    for (const relFile of files) {
-      const abs = path.resolve(root, relFile);
-      if (!fs.existsSync(abs)) continue;
-      const plan = planFile(fs.readFileSync(abs, "utf8"), {
-        frameFamilies, brandFaces, aliases, prune: true,
-      });
-      for (const fam of plan.faces) {
-        const n = normFamily(fam);
-        if (!n || seenImp.has(n)) continue;
-        seenImp.add(n);
-        for (const rule of brandFaces.get(n)?.rules || []) faceRules.push(rule);
-      }
-      for (const fam of plan.injected) {
-        const n = normFamily(fam);
-        if (n && !seenImp.has(n)) { seenImp.add(n); injected.push(fam); }
-      }
-      for (const fam of plan.unresolved) {
-        const hit = frameFamilies.find((f) => normFamily(f) === fam);
-        if (hit && !seenImp.has(normFamily(hit))) {
-          seenImp.add(normFamily(hit));
-          injected.push(hit);
-        }
-      }
-      const names = new Set([
-        ...plan.dropped,
-        ...plan.unresolved.filter((u) => !ramp.has(u)),
-      ]);
-      for (const name of names) drops.push(`${name} (${relFile})`);
-    }
-    const block = renderBlock(canonicalImport(injected), faceRules);
-    if (block) {
-      lines.push("     paste at the top of the first <style> inside <template> (after @charset):");
-      for (const l of block.split("\n")) lines.push("     " + l);
-    }
-    if (drops.length) {
-      lines.push("     drop:");
-      for (const d of drops) lines.push("     " + d);
-    } else if (!block) {
-      lines.push("     no paste line — ramp families are already covered; drop dead non-primary fallbacks named in the lint message.");
-    }
-  } catch (err) {
-    lines.push("     font plan unavailable (" + (err && err.message ? err.message : err) + ") — rerun node /app/scripts/font-imports.mjs --videodir <project> --scope all --dry-run for the plan.");
-  }
-  return lines;
-}
 
 let infraError = null;
 
@@ -362,9 +291,13 @@ if (check.error) {
   // attachments and auto-injects whole HTML into the fix prompt (~70KB).
   const printGroup = (list) => {
     for (const c of list) {
-      const tag = isCaptionFP(c) ? "  (expected false-positive per playbook #5)" : "";
+      const tag = isCaptionFP(c) ? "  (expected false-positive — see known-failures caption-text-box-overflow)" : "";
+      // Render the CLI's own fixHint for codes the catalog doesn't own
+      // (content_overlap's fixHint is the same generic allow-overlap line for
+      // every finding, so skip it there — the catalog triages it precisely).
+      const hint = c.fixHint && c.code !== "content_overlap" ? `  [hint: ${trunc(c.fixHint, 200)}]` : "";
       const where = c.file ? ` in ${c.file}` : "";
-      say(`  ${c.mark} [${c.section}] ${c.code}${where} — ${c.msg}${tag}`);
+      say(`  ${c.mark} [${c.section}] ${c.code}${where} — ${c.msg}${hint}${tag}`);
     }
     if (list.length > 20) say(`    …+${list.length - 20} more`);
   };
@@ -407,38 +340,31 @@ if (mp.error || !mp.stdout.trim()) {
   say("  AT: " + atLine);
 }
 
-/* ── actionable summary ─────────────────────────────────────────────────── */
+/* ── actionable summary (known-failures single source) ───────────────────── */
 say("");
 say("── actionable summary ──");
+const ctx = {
+  videodir,
+  stub,
+  digitSelectors: self.digit,
+  lintErrors,
+  checkErrors: chk.errors,
+  transitions: { status: tv.status, error: tv.error },
+  missingFrames,
+  digitTell,
+  googleImport,
+};
 let n = 0;
-if (self.digit.length) {
-  const frames = [...new Set(self.digit.map((d) => d.split(":")[0]))].join(", ");
-  say(`  ${++n}) Known failure #2 CONFIRMED — digit-led selectors in ${frames}: convert CSS/JS selector strings to [id=…]/[class~=…] attribute forms (getElementById stays). Mechanical, one pass.`);
-} else if (digitTell.size) {
-  say(`  #2 tell only — digit-led ids exist but no digit-led selectors (structural gate clean). No action.`);
+for (const { entry, hits } of matchKnownFailures(ctx)) {
+  const text = (renderPrompt(entry, ctx, hits) || "").trim();
+  const [head, ...rest] = text.split("\n");
+  if (entry.mode === "model" || entry.mode === "autofix") {
+    say(`  ${++n}) ${entry.title} — ${head}`);
+  } else {
+    say(`  • ${entry.title} (${entry.mode === "ignore" ? "known false-positive" : "non-blocking"}) — ${head}`);
+  }
+  for (const line of rest) say(`     ${line}`);
 }
-if (lintErrors.some((e) => e.code === "font_family_without_font_face")) {
-  say(`  ${++n}) Known failure #3 residual — verify-all step 0 already ran font-imports. Hand-fix only what it left.`);
-  for (const line of fontActionLines(videodir, lintErrors)) say(line);
-}
-if (chk.errors.some((c) => c.code.includes("overlap"))) {
-  const tri = triageOverlaps(chk.errors);
-  const where = (list) => {
-    const parts = list.slice(0, 4).map((e) => {
-      const side = e.container ? `${e.selector} inside ${e.container}` : (e.selector || e.msg.split(" — ")[0]);
-      return `${e.file || "?"}: ${trunc(side, 70)}`;
-    });
-    if (list.length > 4) parts.push(`…+${list.length - 4}`);
-    return parts.join("; ");
-  };
-  const rows = [];
-  if (tri.designed_overlay.length) rows.push(`designed_overlay×${tri.designed_overlay.length} (${where(tri.designed_overlay)}): add data-layout-allow-overlap on the text or an inner container (not the scene root)`);
-  if (tri.real_collision.length) rows.push(`real_collision×${tri.real_collision.length} (${where(tri.real_collision)}): reposition / reduce size; do NOT blanket-allow`);
-  if (tri.ambiguous.length) rows.push(`ambiguous×${tri.ambiguous.length} (${where(tri.ambiguous)}): inspect midpoints for design intent before choosing allow-overlap vs reposition`);
-  say(`  ${++n}) Known failure #4 — content_overlap triage — ${rows[0]}`);
-  for (const r of rows.slice(1)) say(`     ${r}`);
-}
-if (!tv.error && tv.status !== 0) say(`  ${++n}) transitions verify failures — if "no injected block found": run transitions.mjs inject, then rerun this report. If the block exists but mismatches: re-inject is safe (idempotent since 2026-11-14 — re-derives id references and tracks, removes the stale block first, and durations only converge toward the STORYBOARD contract).`);
 const realErrors = chk.errors.length + lintErrors.length + self.digit.length;
 const gate = (lintOk === true) && checkOk && self.digit.length === 0 && missingFrames.length === 0 && !tv.error && tv.status === 0;
 say("");
