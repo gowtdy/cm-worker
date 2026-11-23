@@ -46,7 +46,7 @@ selfcheck / assemble 原先不查字体；captions 仅在本地有 `assets/fonts
 
 verify_frame → verify-all.mjs
   0. font-imports --scope all     ← 不致命；HTMLVIDEO_FONT_IMPORTS=0 可关
-  1. transitions inject guard
+  1. transitions inject (idempotent)
   2. verify-report（lint 已见注入后文件）
   3. gate pass → snapshot + pixels
 ```
