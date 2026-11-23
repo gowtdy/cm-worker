@@ -1,5 +1,7 @@
 # build-frame-visual P0+P1+P2 hardening（2026-11-22）
 
+> 续篇（同日下午）：强制每帧 `- rules:` + gate ✗ + worker 验收 → `docs/2026-11-22-thinking-reduction-and-visual-rules.md` §2.B / §7
+
 来源：任务 `6b01e0245007d730` visual 阶段 433.8s 的分析。主要耗时/失败点：
 
 | 问题 | 损耗 |
