@@ -2,13 +2,17 @@
 """Unit tests for html_utility.verify (scan precheck + digest guard messaging)."""
 from __future__ import annotations
 
+import json
 import logging
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
 
 from html_utility import verify as v
+from html_utility import verify_overlap_autofix as ao
 
 
 class ScanUnactionableTest(unittest.TestCase):
@@ -106,6 +110,632 @@ class VerifyFramePrecheckTest(unittest.TestCase):
             out = v.verify_frame(self.d, self.logger)
         claude.assert_called_once()
         self.assertIn("contact-sheet", out)
+
+
+_FRAME_05 = """<template>
+<div id="root" data-composition-id="05-price" data-duration="5">
+  <div class="clip f5-bg" data-start="0" data-duration="5">
+    <div class="price-num">&#8212;</div>
+    <div class="price-tag">Price You Pay</div>
+    <div class="f5-stamp">FAIR</div>
+    <div class="cap-sub">A great company</div>
+    <img src="x.png" class="seal" />
+  </div>
+  <script>document.querySelector("div.price-num > span:nth-of-type(1)")</script>
+</div>
+</template>
+"""
+
+_FRAME_08 = """<template>
+<div id="root" data-composition-id="08-stock">
+  <div class="clip f8-bg" data-start="0">
+    <div class="f8-ticker">
+      <span>BUY TEST</span><span class="f8-dot">·</span>
+      <span>SELL RULES</span><span class="f8-dot">·</span>
+      <span>EXIT RULES</span>
+    </div>
+    <div class="f8-ticker f8-ticker-b" data-layout-allow-overlap="true"><span>X</span></div>
+  </div>
+</div>
+</template>
+"""
+
+
+def _payload_line(rows: list[dict], **extra) -> str:
+    body = {"version": 1, "designed_overlay": rows, "real_collision": [],
+            "ambiguous": [], "other_check_errors": 0}
+    body.update(extra)
+    return ao.FINDINGS_JSON_PREFIX + json.dumps(body)
+
+
+def _scan(rows: list[dict], actionable: str = "", **extra) -> str:
+    return (
+        "══ verify-all ══\n"
+        "── transitions inject guard ──\n"
+        "  ✓ verified 9 boundaries\n  ✓ already stamped — skip inject\n"
+        "── check ──\n"
+        "  ✗ [Layout] content_overlap in compositions/frames/05-price.html — "
+        "div.price-num inside div.price-tag\n"
+        "  ⚠ [Contrast] contrast_aa_failure in compositions/frames/01.html — x\n"
+        "── frame midpoints ──\n  AT: 1,2,3\n\n"
+        "── actionable summary ──\n"
+        + (actionable or "  1) Known failure #4 — content_overlap triage — designed_overlay×1\n")
+        + "\nGATE: FAIL ✗ (lint ok=true, check exit=1, 1 error finding(s))\n"
+        + _payload_line(rows, **extra) + "\n"
+        "\nverify-all: report exit 1 — fix the findings above, then rerun verify-all.\n"
+    )
+
+
+def _safe(row: dict, token: str = "x", side: str = "selector") -> dict:
+    return {**row, "reason": f'decorative token "{token}"', "autofix_ok": True,
+            "mark_side": side}
+
+
+def _weak(row: dict, token: str) -> dict:
+    return {**row, "reason": f'weak decorative token "{token}"', "autofix_ok": False,
+            "mark_side": None}
+
+
+# Rows as findingsPayload emits them for the 6b02 shapes: strong tokens are
+# auto-fixable on their own side; weak ones (tag / dot) stay with the model.
+_ROWS_SAMPLE = [
+    _safe({"file": "compositions/frames/05-price.html", "selector": "div.price-num",
+           "container": "div.f5-stamp"}, "stamp", side="container"),
+    _safe({"file": "compositions/frames/08-stock.html",
+           "selector": "div.f8-ticker > span:nth-of-type(3)",
+           "container": "span.f8-row-text"}, "ticker"),
+    _weak({"file": "compositions/frames/05-price.html", "selector": "div.price-num",
+           "container": "div.price-tag"}, "tag"),
+    _weak({"file": "compositions/frames/08-stock.html", "selector": "span.f8-dot",
+           "container": "span.f8-row-text"}, "dot"),
+]
+
+_VERIFY_CHECK_PARSE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts", "lib", "verify-check-parse.mjs",
+)
+
+
+def _js_findings_payload(errors: list[dict]) -> dict:
+    """Run the real JS triage (``findingsPayload``) on CLI-shaped errors."""
+    script = (
+        f"import {{ findingsPayload }} from {json.dumps(_VERIFY_CHECK_PARSE)};"
+        "const errs = JSON.parse(process.argv[1]);"
+        "process.stdout.write(JSON.stringify(findingsPayload(errs)));"
+    )
+    proc = subprocess.run(
+        ["node", "--input-type=module", "-e", script, json.dumps(errors)],
+        capture_output=True, text=True, timeout=30, check=True,
+    )
+    return json.loads(proc.stdout)
+
+
+class _ProjectMixin:
+    def _make_project(self) -> str:
+        d = tempfile.mkdtemp(prefix="verify-ao-")
+        frames = os.path.join(d, "compositions", "frames")
+        os.makedirs(frames)
+        for name in ("hyperframes.json", "index.html", "STORYBOARD.md"):
+            with open(os.path.join(d, name), "w") as f:
+                f.write("x\n")
+        for name, body in (("05-price.html", _FRAME_05), ("08-stock.html", _FRAME_08)):
+            with open(os.path.join(frames, name), "w", encoding="utf-8") as f:
+                f.write(body)
+        return d
+
+    def _read(self, d: str, name: str) -> str:
+        with open(os.path.join(d, "compositions", "frames", name), encoding="utf-8") as f:
+            return f.read()
+
+
+class SelectorParseTest(unittest.TestCase):
+    def test_compound_forms(self):
+        c = ao.parse_selector("div.price-num")
+        self.assertEqual((c[0].tag, c[0].classes), ("div", ["price-num"]))
+        c = ao.parse_selector("#\\30 7-hero")
+        self.assertEqual(c[0].id, "07-hero")
+        c = ao.parse_selector('div[data-layout-name="card"]')
+        self.assertEqual(c[0].attrs, {"data-layout-name": "card"})
+        c = ao.parse_selector('[data-layout-name="hero card"]')
+        self.assertEqual(c[0].attrs, {"data-layout-name": "hero card"})
+        c = ao.parse_selector("div.f8-ticker > span:nth-of-type(5)")
+        self.assertEqual(len(c), 2)
+        self.assertEqual(c[1].nth_of_type, 5)
+        self.assertFalse(c[1].anchorable)
+
+    def test_unsupported_forms(self):
+        for sel in ("", "div p", "a, b", "div:hover", "div > "):
+            self.assertIsNone(ao.parse_selector(sel), sel)
+
+
+class OverlapAutofixUnitTest(unittest.TestCase, _ProjectMixin):
+    def setUp(self):
+        self.logger = logging.getLogger("test.verify.ao")
+
+    def test_marks_sample_targets(self):
+        d = self._make_project()
+        res = ao.autofix_designed_overlays(d, _scan(_ROWS_SAMPLE), self.logger)
+        self.assertTrue(res.changed)
+        self.assertEqual(res.handled, 2)
+        self.assertEqual(len(res.unresolved), 2)  # weak tag / dot rows
+        f5 = self._read(d, "05-price.html")
+        self.assertIn('<div class="f5-stamp" data-layout-allow-overlap="true">', f5)
+        self.assertIn('<div class="price-num">', f5)
+        self.assertIn('<div class="price-tag">', f5)
+        self.assertIn('<div class="cap-sub">', f5)
+        self.assertIn('querySelector("div.price-num > span:nth-of-type(1)")', f5)
+        f8 = self._read(d, "08-stock.html")
+        self.assertIn('<div class="f8-ticker" data-layout-allow-overlap="true">', f8)
+        # f8-dot is a weak row, but sits under the flagged .f8-ticker anyway
+        self.assertIn('<span class="f8-dot">·</span>', f8)
+        self.assertEqual(f8.count("data-layout-allow-overlap"), 2)
+        self.assertEqual(res.nodes_marked, 2)
+
+    def test_only_autofix_ok_rows_are_written(self):
+        d = self._make_project()
+        base = {"file": "compositions/frames/05-price.html", "selector": "div.price-num",
+                "container": "div.price-tag", "mark_side": "selector"}
+        rows = [
+            {**base, "reason": "fixHint says intentional"},
+            {**base, "reason": 'decorative token "x"', "autofix_ok": False},
+            {**base, "reason": 'decorative token "x"', "autofix_ok": "true"},
+            # Legacy rows without autofix_ok: a "safe-looking" reason no longer qualifies
+            {**base, "reason": "dataAttributes mark it intentional"},
+            {**base, "reason": 'decorative token "tag"'},
+        ]
+        before = self._read(d, "05-price.html")
+        with self.assertLogs("test.verify.ao", level="INFO") as logs:
+            res = ao.autofix_designed_overlays(d, _scan(rows), self.logger)
+        self.assertFalse(res.changed)
+        self.assertEqual(len(res.unresolved), 5)
+        self.assertEqual(before, self._read(d, "05-price.html"))
+        self.assertTrue(any("left for the model" in m for m in logs.output))
+
+    def test_missing_mark_side_is_skipped(self):
+        d = self._make_project()
+        base = {"file": "compositions/frames/05-price.html", "selector": "div.price-num",
+                "container": "div.f5-stamp", "reason": 'decorative token "stamp"',
+                "autofix_ok": True}
+        before = self._read(d, "05-price.html")
+        with self.assertLogs("test.verify.ao", level="INFO") as logs:
+            res = ao.autofix_designed_overlays(
+                d, _scan([dict(base), {**base, "mark_side": "both"}]), self.logger)
+        self.assertFalse(res.changed)
+        self.assertEqual(len(res.unresolved), 2)
+        self.assertEqual(before, self._read(d, "05-price.html"))
+        self.assertTrue(any("mark_side=None" in m for m in logs.output))
+
+    def test_mark_side_container_marks_only_container(self):
+        d = self._make_project()
+        row = _safe({"file": "compositions/frames/05-price.html",
+                     "selector": "div.price-num", "container": "div.f5-stamp"},
+                    "stamp", side="container")
+        res = ao.autofix_designed_overlays(d, _scan([row]), self.logger)
+        self.assertEqual(res.nodes_marked, 1)
+        f5 = self._read(d, "05-price.html")
+        self.assertIn('<div class="f5-stamp" data-layout-allow-overlap="true">', f5)
+        self.assertIn('<div class="price-num">', f5)
+        self.assertEqual(f5.count("data-layout-allow-overlap"), 1)
+
+    def test_mark_side_not_found_does_not_fall_back(self):
+        d = self._make_project()
+        rows = [
+            _safe({"file": "compositions/frames/05-price.html",
+                   "selector": "#runtime-only", "container": "div.f5-stamp"}, "stamp"),
+            _safe({"file": "compositions/frames/05-price.html",
+                   "selector": "div.f5-stamp", "container": "div.nope"},
+                  "stamp", side="container"),
+            _safe({"file": "compositions/frames/05-price.html",
+                   "selector": "div.f5-stamp", "container": ""}, side="container"),
+        ]
+        before = self._read(d, "05-price.html")
+        res = ao.autofix_designed_overlays(d, _scan(rows), self.logger)
+        self.assertFalse(res.changed)
+        self.assertEqual(len(res.unresolved), 3)
+        self.assertIn("mark_side=selector #runtime-only", res.unresolved[0])
+        self.assertIn("mark_side=container has no selector", res.unresolved[2])
+        self.assertEqual(before, self._read(d, "05-price.html"))
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_js_triage_never_autofixes_caption_or_weak_tags(self):
+        """End to end through the real JS triage: caption band and weak tokens
+        must not be written; the strong ticker row still is."""
+        d = self._make_project()
+        f5, f8 = "compositions/frames/05-price.html", "compositions/frames/08-stock.html"
+        errors = [
+            {"code": "content_overlap", "file": f5, "selector": "div.cap-sub",
+             "container": "#caption-word-32-0", "msg": ""},
+            {"code": "content_overlap", "file": f5, "selector": "#caption-word-32-0",
+             "container": "div.cap-sub", "msg": ""},
+            {"code": "content_overlap", "file": f5, "selector": "div.f5-cap-pill",
+             "container": "#caption-word-3-1", "msg": ""},
+            {"code": "content_overlap", "file": f5, "selector": "div.price-num",
+             "container": "div.price-tag", "msg": ""},
+            {"code": "content_overlap", "file": f8, "selector": "span.f8-dot",
+             "container": "div.f8-ticker", "msg": ""},
+        ]
+        payload = _js_findings_payload(errors)
+        self.assertEqual(len(payload["real_collision"]), 3)
+        line = ao.FINDINGS_JSON_PREFIX + json.dumps(payload)
+        before = self._read(d, "05-price.html"), self._read(d, "08-stock.html")
+        res = ao.autofix_designed_overlays(d, f"GATE: FAIL ✗\n{line}\n", self.logger)
+        self.assertFalse(res.changed)
+        self.assertEqual(before, (self._read(d, "05-price.html"), self._read(d, "08-stock.html")))
+        self.assertNotIn('class="cap-sub" data-layout-allow-overlap', self._read(d, "05-price.html"))
+        ticker = _js_findings_payload([{
+            "code": "content_overlap", "file": f8,
+            "selector": "div.f8-ticker > span:nth-of-type(3)",
+            "container": "span.f8-row-text", "msg": ""}])
+        line = ao.FINDINGS_JSON_PREFIX + json.dumps(ticker)
+        res = ao.autofix_designed_overlays(d, f"GATE: FAIL ✗\n{line}\n", self.logger)
+        self.assertEqual(res.nodes_marked, 1)
+        self.assertIn('<div class="f8-ticker" data-layout-allow-overlap="true">',
+                      self._read(d, "08-stock.html"))
+
+    def test_ambiguous_and_real_rows_never_written(self):
+        d = self._make_project()
+        row = _safe({"file": "compositions/frames/05-price.html",
+                     "selector": "div.cap-sub", "container": ""})
+        before = self._read(d, "05-price.html")
+        res = ao.autofix_designed_overlays(
+            d, _scan([], ambiguous=[row], real_collision=[row]), self.logger)
+        self.assertFalse(res.changed)
+        self.assertEqual(before, self._read(d, "05-price.html"))
+
+    def test_payload_version_mismatch_skips(self):
+        d = self._make_project()
+        before = self._read(d, "05-price.html")
+        with self.assertLogs("test.verify.ao", level="WARNING") as logs:
+            res = ao.autofix_designed_overlays(d, _scan(_ROWS_SAMPLE, version=2), self.logger)
+        self.assertFalse(res.changed)
+        self.assertEqual(before, self._read(d, "05-price.html"))
+        self.assertTrue(any("version" in m for m in logs.output))
+
+    def _write_frame(self, d: str, name: str, body: str, newline: str = "\n") -> str:
+        path = os.path.join(d, "compositions", "frames", name)
+        with open(path, "w", encoding="utf-8", newline=newline) as f:
+            f.write(body)
+        return path
+
+    def test_anchor_deeper_than_parent_is_unresolved(self):
+        d = self._make_project()
+        self._write_frame(d, "09-deep.html", (
+            '<template><div id="root" data-composition-id="09">\n'
+            '<div class="wrap"><div>a</div><div><span>x</span></div></div>\n'
+            '<div class="row"><span>y</span><span>z</span></div>\n'
+            '</div></template>\n'))
+        rows = [
+            _safe({"file": "compositions/frames/09-deep.html",
+                   "selector": "div.wrap > div:nth-of-type(2) > span:nth-of-type(1)",
+                   "container": ""}),
+        ]
+        with self.assertLogs("test.verify.ao", level="INFO") as logs:
+            res = ao.autofix_designed_overlays(d, _scan(rows), self.logger)
+        self.assertFalse(res.changed)
+        self.assertEqual(len(res.unresolved), 1)
+        self.assertIn("more than one level above", res.unresolved[0])
+        self.assertTrue(any("unresolved" in m for m in logs.output))
+        # One hook-less child segment → the direct parent is marked
+        rows = [_safe({"file": "compositions/frames/09-deep.html",
+                       "selector": "div.row > span:nth-of-type(2)", "container": ""})]
+        res = ao.autofix_designed_overlays(d, _scan(rows), self.logger)
+        self.assertEqual(res.nodes_marked, 1)
+        self.assertIn('<div class="row" data-layout-allow-overlap="true">',
+                      self._read(d, "09-deep.html"))
+        # Parent without a matching child segment is not a target
+        rows = [_safe({"file": "compositions/frames/09-deep.html",
+                       "selector": "div.row > span:nth-of-type(7)", "container": ""})]
+        res = ao.autofix_designed_overlays(d, _scan(rows), self.logger)
+        self.assertFalse(res.changed)
+
+    def test_too_many_matches_left_for_model(self):
+        d = self._make_project()
+        spans = "".join(f'<span class="sticker">{i}</span>' for i in range(4))
+        self._write_frame(d, "10-many.html", (
+            '<template><div id="root" data-composition-id="10">'
+            f'<div class="a">{spans}</div>'
+            f'<div class="b" data-layout-allow-overlap="true">{spans}</div>'
+            '</div></template>'))
+        rows = [_safe({"file": "compositions/frames/10-many.html",
+                       "selector": "span.sticker", "container": ""})]
+        before = self._read(d, "10-many.html")
+        with self.assertLogs("test.verify.ao", level="WARNING") as logs:
+            res = ao.autofix_designed_overlays(d, _scan(rows), self.logger)
+        self.assertFalse(res.changed)
+        self.assertEqual(before, self._read(d, "10-many.html"))
+        self.assertTrue(any("too broad" in m for m in logs.output))
+        # Nodes already covered by a flagged ancestor do not count
+        self._write_frame(d, "10-many.html", (
+            '<template><div id="root" data-composition-id="10">'
+            '<div class="a"><span class="sticker">0</span></div>'
+            f'<div class="b" data-layout-allow-overlap="true">{spans}</div>'
+            '</div></template>'))
+        res = ao.autofix_designed_overlays(d, _scan(rows), self.logger)
+        self.assertEqual(res.nodes_marked, 1)
+
+    def test_broad_row_covered_by_same_batch_parent(self):
+        d = self._make_project()
+        seals = "".join('<span>w</span><span class="f8-seal">·</span>' for _ in range(5))
+        self._write_frame(d, "08-stock.html", (
+            '<template><div id="root" data-composition-id="08">'
+            f'<div class="f8-ticker">{seals}</div></div></template>'))
+        dot = _safe({"file": "compositions/frames/08-stock.html",
+                     "selector": "span.f8-seal", "container": ""}, "seal")
+        ticker = _safe({"file": "compositions/frames/08-stock.html",
+                        "selector": "div.f8-ticker > span:nth-of-type(3)", "container": ""})
+        res = ao.autofix_designed_overlays(d, _scan([dot, ticker]), self.logger)
+        self.assertEqual(res.unresolved, [])
+        self.assertEqual(res.nodes_marked, 1)
+        f8 = self._read(d, "08-stock.html")
+        self.assertIn('<div class="f8-ticker" data-layout-allow-overlap="true">', f8)
+        self.assertEqual(f8.count("data-layout-allow-overlap"), 1)
+
+    def test_crlf_and_mode_preserved(self):
+        d = self._make_project()
+        path = self._write_frame(
+            d, "05-price.html", _FRAME_05.replace("\n", "\r\n"), newline="")
+        os.chmod(path, 0o644)
+        ao.autofix_designed_overlays(d, _scan(_ROWS_SAMPLE[:1]), self.logger)
+        with open(path, "rb") as f:
+            raw = f.read()
+        self.assertIn(b'<div class="f5-stamp" data-layout-allow-overlap="true">', raw)
+        self.assertEqual(raw.count(b"\r\n"), _FRAME_05.count("\n"))
+        self.assertNotIn(b"\r\r", raw)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o644)
+        frames = os.listdir(os.path.dirname(path))
+        self.assertFalse([n for n in frames if n.endswith(".tmp")])
+
+    def test_idempotent(self):
+        d = self._make_project()
+        ao.autofix_designed_overlays(d, _scan(_ROWS_SAMPLE), self.logger)
+        snap = self._read(d, "05-price.html"), self._read(d, "08-stock.html")
+        res = ao.autofix_designed_overlays(d, _scan(_ROWS_SAMPLE), self.logger)
+        self.assertFalse(res.changed)
+        self.assertEqual(snap, (self._read(d, "05-price.html"), self._read(d, "08-stock.html")))
+
+    def test_self_closing(self):
+        d = self._make_project()
+        rows = [_safe({"file": "compositions/frames/05-price.html", "selector": "img.seal",
+                       "container": "div.price-num"}, "seal")]
+        res = ao.autofix_designed_overlays(d, _scan(rows), self.logger)
+        self.assertEqual(res.handled, 1)
+        f5 = self._read(d, "05-price.html")
+        self.assertIn('<img src="x.png" class="seal" data-layout-allow-overlap="true" />', f5)
+        self.assertIn('<div class="price-num">', f5)
+
+    def test_refuses_root_clip_bare_and_outside_paths(self):
+        d = self._make_project()
+        rows = [_safe(r) for r in (
+            {"file": "compositions/frames/05-price.html", "selector": "#root",
+             "container": ""},
+            {"file": "compositions/frames/05-price.html",
+             "selector": 'div[data-start="0"]', "container": ""},
+            {"file": "compositions/frames/05-price.html",
+             "selector": "div > div:nth-of-type(2)", "container": ""},
+            {"file": "compositions/frames/05-price.html", "selector": "div.nope",
+             "container": ""},
+            {"file": "../outside.html", "selector": "div.x", "container": ""},
+            {"file": "index.html", "selector": "div.x", "container": ""},
+        )]
+        before = self._read(d, "05-price.html")
+        res = ao.autofix_designed_overlays(d, _scan(rows), self.logger)
+        self.assertFalse(res.changed)
+        self.assertEqual(len(res.unresolved), 6)
+        self.assertEqual(before, self._read(d, "05-price.html"))
+
+    def test_no_payload_is_noop(self):
+        d = self._make_project()
+        res = ao.autofix_designed_overlays(d, "GATE: FAIL ✗\n", self.logger)
+        self.assertFalse(res.changed)
+        self.assertIsNone(ao.parse_findings_payload("VERIFY_FINDINGS_JSON {bad"))
+
+
+class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
+    def setUp(self):
+        self.d = self._make_project()
+        self.logger = logging.getLogger("test.verify.flow")
+        self.sheet = os.path.join(self.d, "snapshots", "contact-sheet.jpg")
+
+    def _run(self, scans, env=None, claude_rc=0):
+        env = env or {}
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch.object(v, "_run_verify_all", side_effect=scans) as scan, \
+             mock.patch.object(v, "run_claude", return_value=claude_rc) as claude, \
+             mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
+            if "HTMLVIDEO_VERIFY_AUTO_OVERLAP" not in env:
+                os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
+            out = v.verify_frame(self.d, self.logger)
+        return out, scan, claude
+
+    def test_designed_overlay_only_skips_claude(self):
+        out, scan, claude = self._run([(1, _scan(_ROWS_SAMPLE)), (0, "GATE: PASS ✓\n")])
+        self.assertEqual(out, self.sheet)
+        claude.assert_not_called()
+        self.assertEqual(scan.call_count, 2)
+        self.assertIn('data-layout-allow-overlap="true"', self._read(self.d, "05-price.html"))
+
+    def test_clean_first_scan_is_untouched(self):
+        before = self._read(self.d, "05-price.html")
+        out, scan, claude = self._run([(0, "GATE: PASS ✓\n")])
+        self.assertEqual(scan.call_count, 1)
+        claude.assert_not_called()
+        self.assertEqual(before, self._read(self.d, "05-price.html"))
+
+    def test_auto_overlap_disabled_uses_model(self):
+        def fake_claude(project_dir, prompt, logger, skill):
+            path = os.path.join(project_dir, "compositions", "frames", "08-stock.html")
+            with open(path, "a") as f:
+                f.write("<!-- edited -->\n")
+            return 0
+
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_AUTO_OVERLAP": "0"}), \
+             mock.patch.object(v, "_run_verify_all",
+                               side_effect=[(1, _scan(_ROWS_SAMPLE)), (0, "GATE: PASS ✓\n")]), \
+             mock.patch.object(v, "run_claude", side_effect=fake_claude) as claude, \
+             mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
+            v.verify_frame(self.d, self.logger)
+        claude.assert_called_once()
+        self.assertNotIn("data-layout-allow-overlap=\"true\"",
+                         self._read(self.d, "05-price.html"))
+
+    def test_remaining_real_collision_goes_to_model_with_rescan_output(self):
+        remaining = _scan(
+            [], actionable="  1) Known failure #4 — content_overlap triage — "
+            "real_collision×1 (x): reposition\n",
+            real_collision=[{"file": "compositions/frames/05-price.html",
+                             "selector": "h1.title", "container": "p.body"}],
+        )
+        prompts = []
+
+        def fake_claude(project_dir, prompt, logger, skill):
+            prompts.append(prompt)
+            with open(os.path.join(project_dir, "compositions", "frames",
+                                   "05-price.html"), "a") as f:
+                f.write("<!-- moved -->\n")
+            return 0
+
+        with mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(v, "_run_verify_all", side_effect=[
+                 (1, _scan(_ROWS_SAMPLE)), (1, remaining), (0, "GATE: PASS ✓\n")]), \
+             mock.patch.object(v, "run_claude", side_effect=fake_claude), \
+             mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
+            os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
+            v.verify_frame(self.d, self.logger)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("real_collision×1", prompts[0])
+        self.assertNotIn("designed_overlay×1", prompts[0])
+
+    def test_autofix_crash_returns_original_scan(self):
+        scan = _scan(_ROWS_SAMPLE)
+        with mock.patch.object(v, "autofix_designed_overlays",
+                               side_effect=RuntimeError("boom")), \
+             mock.patch.object(v, "_run_verify_all") as rescan, \
+             self.assertLogs("test.verify.flow", level="ERROR") as logs:
+            out = v._auto_fix_overlaps(self.d, 1, scan, 1, self.logger)
+        self.assertEqual(out, (1, scan))
+        rescan.assert_not_called()
+        self.assertTrue(any("crashed" in m for m in logs.output))
+
+    def _edit_claude(self, project_dir, prompt, logger, skill):
+        with open(os.path.join(project_dir, "compositions", "frames",
+                               "05-price.html"), "a") as f:
+            f.write("<!-- moved -->\n")
+        return 0
+
+    def test_final_rescan_gets_autofix_pass(self):
+        remaining = _scan([], real_collision=[{
+            "file": "compositions/frames/05-price.html",
+            "selector": "h1.title", "container": "p.body"}])
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}), \
+             mock.patch.object(v, "_run_verify_all", side_effect=[
+                 (1, remaining), (1, _scan(_ROWS_SAMPLE)), (0, "GATE: PASS ✓\n")]) as scan, \
+             mock.patch.object(v, "run_claude", side_effect=self._edit_claude) as claude, \
+             mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
+            os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
+            out = v.verify_frame(self.d, self.logger)
+        self.assertEqual(out, self.sheet)
+        self.assertEqual(claude.call_count, 1)
+        self.assertEqual(scan.call_count, 3)
+        self.assertIn('<div class="f5-stamp" data-layout-allow-overlap="true">',
+                      self._read(self.d, "05-price.html"))
+
+    def test_final_rescan_pass_is_accepted(self):
+        remaining = _scan([], real_collision=[{
+            "file": "compositions/frames/05-price.html",
+            "selector": "h1.title", "container": "p.body"}])
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}), \
+             mock.patch.object(v, "_run_verify_all", side_effect=[
+                 (1, remaining), (0, "GATE: PASS ✓\n")]), \
+             mock.patch.object(v, "run_claude", side_effect=self._edit_claude), \
+             mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
+            self.assertEqual(v.verify_frame(self.d, self.logger), self.sheet)
+
+    def test_final_rescan_still_failing_raises(self):
+        remaining = _scan([], real_collision=[{
+            "file": "compositions/frames/05-price.html",
+            "selector": "h1.title", "container": "p.body"}])
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}), \
+             mock.patch.object(v, "_run_verify_all", side_effect=[
+                 (1, remaining), (1, remaining)]), \
+             mock.patch.object(v, "run_claude", side_effect=self._edit_claude):
+            with self.assertRaises(RuntimeError) as ctx:
+                v.verify_frame(self.d, self.logger)
+        self.assertIn("after 1 fix rounds", str(ctx.exception))
+
+    def test_remaining_unactionable_after_autofix_raises_without_model(self):
+        leftover = (
+            "── actionable summary ──\n  #2 tell only. No action.\n\n"
+            "GATE: FAIL ✗ (…, 0 error finding(s))\n"
+        )
+        with mock.patch.object(v, "_run_verify_all",
+                               side_effect=[(1, _scan(_ROWS_SAMPLE)), (1, leftover)]), \
+             mock.patch.object(v, "run_claude") as claude:
+            os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
+            with self.assertRaises(RuntimeError) as ctx:
+                v.verify_frame(self.d, self.logger)
+        claude.assert_not_called()
+        self.assertIn("0 actionable findings", str(ctx.exception))
+
+
+class FixPromptTest(unittest.TestCase):
+    def test_prompt_trims_waterfall_and_payload(self):
+        os.environ.pop("HTMLVIDEO_VERIFY_FIX_FULL_SCAN", None)
+        p = v._build_fix_prompt(_scan(_ROWS_SAMPLE), "/abs/proj")
+        self.assertIn("── actionable summary ──", p)
+        self.assertIn("GATE: FAIL", p)
+        self.assertIn("✗ [Layout] content_overlap", p)
+        self.assertNotIn("already stamped", p)
+        self.assertNotIn("verified 9 boundaries", p)
+        self.assertNotIn("[Contrast]", p)
+        self.assertNotIn("AT: 1,2,3", p)
+        self.assertNotIn(ao.FINDINGS_JSON_PREFIX.strip(), p)
+        self.assertIn("Project root (absolute): /abs/proj", p)
+
+    def test_full_scan_rollback(self):
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_FULL_SCAN": "1"}):
+            p = v._build_fix_prompt(_scan(_ROWS_SAMPLE))
+        self.assertIn("already stamped", p)
+        self.assertNotIn(ao.FINDINGS_JSON_PREFIX.strip(), p)
+
+    def test_missing_summary_falls_back_to_full(self):
+        os.environ.pop("HTMLVIDEO_VERIFY_FIX_FULL_SCAN", None)
+        p = v._build_fix_prompt("weird output without header\nGATE: FAIL ✗\n")
+        self.assertIn("weird output without header", p)
+
+    def test_reply_contract_and_attribute_value(self):
+        p = v._build_fix_prompt(_scan(_ROWS_SAMPLE))
+        self.assertIn("fixed <n>", p)
+        self.assertIn("fixed 0", p)
+        self.assertNotIn("list — one line each", p)
+        self.assertIn('data-layout-allow-overlap="true"', v._FIX_PLAYBOOK)
+        self.assertNotIn("do NOT read the whole file first", p)
+        self.assertIn("Read each target file (absolute path) at most ONCE, then Edit", p)
+        self.assertIn("Do NOT\n  Grep / Glob", p)
+
+    def test_trim_keeps_error_detail_lines(self):
+        os.environ.pop("HTMLVIDEO_VERIFY_FIX_FULL_SCAN", None)
+        scan = (
+            "── transitions verify ──\n"
+            "  ✗ exit 1 — transitions verify failed\n"
+            "      boundary 03→04: no injected block found\n"
+            "      boundary 05→06: duration 0.6 != 0.5\n"
+            "\n"
+            "── check ──\n"
+            "  ✗ [Layout] content_overlap in compositions/frames/05.html — x\n"
+            "    Fix: give each block its own zone\n"
+            "  ⚠ [Contrast] contrast_aa_failure — y\n"
+            "      contrast detail must not leak\n"
+            "  ✓ fine\n"
+            "── actionable summary ──\n  1) transitions verify failures\n"
+            "\nGATE: FAIL ✗ (…, 2 error finding(s))\n"
+        )
+        p = v._build_fix_prompt(scan)
+        self.assertIn("boundary 03→04: no injected block found", p)
+        self.assertIn("boundary 05→06: duration 0.6 != 0.5", p)
+        self.assertIn("Fix: give each block its own zone", p)
+        self.assertNotIn("[Contrast]", p)
+        self.assertNotIn("contrast detail must not leak", p)
+        self.assertNotIn("✓ fine", p)
 
 
 if __name__ == "__main__":
