@@ -321,7 +321,8 @@ SALVAGE_MAX_TURNS = 10
 SALVAGE_TIMEOUT = 300
 # P2-4: driver-level cap/effort override for every normal worker attempt
 # (salvage/degraded/phase-A keep their own caps). Unset = frame_html profile
-# default (64000 cap / high effort).
+# default (64000 cap / high effort). medium×64000 A/B procedure:
+# docs/2026-11-22-frame-html-effort-medium-ab.md (do not lower the cap).
 MAX_OUTPUT_ENV = "HTMLVIDEO_FRAME_HTML_MAX_OUTPUT"
 EFFORT_ENV = "HTMLVIDEO_FRAME_HTML_EFFORT"
 # P2-2: attempt 1 split into Phase A (style + body) → Phase B (script).
@@ -346,6 +347,8 @@ DEGRADE_MAX_TURNS = 30
 DEGRADE_MIN_TIMEOUT = 300
 RECIPES_SNIPPET_HEADING = "## Rule recipes (snippets)"
 RECIPES_FULL_HEADING = "## Rule recipes (full)"
+# Line-start only: the rule card mentions these headings in backticks.
+_RECIPES_HEADING_RE = re.compile(r"^## Rule recipes \((snippets|full)\)[ \t]*$", re.M)
 RICH_SKELETON_MARK = f"{SKELETON_MARK} (rich)"
 CUT_CATALOG_PATH = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "skills",
@@ -385,6 +388,15 @@ def _load_dispatch_text(project_dir: str, frame_id: str) -> str:
         return f.read()
 
 
+def _recipes_mode(dispatch_text: str) -> str | None:
+    """``"full"`` / ``"snippets"`` when the dispatch carries a real line-start
+    recipes heading, else ``None`` (index-only)."""
+    modes = {m.group(1) for m in _RECIPES_HEADING_RE.finditer(dispatch_text)}
+    if "full" in modes:
+        return "full"
+    return "snippets" if "snippets" in modes else None
+
+
 def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None):
     """Build the per-frame worker prompt with dispatch inlined.
 
@@ -400,13 +412,17 @@ def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None
     frame_file = f"compositions/frames/{frame_id}.html"
     fill_line = (
         f"A pre-built skeleton already exists at {frame_file} (a `{SKELETON_MARK}` "
-        "comment marks it). Your job is to FILL it, not design from scratch: edit in "
-        "chunks — style block → body → script block, each payload under ~20 KB. You may "
-        "add/remove any node or rewrite the file wholly (last write wins). Do NOT write "
-        "a new minimal skeleton first — it is already there."
+        "comment marks it). Your job is to FILL it, not design from scratch: after "
+        "reading the skeleton, write the complete file in ONE Write (or one large "
+        "Edit) when it will be under ~15 KB — do not split style → body → script "
+        "into separate edits. Only a larger file is chunked; any single Write input "
+        "must stay under ~20 KB (InputValidationError). You may add/remove any node "
+        "or rewrite the file wholly (last write wins). Do NOT write a new minimal "
+        "skeleton first — it is already there."
         if skeleton_mode else
-        f"You must create {frame_file}: build it in chunks — style block → body → "
-        "script block, each payload under ~20 KB."
+        f"You must create {frame_file}: write it in ONE Write when it will be under "
+        "~15 KB; only a larger file is chunked, and any single Write input must stay "
+        "under ~20 KB (InputValidationError)."
     )
     if skeleton_mode and project_dir and _is_rich_skeleton(project_dir, frame_id):
         fill_line += (
@@ -414,7 +430,8 @@ def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None
             "(`data-skeleton=\"bg\"`, track 0) and Scene labels (`scene1`, "
             "`scene2`, …) on the registered `tl` — style and reuse them, and drop "
             "`data-skeleton` from the ground clip once it is styled.")
-    if RECIPES_FULL_HEADING in dispatch_text:
+    recipes_mode = _recipes_mode(dispatch_text)
+    if recipes_mode == "full":
         recipe_line = (
             "What the dispatch inlines: the frame.md design-token excerpt, the rule "
             "card, your storyboard block, the selected blueprint body, and every "
@@ -422,7 +439,7 @@ def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None
             "`## Rule index` lists their RULES_DIR paths for reference only). Do "
             "NOT Read any recipe; never open frame.md or _role.md — they cannot "
             "add what the dispatch already carries.")
-    elif RECIPES_SNIPPET_HEADING in dispatch_text:
+    elif recipes_mode == "snippets":
         recipe_line = (
             "What the dispatch inlines: the frame.md design-token excerpt, the rule "
             "card, your storyboard block, the selected blueprint body, and a "
@@ -455,8 +472,9 @@ burns turns and cannot help this frame.
 Do NOT run frame-selfcheck and do NOT use Bash — the driver runs
 `node {FRAME_SELFCHECK_SCRIPT} {frame_file}` after you finish and will
 re-dispatch you (bounded) with FAIL findings if needed. When you have written
-the fill, reply exactly: done OK {frame_id}
-On an unrecoverable failure instead reply: fail {frame_id}: <reason>
+the fill, your final reply is ONLY this one line: done OK {frame_id}
+On an unrecoverable failure instead reply only: fail {frame_id}: <reason>
+No summary, checklist, or explanation — any extra text is wasted wall time.
 
 {recipe_line} Optional, at most once: {CUT_CATALOG_PATH}
 (only for within-scene cut seams).
