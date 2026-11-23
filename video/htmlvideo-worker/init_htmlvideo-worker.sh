@@ -2,6 +2,9 @@ echo "set us host directory permission..."
 
 # 确保目录存在
 sudo mkdir -p /home/aigc/data/aioutput/worker-logs/htmlvideo-worker-logs
+sudo mkdir -p /home/aigc/data/aioutput/worker-logs/htmlvideo-worker-logs/claude
+sudo mkdir -p /home/aigc/data/aioutput/worker-logs/htmlvideo-worker-logs/codex
+sudo mkdir -p /home/aigc/data/aioutput/worker-logs/htmlvideo-worker-logs/grok
 # 设置目录所有者为 aigc 用户
 sudo chown -R aigc:aigc /home/aigc/data/aioutput/worker-logs/htmlvideo-worker-logs
 # 设置目录权限，确保可以写入
