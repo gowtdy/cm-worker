@@ -24,7 +24,7 @@ Scene N (…–end):   content has resolved; hold the read (stillness; subtle ji
 
 Don't invent each shot from scratch. The frame's **role** (its `type` / `beat`) points to a proven shape:
 
-1. **Match the role to a blueprint.** Open `../hyperframes-animation/blueprints-index.md`, find the frame's role in the **role→blueprint menu**, and pick the blueprint whose intent fits this beat (story may already have named a candidate id — confirm or override it). Read that `blueprints/<id>.md`: it is a short, domain-agnostic, **time-coded shot template with `[slots]`** and a named **signature move** (the thing that makes the shape itself — the SVG ring, the push-THROUGH, the in-place token swap).
+1. **Match the role to a blueprint.** Open `../hyperframes-animation/blueprints-index.md`, find the frame's role in the **role→blueprint menu**, and pick the blueprint whose intent fits this beat (story may already have named a candidate id — confirm or override it; in the driver flow the design phase's `## Blueprint assignment` already made this choice and per-frame workers follow it without re-weighing the candidate). Read that `blueprints/<id>.md`: it is a short, domain-agnostic, **time-coded shot template with `[slots]`** and a named **signature move** (the thing that makes the shape itself — the SVG ring, the push-THROUGH, the in-place token swap).
 
 2. **Instantiate its `[slots]` with THIS frame's invented content** — three postures:
    - **Reproduce** — the blueprint fits the beat and your content maps onto its slots cleanly. Fill every `[slot]` with this frame's word / shape / stat and follow its Scene timing. Write the resulting Scene lines.
@@ -51,11 +51,12 @@ Story-design's `## Frame N` block already carries the narrative. You append the 
 - focal: the snowball                  ← you add: the INVENTED hero element of this beat
 - roles: snowball = foreground subject · hill = background gradient (dim ~40%) · ring labels = supporting   ← you add: role per invented element
 - sfx: whoosh-soft, tick               ← you add: the sound the beat wants (fetched + mounted at root; never yours to embed)
+- rules: stat-bars-and-fills, counting-dynamic-scale, ambient-glow-bloom   ← you add (REQUIRED): rule ids the Scenes cite
 
 Adapt: keep the count-up-ring signature; the trend chart becomes the snowball's labeled rings climbing.
-Scene 1 (0.0–1.2s): solid hill gradient (dim ~40%); the snowball seats upper-left, a circular progress ring + bold center number anchor it — Centered template, ~50% of frame. Slow push-in runs underneath.
-Scene 2 (1.2–3.4s): as the VO names each turn, the snowball rolls down and gains one labeled ring per turn (layer-reveal); a small total ticks up beside it (the count-up reveals on its spoken cue, not at t=0). Asymmetric 60/40, 3 depth layers.
-Scene 3 (3.4–5.0s): land the final ring emphasis dead-center, accent glow blooms behind it and holds; the total reads clean and STILL — no continuing push, no breathing (a held beat beats bad motion). The stillness reads against the prior motion.
+Scene 1 (0.0–1.2s): solid hill gradient (dim ~40%); the snowball seats upper-left, a circular progress ring (`stat-bars-and-fills`) + bold center number anchor it — Centered template, ~50% of frame. Slow push-in runs underneath.
+Scene 2 (1.2–3.4s): as the VO names each turn, the snowball rolls down and gains one labeled ring per turn (layer-reveal); a small total ticks up beside it (`counting-dynamic-scale` — the count-up reveals on its spoken cue, not at t=0). Asymmetric 60/40, 3 depth layers.
+Scene 3 (3.4–5.0s): land the final ring emphasis dead-center, accent glow blooms behind it (`ambient-glow-bloom`) and holds; the total reads clean and STILL — no continuing push, no breathing (a held beat beats bad motion). The stillness reads against the prior motion.
 ```
 
 The lightweight tags:
@@ -64,10 +65,11 @@ The lightweight tags:
 - **`focal:`** — which **invented** element is the hero of this beat (a hero word, a diagram node, a chart series, a coined-term card).
 - **`roles:`** — each invented element's role: `foreground subject` (the thing the eye lands on, text laid around it) · `background` (full-bleed field / gradient / grid, dim 30–50%) · `supporting` (labels, secondary shapes, ambient layers). Since there are no captured assets, you are **designing** these elements, not selecting them — keep them **few and load-bearing**. A user-supplied `public/<basename>` image, if any (named in story's `asset_candidates`), is treated as the `focal` cutout or a `background`.
 - **`sfx:`** — name the sound the beat wants (an impact for a slam, a whoosh for a push, a tick for a count). The audio script's `fetch-sfx` pass retrieves it and the assembler mounts it at the root — you only **name** it, never embed an `<audio>` element.
+- **`rules:`** — **required**: comma-separated rule ids (exact stems of `../hyperframes-animation/rules/*.md`, ≥1, usually 2–4) for the motions this frame's Scenes use — the same ids cited in backticks in the Scene lines. `/aiflow-build-frame-html` packets load only cited rules; `storyboard-gate.mjs` fails a frame with a missing/empty `- rules:` or an unknown id. Cut-catalog seams are not rule ids — Scene text only.
 
 **Layout is stated INLINE in each Scene line** — name the template, density, depth, and hierarchy as part of "where it sits" (`Centered, ~50% of frame`, `asymmetric 60/40, 3 depth layers`), drawing on the **Layout** vocabulary below; never write px / scale / shadow recipes (the worker writes those).
 
-**Motion is named INLINE in each Scene line** — name the move from `motion-language.md`'s vocabulary (`per-word reveal`, `layer-reveal`, `count-up`, `glow blooms`) and let it settle on a long-tail curve (`power3` default — smooth beats bouncy; see `motion-language.md`). Never write ease curves / ms / stagger (those resolve in `/aiflow-build-frame-html` from that skill's local `../hyperframes-animation/rules/`).
+**Motion is named INLINE in each Scene line** — name the move from `motion-language.md`'s vocabulary (`per-word reveal`, `layer-reveal`, `count-up`, `glow blooms`) with its rule id in backticks beside it, and let it settle on a long-tail curve (`power3` default — smooth beats bouncy; see `motion-language.md`). Never write ease curves / ms / stagger (those resolve in `/aiflow-build-frame-html` from that skill's local `../hyperframes-animation/rules/`).
 
 ## Inventing the visual — diagrams, type, data-viz
 
@@ -139,6 +141,7 @@ The bottom ~17% of the canvas is reserved for the caption pill. Plan every frame
 - Every frame names a **`blueprint:`** id (Reproduce / Adapt) or `compose`; an Adapt states keep/change and **keeps the signature move**; nothing collapses to a single front-loaded dump — reveals stay paced to the VO.
 - **Held frames are deliberate** — allocated in Video direction for rhythm; a held read is fine (prefer stillness to bad motion), but no frame may be front-loaded-then-frozen.
 - Each frame names its **invented** `focal` + per-element `roles` (foreground / background / supporting), kept few and load-bearing.
+- Each frame has a non-empty **`- rules:`** line of real rule ids, and each named motion in its Scenes carries its rule id in backticks (plain "types on" / "pop-stagger" alone is not a citation).
 - The invented hero fills 40–60% of the frame (a diagram big enough to read, a hero word near full-bleed) — not shrunk into decoration around empty space.
 - Layout named **inline** per Scene (template / density / depth / hierarchy — the **Layout** vocabulary here); motion named **inline** per Scene from the vocabulary (`motion-language.md`). No px / ease curves / ms / JS.
 - Content planned into the top ~83% (caption band clear).
