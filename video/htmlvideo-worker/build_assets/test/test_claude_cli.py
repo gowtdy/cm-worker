@@ -238,6 +238,8 @@ class RunClaudeTests(unittest.TestCase):
         self.assertEqual(
             _resolve_profile("visual", logger, "32000")["thinking"], "32000")
         self.assertIn("Skill", REAL["visual"]["deny_tools"])
+        self.assertEqual(
+            REAL["frame_html"]["deny_tools"], ["Bash", "Glob", "Grep", "Skill"])
         self.assertNotIn("deny_tools", REAL["visual_legacy"])  # legacy edits STORYBOARD
         with mock.patch.dict(
                 os.environ, {"HTMLVIDEO_CLAUDE_VISUAL_THINKING_TOKENS": "64000"}):
