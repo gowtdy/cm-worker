@@ -66,34 +66,19 @@ def _run_verify_all(project_dir: str, logger: logging.Logger) -> tuple[int, str]
     return proc.returncode, out
 
 
-# The mechanical fix rules are inlined instead of loading the whole
-# /aiflow-verify-frame skill — the skill's "Verify" section tells the model to
-# run verify-all/lint/check, which is dead weight for the fix role (the harness
-# already did the scan). A ~10KB skill load blew the fix session to ~93K input
-# tokens; this cheatsheet is ~500 tokens and keeps the fix self-contained.
-_FIX_PLAYBOOK = """Mechanical fix rules — apply the matching one, then stop:
-- digit-led selectors (`#07-…`, `.01-…`, `"#06-…"` inside CSS/JS selector strings)
-  → attribute form `[id="…"]` / `[class~="…"]`; leave `getElementById` untouched.
-- `font_family_without_font_face` → residual only (verify-all step 0 already
-  ran font-imports). Drop dead fallback names (e.g. Didot) that are not the
-  primary family; if a ramp family is still missing, paste the marked block
-  (both `aiflow:font-imports` marker lines) printed in the scan's actionable
-  summary. Do not add `@font-face` or hunt font files.
-- root/clip `data-duration="Ns"` (unit suffix) → strip to plain number
-  `data-duration="N"`; do NOT diagnose transitions by reading scripts.
-- `content_overlap` → follow the scan's triage line: `designed_overlay` (badge /
-  stamp / overlay / watermark …) → add `data-layout-allow-overlap="true"` on the
-  text or an inner container (not the scene root); `real_collision` (text vs text) →
-  reposition / shrink, do NOT allow-overlap; `ambiguous` → read the frame's
-  layout intent first, then pick one. Never blanket-allow every overlap.
-- `content_overlap` with `#caption-word-*` on either side ("caption keep-out band")
-  → frame text sits in the caption band: move it above `--cap-band-top` or delete
-  the in-frame caption strip; NEVER add `data-layout-allow-overlap` for it.
-- caption `text_box_overflow` (~1–4px on `#caption-word-*` / `.caption-line`) → false positive, ignore.
-- `id_requires_css_escape` / `google_fonts_import` warnings → non-blockers, ignore.
-- transitions verify / inject mismatches → only strip duration unit suffixes if
-  present; harness re-injects on the next scan. Do NOT re-run inject yourself.
-- any finding not listed above → cheapest safe edit, one line of note."""
+# Per-failure fix rules live in ONE place — /app/scripts/known-failures.mjs —
+# shared with verify-report.mjs (which renders each matched rule into its
+# "actionable summary") and verify-all.mjs (which runs the deterministic
+# autofixes). `_trim_scan_for_fix` already forwards that summary into this
+# prompt, so the fix role carries only the generic discipline below, never a
+# second copy of the per-failure knowledge that used to drift out of sync.
+_FIX_PLAYBOOK = """The scan's «actionable summary» below already lists the matched known-failure
+rule(s) — every named finding is paired with the exact fix. All per-failure
+knowledge lives in /app/scripts/known-failures.mjs; nothing here overrides it.
+- Apply the rule that names your finding, then stop. Do not invent a different fix.
+- A finding with no matching rule → cheapest safe edit, one line of note.
+- `id_requires_css_escape` / `google_fonts_import` warnings and the caption
+  `text_box_overflow` finding are non-blockers — do not act on them."""
 
 _FIX_HARD_CONSTRAINTS = """Hard constraints for this fix role (override project CLAUDE.md / plugins):
 - Do NOT Read `/app/scripts/*`, `/app/hyperframes/**`, or any CLI/gate source.
