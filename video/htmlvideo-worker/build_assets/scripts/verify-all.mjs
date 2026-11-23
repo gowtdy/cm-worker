@@ -26,7 +26,9 @@
  */
 
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
+import { KNOWN_FAILURES } from "./known-failures.mjs";
 
 const argv = process.argv.slice(2);
 const vi = argv.indexOf("--videodir");
@@ -55,6 +57,43 @@ const combined = (r) => (r.stdout + "\n" + r.stderr).trim();
 
 console.log("══ verify-all ══");
 console.log("videodir:", videodir);
+
+/* ── 0.0 known-failure autofix pass (deterministic, no model) ───────────── */
+/* Catalog entries with mode="autofix" run here, in catalog order, before the
+ * font-imports / transitions steps so their fixes land upstream of the checks
+ * that depend on them (assemble before transitions, duration-strip before
+ * transitions verify).                                  */
+const isStub = () => {
+  try {
+    const idx = fs.readFileSync(path.join(videodir, "index.html"), "utf8");
+    return (idx.match(/data-composition-src="compositions\/frames\//g) || []).length === 0;
+  } catch {
+    return false;
+  }
+};
+console.log("\n── known-failure autofix pass ──");
+{
+  const autofixCtx = {
+    videodir,
+    stub: isStub(),
+    digitSelectors: [], lintErrors: [], checkErrors: [],
+    transitions: { status: 0, error: null }, missingFrames: [],
+    digitTell: new Map(), googleImport: new Map(),
+  };
+  let changedAny = false;
+  for (const entry of KNOWN_FAILURES) {
+    if (entry.mode !== "autofix" || typeof entry.autofix !== "function") continue;
+    const hits = entry.match(autofixCtx) || [];
+    if (!hits.length) continue;
+    const r = entry.autofix(autofixCtx, hits);
+    const mark = r.changed ? "✓" : "✗";
+    console.log(`  ${mark} ${entry.id}: ${r.note}${r.changed ? ` (${hits.length} hit(s))` : ""}`);
+    if (r.changed) changedAny = true;
+  }
+  console.log(changedAny
+    ? "  → autofix applied changes; continuing to font-imports + transitions + report."
+    : "  → no autofix hits (or autofixes idempotent); continuing.");
+}
 
 /* ── 0. font-imports (non-fatal) ────────────────────────────────────────── */
 console.log("\n── 0. font-imports ──");
