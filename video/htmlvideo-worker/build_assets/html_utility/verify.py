@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """Verify assembled video helpers for htmlvideo worker.
 
-``verify-all.mjs`` step 0 runs ``font-imports.mjs`` (scope=all) before the
-idempotent transitions inject. That step is non-fatal and is skipped when
-``HTMLVIDEO_FONT_IMPORTS`` is ``0`` / ``false`` / ``off`` / ``no``.
+``verify-all.mjs --phase prepare`` runs once per ``verify_frame`` session
+(known-failure autofix → ``font-imports.mjs --scope all`` (non-fatal;
+``HTMLVIDEO_FONT_IMPORTS=0/false/off/no`` skips) → idempotent transitions
+inject); the fix loop only reruns ``--phase verify``.
 """
 
 from __future__ import annotations
@@ -34,9 +35,34 @@ CONTACT_SHEET_GLOB = os.path.join(SNAPSHOTS_DIR, "contact-sheet*.jpg")
 
 VERIFY_ALL_SCRIPT = "/app/scripts/verify-all.mjs"
 _MAX_FIX_ROUNDS = 3  # default; HTMLVIDEO_VERIFY_FIX_ROUNDS overrides
+_PREPARE_TIMEOUT_S = 300
+_VERIFY_TIMEOUT_S = 900
 
 
-def _run_verify_all(project_dir: str, logger: logging.Logger) -> tuple[int, str]:
+def _run_verify_phase(project_dir: str, phase: str, timeout: int, logger: logging.Logger) -> tuple[int, str]:
+    cmd = ["node", VERIFY_ALL_SCRIPT, "--videodir", project_dir, "--phase", phase]
+    logger.info("verify-all %s: %s", phase, " ".join(cmd))
+    try:
+        proc = subprocess.run(
+            cmd, cwd=project_dir, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("verify-all %s timed out", phase)
+        return 2, f"verify-all.mjs --phase {phase} timed out"
+    out = proc.stdout or ""
+    if out and not out.endswith("\n"):
+        out += "\n"
+    if proc.stderr:
+        out += "\n[stderr]\n" + proc.stderr
+    logger.info("verify-all %s done rc=%d (out %d bytes)", phase, proc.returncode, len(out))
+    return proc.returncode, out
+
+
+def _run_prepare(project_dir: str, logger: logging.Logger) -> tuple[int, str]:
+    return _run_verify_phase(project_dir, "prepare", _PREPARE_TIMEOUT_S, logger)
+
+
+def _run_verify(project_dir: str, logger: logging.Logger) -> tuple[int, str]:
     """Deterministic mechanical scan (no model). Returns ``(rc, output)``.
 
     ``rc`` mirrors ``verify-all.mjs`` / ``verify-report.mjs``:
@@ -47,30 +73,19 @@ def _run_verify_all(project_dir: str, logger: logging.Logger) -> tuple[int, str]
     The model never runs the scan itself — running it here removes the model's
     per-turn orchestration tax (TTFB + turn latency) and the redundant
     find/cat/ls exploration turns it spent re-discovering the playbook.
+
+    prepare already ran once in this session; this phase only diagnoses and
+    gates, and does not modify files except snapshot.
     """
-    cmd = ["node", VERIFY_ALL_SCRIPT, "--videodir", project_dir]
-    logger.info("verify-all scan: %s", " ".join(cmd))
-    try:
-        proc = subprocess.run(
-            cmd, cwd=project_dir, capture_output=True, text=True, timeout=900
-        )
-    except subprocess.TimeoutExpired:
-        logger.error("verify-all scan timed out")
-        return 2, "verify-all.mjs timed out"
-    out = proc.stdout or ""
-    if out and not out.endswith("\n"):
-        out += "\n"
-    if proc.stderr:
-        out += "\n[stderr]\n" + proc.stderr
-    logger.info("verify-all scan done rc=%d (out %d bytes)", proc.returncode, len(out))
-    return proc.returncode, out
+    return _run_verify_phase(project_dir, "verify", _VERIFY_TIMEOUT_S, logger)
 
 
 # Per-failure fix rules live in ONE place — /app/scripts/known-failures.mjs —
 # shared with verify-report.mjs (which renders each matched rule into its
-# "actionable summary") and verify-all.mjs (which runs the deterministic
-# autofixes). `_trim_scan_for_fix` already forwards that summary into this
-# prompt, so the fix role carries only the generic discipline below, never a
+# "actionable summary") and verify-all.mjs (whose prepare phase runs the
+# deterministic autofixes once per session). `_trim_scan_for_fix` already
+# forwards that summary into this prompt, so the fix role carries only the
+# generic discipline below, never a
 # second copy of the per-failure knowledge that used to drift out of sync.
 _FIX_PLAYBOOK = """The scan's «actionable summary» below already lists the matched known-failure
 rule(s) — every named finding is paired with the exact fix. All per-failure
@@ -158,7 +173,7 @@ def _build_fix_prompt(scan_output: str, project_dir: str = "") -> str:
     root_line = f"Project root (absolute): {project_dir}\n\n" if project_dir else ""
     return (
         "Fix the verification findings below in this HyperFrames project root. "
-        "The deterministic scan (`node /app/scripts/verify-all.mjs`) has ALREADY "
+        "The deterministic scan (`node /app/scripts/verify-all.mjs --phase verify`, after a one-time prepare pass) has ALREADY "
         "run and returned gate findings (exit 1); its error findings and "
         "«actionable summary» are appended.\n\n"
         + root_line
@@ -294,7 +309,7 @@ def _auto_fix_overlaps(
         round_no, result.nodes_marked, len(result.files_changed),
         ", ".join(result.files_changed), result.handled, len(result.unresolved),
     )
-    return _run_verify_all(project_dir, logger)
+    return _run_verify(project_dir, logger)
 
 
 def verify_frame(
@@ -310,7 +325,7 @@ def verify_frame(
     or a missing contact sheet. Returns the path to
     ``snapshots/contact-sheet.jpg`` (or a comma-joined list when paginated).
 
-    Control flow is Python-driven, not model-driven: ``verify-all.mjs`` runs as
+    Control flow is Python-driven, not model-driven: ``verify-all.mjs --phase verify`` runs as
     a plain subprocess (no claude), so a clean project never invokes the model
     at all. Only when the scan reports findings (exit 1) does the model get a
     single batched-fix turn, after which the scan re-runs; this repeats up to
@@ -323,14 +338,22 @@ def verify_frame(
     rescan after the last model round is checked too, with one more auto-fix
     pass if it still fails. ``HTMLVIDEO_VERIFY_AUTO_OVERLAP=0`` disables this.
 
-    Step 0 of that scan is ``font-imports.mjs --scope all`` (non-fatal;
-    ``HTMLVIDEO_FONT_IMPORTS=0/false/off/no`` skips it). Residuals are what
-    the fix prompt is allowed to hand-edit.
+    ``verify-all.mjs --phase prepare`` runs once per session (known-failure
+    autofix, then ``font-imports.mjs --scope all`` — non-fatal;
+    ``HTMLVIDEO_FONT_IMPORTS=0/false/off/no`` skips it — then idempotent
+    transitions inject). A non-zero prepare result raises immediately and does
+    not call the model. Residuals are what the fix prompt is allowed to hand-edit.
     """
     _validate_prerequisites(project_dir)
     max_fix = _env_positive_int("HTMLVIDEO_VERIFY_FIX_ROUNDS", _MAX_FIX_ROUNDS, logger)
 
-    rc, output = _run_verify_all(project_dir, logger)
+    prep_rc, prep_out = _run_prepare(project_dir, logger)
+    if prep_rc != 0:
+        raise RuntimeError(
+            f"verify-all prepare failure rc:{prep_rc} (not a model fix): " + prep_out[-2000:]
+        )
+
+    rc, output = _run_verify(project_dir, logger)
     for round_no in range(1, max_fix + 1):
         if rc == 0:
             logger.info(
@@ -380,7 +403,7 @@ def verify_frame(
                 "compositions/**/*.html — refusing to re-dispatch the same scan "
                 "(model produced no Edit, or scan findings were non-actionable)"
             )
-        rc, output = _run_verify_all(project_dir, logger)
+        rc, output = _run_verify(project_dir, logger)
 
     if rc == 1 and auto_overlap_enabled():
         rc, output = _auto_fix_overlaps(project_dir, rc, output, max_fix + 1, logger)
