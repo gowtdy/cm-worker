@@ -30,7 +30,6 @@ function mkCtx(overrides = {}) {
     lintErrors: [],
     checkErrors: [],
     transitions: { status: 0, error: null },
-    missingFrames: [],
     digitTell: new Map(),
     googleImport: new Map(),
     ...overrides,
