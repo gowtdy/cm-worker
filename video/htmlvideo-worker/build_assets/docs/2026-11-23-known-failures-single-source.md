@@ -47,7 +47,7 @@ report 硬编码 4 处),新增 finding 类型时三处都跟不上。本设计�
 
 | mode | 含义 | 消费方 | 输出形态 |
 |---|---|---|---|
-| `autofix` | 确定性脚本修,不进模型 | `verify-all.mjs` 的 autofix pass | 修掉即重扫;残留才回 report 打编号 item |
+| `autofix` | 确定性脚本修,不进模型 | `verify-all.mjs --phase prepare` 的 autofix pass(每会话一次) | 修掉即重扫;残留才回 report 打编号 item |
 | `model` | 需模型判断 | `verify-report.mjs` → `verify.py` 的 fix prompt | actionable summary 里编号 `N)` item |
 | `ignore` | 已知误报/非问题 | 同 model,但不 blocking | `•`(不编号,不计入 actionable) |
 | `info` | tell / 非阻塞警告 | 同 ignore | `•`(不编号) |
@@ -84,7 +84,7 @@ report 硬编码 4 处),新增 finding 类型时三处都跟不上。本设计�
 | `content-overlap` | model | `triageOverlaps` 三分流 designed/real/ambiguous + caption 保留带禁令 |
 | `text-occluded` | **model(新增)** | `data-layout-allow-occlusion`(不是 overlap),或提 z-index —— 直接修掉 22点失败 |
 | `text-not-painted` | **model(新增)** | 修 `-webkit-text-fill-color` / `color` 透明填充 |
-| `transitions-verify` | info | 自愈(verify-all step1 总是幂等 inject);「s」后缀由 duration entry 处理 |
+| `transitions-verify` | info | prepare 阶段每个 verify 会话幂等 inject 一次;残留非模型可修;「s」后缀由 duration entry 处理 |
 | `caption-text-box-overflow` | ignore | 已知误报(贴合 line-height + 无 overflow:hidden) |
 | `id-requires-css-escape` | info | tell,非缺陷 |
 | `google-fonts-import` | info | 非阻塞 |
