@@ -299,9 +299,9 @@ export const KNOWN_FAILURES = [
         : [],
     mode: "info",
     prompt:
-      'verify-all already ran the idempotent inject guard ("no injected block" → inject) and re-injects on rerun; if the block exists but mismatches, re-inject is safe. Do NOT hand-edit transition blocks or re-inject yourself — strip any data-duration unit suffix instead.',
+      "verify-all already ran the idempotent transitions inject (step 1) and re-injects on every rerun; do NOT hand-edit transition blocks or re-inject yourself — strip any data-duration unit suffix instead.",
     reason:
-      "self-healing via verify-all step 1; the 's' suffix is the usual root cause (handled by data-duration-unit-suffix).",
+      "self-healing via verify-all step 1 (always inject); the 's' suffix is the usual root cause (handled by data-duration-unit-suffix).",
   },
 
   /* ————— ignore entries (false positive / non-issue) ————— */
