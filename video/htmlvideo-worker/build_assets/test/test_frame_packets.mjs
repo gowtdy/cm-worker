@@ -699,7 +699,183 @@ export function testSceneTimelineDrift() {
   console.log("scene timeline drift OK");
 }
 
+const ANIM = join(ROOT, "skills", "hyperframes-animation");
+const KINETIC = readFileSync(join(ANIM, "blueprints", "kinetic-type-beats.md"), "utf8");
+
+function withEnv(name, value, fn) {
+  const prev = process.env[name];
+  if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  try { return fn(); } finally {
+    if (prev === undefined) delete process.env[name]; else process.env[name] = prev;
+  }
+}
+
+// Generic structure (not kinetic-specific): roles, a Scene with an OR-chain and
+// role variants, a vocabulary, a rule mapping and an appendix.
+const SYNTH_BLUEPRINT = `# synth — Synthetic
+
+**intent**: a test shot.
+
+**roles served**
+
+- Hook (from \`synth-hook-flash\`): a flash open.
+- CTA (from \`synth-cta-lockup\`): a lockup close.
+
+**duration**: 3–6s
+
+**shot structure**
+
+- **Scene 1 (0.0–1.0s) — open.** Text enters via ONE move: slide-up OR wipe-in OR blur-in OR spin-in.
+${["Hook (flash)", "Hook (relay)", "CTA", "CTA (button)", "Problem", "Benefits"].map((v) =>
+    `  - _Variant — ${v}_: ${"filler words describing this variant at length. ".repeat(12)}`).join("\n")}
+
+**motion vocabulary**: ${"lots of verbs; ".repeat(120)}
+
+**rule mapping**
+
+- letter-scramble resolve with divider ticks → \`hacker-flip-3d\` (glyph decode)
+- confetti burst up-and-drift → \`particle-burst\`
+${"- unrelated thing number x → `gsap-effects` (padding)\n".repeat(40)}
+**HARD RULE — keep me**: never drop this.
+
+---
+
+PROVENANCE-ONLY
+`;
+
+export function testNarrowBlueprint() {
+  // real blueprint, no role → conservative trim
+  const plain = core.narrowBlueprint(KINETIC, { block: "", role: null });
+  const plainBytes = Buffer.byteLength(plain.text);
+  assert.ok(plain.narrowed);
+  assert.ok(plainBytes <= 12000, `kinetic-type-beats narrowed to ${plainBytes} > 12000`);
+  assert.ok(plain.text.startsWith(core.NARROWED_BLUEPRINT_NOTE));
+  for (const keep of ["**intent**", "**roles served**", "**shot structure**", "**rule mapping**", "Sub-shape A", "Scene N"])
+    assert.ok(plain.text.includes(keep), `must keep ${keep}`);
+  assert.ok(plain.text.includes("pick one option and build, do not enumerate"));
+  // Hook frame doing an in-place token swap → Hook variants only, flash preferred
+  const block = "## Frame 1 — Buying on emotion\n\n- type: hook\n- blueprint: kinetic-type-beats (Reproduce)\n"
+    + "Scene 1 (0.0–1.0s): the word types on with a trailing caret.\n"
+    + "Scene 2 (1.0–3.0s): \"feeling\" hard-cuts in place to \"panic\" — instant token swap, no roll.\n";
+  assert.strictEqual(core.frameRole(block), "Hook");
+  const hook = core.narrowBlueprint(KINETIC, { block });
+  assert.ok(Buffer.byteLength(hook.text) < plainBytes, "role narrowing is smaller");
+  assert.ok(Buffer.byteLength(hook.text) <= 10000, `hook narrowing ${Buffer.byteLength(hook.text)}`);
+  assert.ok(hook.text.includes("_Variant — Hook (flash)_"), "token-swap frame keeps the flash variant");
+  assert.ok(!/_Variant — (?:CTA|Problem|Benefits|Brand_Outro|Product_Intro)/.test(hook.text), "other roles dropped");
+  assert.ok(!hook.text.includes("- CTA (from"), "roles served narrowed to Hook");
+  assert.ok(hook.text.includes("`discrete-text-sequence` + `context-sensitive-cursor`"), "relevant rule mapping kept");
+  assert.ok(!hook.text.includes("`center-outward-expansion`"), "irrelevant rule mapping dropped");
+  // generic structure
+  const s = core.narrowBlueprint(SYNTH_BLUEPRINT, { block: "- type: cta\nScene 1: a confetti burst up-and-drift then a wipe-in." });
+  assert.ok(s.text.includes("_Variant — CTA_") && s.text.includes("_Variant — CTA (button)_"));
+  assert.ok(!s.text.includes("Hook (relay)") && !s.text.includes("- Hook (from"));
+  assert.ok(s.text.includes("slide-up OR wipe-in. _(+2 alternatives omitted)_"), "OR chain capped to lead + most relevant");
+  assert.ok(s.text.includes("confetti burst up-and-drift → `particle-burst`"));
+  assert.ok(!s.text.includes("(glyph decode)") && !s.text.includes("(padding)"), "rule-side parentheticals stripped");
+  assert.ok(s.text.includes("mappings for motions this frame does not ask for omitted"));
+  assert.ok(s.text.includes("**HARD RULE — keep me**"), "unknown sections kept verbatim");
+  assert.ok(!s.text.includes("PROVENANCE-ONLY"), "appendix after --- dropped");
+  // small blueprints pass through untouched
+  const small = core.narrowBlueprint("# t\n\n**rule mapping**\n\n- a → `b`\n", { block: "" });
+  assert.ok(!small.narrowed && small.text === "# t\n\n**rule mapping**\n\n- a → `b`");
+  // dispatch plumbing + env switch (default ON)
+  const dir = mkdtempSync(join(tmpdir(), "fh-narrow-"));
+  mkdirSync(join(dir, "blueprints"), { recursive: true });
+  mkdirSync(join(dir, "rules"), { recursive: true });
+  writeFileSync(join(dir, "blueprints", "kinetic-type-beats.md"), KINETIC);
+  const card = join(dir, "card.md"); writeFileSync(card, "role card text");
+  const sb = `## Frame 1 — Hook\n\n- src: compositions/frames/01-hook.html\n- duration: 4s\n${block.split("\n").slice(2).join("\n")}`;
+  const frames = core.splitFrames(sb).map((f) => ({ ...f, frameId: core.frameId(f) }));
+  const build = (out) => readFileSync(core.buildDispatchDocs({
+    projectDir: dir, frames, outDir: join(dir, out), animationDir: dir, cardPath: card, storyboard: sb,
+  })[0].path, "utf8");
+  const on = withEnv("HTMLVIDEO_FRAME_PACKETS_NARROW_BLUEPRINT", undefined, () => build("on"));
+  assert.ok(on.includes(`## Selected blueprint: kinetic-type-beats (mode: Reproduce)\n\n${core.NARROWED_BLUEPRINT_NOTE}`));
+  const off = withEnv("HTMLVIDEO_FRAME_PACKETS_NARROW_BLUEPRINT", "0", () => build("off"));
+  assert.ok(!off.includes(core.NARROWED_BLUEPRINT_NOTE) && off.includes(KINETIC.trim()), "off → full blueprint");
+  console.log("narrow blueprint OK", plainBytes, Buffer.byteLength(hook.text), "bytes");
+}
+
+export function testInferCitedRules() {
+  const ruleIds = core.knownRuleIds(ANIM);
+  const block = "## Frame 1 — Open\n\n- rules:\n- duration: 4s\n"
+    + "Scene 1 (0.0–2.0s): \"feeling\" type-on at the tip with a blinking caret.\n";
+  assert.deepStrictEqual(core.citedRules(block, ruleIds), []);
+  const inferred = core.inferCitedRules(block, ruleIds);
+  assert.ok(inferred.includes("discrete-text-sequence"), `type-on → discrete-text-sequence (${inferred})`);
+  assert.ok(inferred.includes("context-sensitive-cursor"), "caret → context-sensitive-cursor");
+  // the selected blueprint's rule mapping is consulted first
+  const viaMap = core.inferCitedRules("Scene 1: the in-place token cycle hard-cut swaps the last word.", ruleIds,
+    { blueprintText: KINETIC });
+  assert.strictEqual(viaMap[0], "discrete-text-sequence", `mapping hit ${viaMap}`);
+  const synth = core.inferCitedRules("Scene 2: the title runs a letter-scramble resolve.", ruleIds,
+    { blueprintText: SYNTH_BLUEPRINT });
+  assert.deepStrictEqual(synth, ["hacker-flip-3d"], "phrase-table-free id comes from the mapping");
+  // negation, unknown ids, exclude, max
+  assert.deepStrictEqual(core.inferCitedRules("Scene 1: no type-on, no caret, no confetti.", ruleIds), []);
+  assert.deepStrictEqual(core.inferCitedRules("types on with a caret", ["context-sensitive-cursor"]), ["context-sensitive-cursor"]);
+  assert.deepStrictEqual(core.inferCitedRules("types on with a caret", ruleIds, { exclude: ["discrete-text-sequence"], max: 1 }),
+    ["context-sensitive-cursor"]);
+  const { rules, cited } = core.frameRules(`${block}- rules: counting-dynamic-scale\n`, ruleIds);
+  assert.deepStrictEqual(cited, ["counting-dynamic-scale"]);
+  assert.strictEqual(rules[0], "counting-dynamic-scale", "explicit rules stay first");
+  // dispatch: inferred ids reach the Rule index and the snippet recipes
+  const dir = mkdtempSync(join(tmpdir(), "fh-infer-"));
+  mkdirSync(join(dir, "rules"), { recursive: true });
+  for (const id of ["discrete-text-sequence", "context-sensitive-cursor"])
+    writeFileSync(join(dir, "rules", `${id}.md`), readFileSync(join(ANIM, "rules", `${id}.md`), "utf8"));
+  const card = join(dir, "card.md"); writeFileSync(card, "role card text");
+  const sb = block.replace("- rules:\n", "- src: compositions/frames/01-open.html\n");
+  const frames = core.splitFrames(sb).map((f) => ({ ...f, frameId: core.frameId(f) }));
+  const build = (out) => readFileSync(core.buildDispatchDocs({
+    projectDir: dir, frames, outDir: join(dir, out), animationDir: dir, cardPath: card, storyboard: sb,
+    inlineRecipes: "snippet",
+  })[0].path, "utf8");
+  const on = withEnv("HTMLVIDEO_FRAME_PACKETS_INFER_RULES", undefined, () => build("on"));
+  assert.ok(!on.includes("(no motion rules cited)"));
+  assert.ok(on.includes("- `discrete-text-sequence` → ") && on.includes("(inferred from the block's motion phrases)"));
+  assert.ok(on.includes("## Rule recipes (snippets)") && on.includes("### discrete-text-sequence"));
+  const off = withEnv("HTMLVIDEO_FRAME_PACKETS_INFER_RULES", "off", () => build("off"));
+  assert.ok(off.includes("(no motion rules cited)") && !off.includes("## Rule recipes"));
+  console.log("infer cited rules OK", inferred.join(","));
+}
+
+export function testIdleLoopConflict() {
+  const direction = "**Motion grammar.** A deterministic bottom ticker drifts L→R as a calm, ever-present motif (pure CSS/GSAP loop). No idle looping — every element resolves to stillness.";
+  const kinds = (args) => core.detectConflicts({ block: "Scene 1 (0.0–4.0s): x\n", sel: null, assigned: null, ...args })
+    .filter((c) => c.kind === "idle-loop-vs-continuous-motion");
+  const [c] = kinds({ direction });
+  assert.ok(c, "ticker vs no-idle-loop must be ruled");
+  assert.ok(c.ruling.includes("repeat: -1") && c.ruling.includes("finite"), c.ruling);
+  assert.ok(c.ruling.includes("this block does not, so omit it"));
+  const [withTicker] = kinds({ direction, block: "Scene 1 (0.0–4.0s): cards settle over the bottom ticker.\n" });
+  assert.ok(withTicker.ruling.includes("this block lists it, so build it"));
+  // block-side drift against a frame.md ban
+  const [drift] = kinds({ frameMd: "## Composition Rules\n\nNo perpetual looping.", block: "Scene 1: a slow-drifting mint blob.\n" });
+  assert.ok(drift && !drift.ruling.includes("ticker"), "drift-only ruling has no ticker clause");
+  assert.deepStrictEqual(kinds({ direction: "A bottom ticker drifts L→R." }), [], "no ban → no conflict");
+  assert.deepStrictEqual(kinds({ direction: "No ticker, no marquee. No idle looping." }), [], "negated asks don't count");
+  // dispatch: the section stays the last one
+  const dir = mkdtempSync(join(tmpdir(), "fh-loop-"));
+  const card = join(dir, "card.md"); writeFileSync(card, "role card text");
+  writeFileSync(join(dir, "frame.md"), REAL_FRAME_MD);
+  const sb = `## Video direction\n\n${direction}\n\n## Frame 1 — X\n\n- src: compositions/frames/01-x.html\n- duration: 4s\n\nScene 1 (0.0–4.0s): headline settles.\n`;
+  const frames = core.splitFrames(sb).map((f) => ({ ...f, frameId: core.frameId(f) }));
+  const [doc] = core.buildDispatchDocs({
+    projectDir: dir, frames, outDir: join(dir, "out"), animationDir: dir, cardPath: card,
+    frameMdPath: join(dir, "frame.md"), storyboard: sb,
+  });
+  const t = readFileSync(doc.path, "utf8");
+  assert.ok(t.indexOf("## Resolved conflicts") > t.indexOf("## frame.md design tokens"));
+  assert.ok(t.slice(t.indexOf("## Resolved conflicts")).includes("idle-loop-vs-continuous-motion"));
+  console.log("idle-loop conflict OK");
+}
+
 if (process.argv[1] && process.argv[1].endsWith("test_frame_packets.mjs")) {
+  testNarrowBlueprint();
+  testInferCitedRules();
+  testIdleLoopConflict();
   testCard(); testDispatchDocs(); testSkeletons();
   testDispatchInlinesFrontmatterTokens();
   testDispatchIngestsDesignContract();
