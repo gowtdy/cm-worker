@@ -64,7 +64,7 @@ import {
   parseFrameFamilies,
   planFile,
 } from "./lib/fonts.mjs";
-import { trunc, triageOverlaps } from "./lib/verify-check-parse.mjs";
+import { trunc, triageOcclusions, triageOverlaps } from "./lib/verify-check-parse.mjs";
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
 
@@ -180,6 +180,23 @@ function where(list, cap = 4) {
 
 const byCode = (code) => (ctx) => (ctx.checkErrors || []).filter((e) => e.code === code);
 
+/**
+ * checkErrors not claimed by a specific check entry above the catch-all.
+ * Owned set lives here only: overlap substring (content-overlap), plus the
+ * codes eaten by text-occluded / text-not-painted / the two text_box_overflow
+ * entries (caption ignore + non-caption model).
+ */
+function unownedCheckErrors(ctx) {
+  const owned = (code) => {
+    const c = String(code || "");
+    if (c.includes("overlap")) return true;
+    return c === "text_occluded" || c === "text_not_painted" || c === "text_box_overflow";
+  };
+  return (ctx.checkErrors || []).filter((e) => !owned(e.code));
+}
+
+const CAPTION_OVERFLOW_RE = /#caption-word|\.caption-line/;
+
 /* ── the catalog ─────────────────────────────────────────────────────────── */
 
 export const KNOWN_FAILURES = [
@@ -276,10 +293,31 @@ export const KNOWN_FAILURES = [
     title: "text_occluded",
     match: byCode("text_occluded"),
     mode: "model",
-    prompt:
-      'If the layering is intentional, add data-layout-allow-occlusion="true" on the text element or an ancestor — this is the occlusion opt-out (NOT data-layout-allow-overlap, which only exempts content_overlap). If the text is accidentally buried under an opaque sibling, raise its stacking order (z-index) or move it out from under the covering element instead.',
+    prompt: (ctx, hits) => {
+      const tri = triageOcclusions(hits);
+      const rows = ["Follow this triage (never blanket-allow occlusion):"];
+      if (tri.designed_layering.length) {
+        rows.push(
+          `- designed_layering×${tri.designed_layering.length} (${where(tri.designed_layering)}) → add data-layout-allow-occlusion="true" on the text element or an ancestor — the occlusion opt-out (NOT data-layout-allow-overlap, which only exempts content_overlap).`,
+        );
+      }
+      if (tri.buried.length) {
+        rows.push(
+          `- buried×${tri.buried.length} (${where(tri.buried)}) → raise its stacking order (z-index) or move it out from under the covering element. Do not use data-layout-allow-occlusion, and NOT data-layout-allow-overlap.`,
+        );
+      }
+      if (tri.ambiguous.length) {
+        rows.push(
+          `- ambiguous×${tri.ambiguous.length} (${where(tri.ambiguous)}) → inspect the layering intent first, then pick data-layout-allow-occlusion vs raise z-index / move (NOT data-layout-allow-overlap).`,
+        );
+      }
+      rows.push(
+        "- caption keep-out: if either side is a #caption-word-*, move the frame text — NEVER data-layout-allow-occlusion to paper over a caption (NOT data-layout-allow-overlap, which only exempts content_overlap).",
+      );
+      return rows.join("\n");
+    },
     reason:
-      "The CLI's occlusion probe hits an opaque element over the glyphs. data-layout-allow-overlap does NOT clear it (2026-11-22 22点 run looped 3 rounds on this before failing). Correct opt-out = closest('[data-layout-allow-occlusion]').",
+      "triageOcclusions: designed_layering (dataAttributes, DECOR_TOKENS, or card/notecard/anchor/cta/buy/label) may take data-layout-allow-occlusion; buried (both sides text, or a caption-word) must move or raise z-index — never paper over a caption. data-layout-allow-overlap does NOT clear occlusion (2026-11-22 22点 run looped 3 rounds). Correct opt-out = closest('[data-layout-allow-occlusion]').",
   },
 
   {
@@ -312,12 +350,26 @@ export const KNOWN_FAILURES = [
     id: "caption-text-box-overflow",
     title: "caption text_box_overflow",
     match: (ctx) => (ctx.checkErrors || []).filter(
-      (e) => e.code === "text_box_overflow" && /#caption-word|\.caption-line/.test(e.msg),
+      (e) => e.code === "text_box_overflow" && CAPTION_OVERFLOW_RE.test(e.msg),
     ),
     mode: "ignore",
     prompt:
       "A snug caption line-height lets a heavy glyph spill a few px into its own padding — nothing is actually clipped. Ignore; act only when the finding names a frame element (`#el-NN-*`), not a caption word.",
     reason: "caption pill uses a deliberately snug line-height and has no overflow:hidden; a heavy glyph's ink spills a few px into its own padding.",
+  },
+
+  {
+    id: "text-box-overflow",
+    title: "text_box_overflow",
+    // After caption-text-box-overflow so the caption ignore is listed first.
+    // Match is the complement of that ignore (same regex); caption rows never land here.
+    match: (ctx) => (ctx.checkErrors || []).filter(
+      (e) => e.code === "text_box_overflow" && !CAPTION_OVERFLOW_RE.test(e.msg),
+    ),
+    mode: "model",
+    prompt:
+      "Tighten the named element's box, lower the font-size, or adjust line-height / padding so the glyphs fit. Ignore only when the design allows the overflow and nothing is clipped by overflow:hidden. Fix the named element only.",
+    reason: "Non-caption text_box_overflow is a real fit problem. The caption snug line-height false-positive stays on caption-text-box-overflow.",
   },
 
   {
@@ -344,6 +396,28 @@ export const KNOWN_FAILURES = [
     mode: "info",
     prompt: "Non-blocking warning — ignore.",
     reason: "font sourcing note; never gates.",
+  },
+
+  /* ————— catch-alls (must stay last; specific entries above own their codes) ————— */
+
+  {
+    id: "other-check-errors",
+    title: "other check errors",
+    match: (ctx) => unownedCheckErrors(ctx),
+    mode: "model",
+    prompt: (_ctx, hits) =>
+      `Cheapest safe edit for each listed item (${where(hits)}), using the \`[hint: …]\` on that error line (the CLI fixHint) and the named selector/file. Fix every listed item in ONE pass. Do NOT rerun lint, check, or snapshot.`,
+    reason: "Check codes with no specific entry still need the CLI fixHint in the model prompt, instead of a generic fallback that invents the wrong opt-out.",
+  },
+
+  {
+    id: "other-lint-errors",
+    title: "other lint errors",
+    match: (ctx) => (ctx.lintErrors || []).filter((e) => e.code !== "font_family_without_font_face"),
+    mode: "model",
+    prompt: (_ctx, hits) =>
+      `Fix the named file according to the lint message (${where(hits)}). Do not act on google_fonts_import or id_requires_css_escape (those are warning/info).`,
+    reason: "Lint errors other than font_family_without_font_face have no specific entry. google_fonts_import and id_requires_css_escape stay on their info entries.",
   },
 ];
 
