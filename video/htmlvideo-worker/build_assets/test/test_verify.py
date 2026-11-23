@@ -78,6 +78,8 @@ class VerifyFramePrecheckTest(unittest.TestCase):
         ) as f:
             f.write("<template></template>")
         self.logger = logging.getLogger("test.verify")
+        p = mock.patch.object(v, "_run_prepare", return_value=(0, "verify-all: prepare done ✓\n"))
+        self.prep = p.start(); self.addCleanup(p.stop)
 
     def test_unactionable_scan_raises_without_claude(self):
         scan = (
@@ -85,7 +87,7 @@ class VerifyFramePrecheckTest(unittest.TestCase):
             "  #2 tell only. No action.\n\n"
             "GATE: FAIL ✗ (…, 0 error finding(s))\n"
         )
-        with mock.patch.object(v, "_run_verify_all", return_value=(1, scan)), \
+        with mock.patch.object(v, "_run_verify", return_value=(1, scan)), \
              mock.patch.object(v, "run_claude") as claude:
             with self.assertRaises(RuntimeError) as ctx:
                 v.verify_frame(self.d, self.logger)
@@ -99,7 +101,7 @@ class VerifyFramePrecheckTest(unittest.TestCase):
             "  1) Known failure #4 candidate — content_overlap\n\n"
             "GATE: FAIL ✗ (…, 2 error finding(s))\n"
         )
-        with mock.patch.object(v, "_run_verify_all", side_effect=[
+        with mock.patch.object(v, "_run_verify", side_effect=[
                  (1, scan),
                  (0, "GATE: PASS ✓\n"),
              ]), \
@@ -153,10 +155,9 @@ def _payload_line(rows: list[dict], **extra) -> str:
 
 def _scan(rows: list[dict], actionable: str = "", **extra) -> str:
     return (
-        "══ verify-all ══\n"
-        "── transitions inject ──\n"
-        "  ✓ transitions inject: 6 transition(s) stamped into index.html\n"
-        "  ✓ transitions inject\n"
+        "══ verify-all [verify] ══\n"
+        "── structural gate ──\n"
+        "  ✓ frame-selfcheck: 7/7 PASS\n"
         "── check ──\n"
         "  ✗ [Layout] content_overlap in compositions/frames/05-price.html — "
         "div.price-num inside div.price-tag\n"
@@ -166,7 +167,7 @@ def _scan(rows: list[dict], actionable: str = "", **extra) -> str:
         + (actionable or "  1) Known failure #4 — content_overlap triage — designed_overlay×1\n")
         + "\nGATE: FAIL ✗ (lint ok=true, check exit=1, 1 error finding(s))\n"
         + _payload_line(rows, **extra) + "\n"
-        "\nverify-all: report exit 1 — fix the findings above, then rerun verify-all.\n"
+        "\nverify-all: report exit 1 — fix the findings above, then rerun the verify phase (prepare already ran).\n"
     )
 
 
@@ -539,11 +540,13 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
         self.d = self._make_project()
         self.logger = logging.getLogger("test.verify.flow")
         self.sheet = os.path.join(self.d, "snapshots", "contact-sheet.jpg")
+        p = mock.patch.object(v, "_run_prepare", return_value=(0, "verify-all: prepare done ✓\n"))
+        self.prep = p.start(); self.addCleanup(p.stop)
 
     def _run(self, scans, env=None, claude_rc=0):
         env = env or {}
         with mock.patch.dict(os.environ, env, clear=False), \
-             mock.patch.object(v, "_run_verify_all", side_effect=scans) as scan, \
+             mock.patch.object(v, "_run_verify", side_effect=scans) as scan, \
              mock.patch.object(v, "run_claude", return_value=claude_rc) as claude, \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
             if "HTMLVIDEO_VERIFY_AUTO_OVERLAP" not in env:
@@ -573,7 +576,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
             return 0
 
         with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_AUTO_OVERLAP": "0"}), \
-             mock.patch.object(v, "_run_verify_all",
+             mock.patch.object(v, "_run_verify",
                                side_effect=[(1, _scan(_ROWS_SAMPLE)), (0, "GATE: PASS ✓\n")]), \
              mock.patch.object(v, "run_claude", side_effect=fake_claude) as claude, \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
@@ -599,7 +602,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
             return 0
 
         with mock.patch.dict(os.environ, {}, clear=False), \
-             mock.patch.object(v, "_run_verify_all", side_effect=[
+             mock.patch.object(v, "_run_verify", side_effect=[
                  (1, _scan(_ROWS_SAMPLE)), (1, remaining), (0, "GATE: PASS ✓\n")]), \
              mock.patch.object(v, "run_claude", side_effect=fake_claude), \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
@@ -613,7 +616,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
         scan = _scan(_ROWS_SAMPLE)
         with mock.patch.object(v, "autofix_designed_overlays",
                                side_effect=RuntimeError("boom")), \
-             mock.patch.object(v, "_run_verify_all") as rescan, \
+             mock.patch.object(v, "_run_verify") as rescan, \
              self.assertLogs("test.verify.flow", level="ERROR") as logs:
             out = v._auto_fix_overlaps(self.d, 1, scan, 1, self.logger)
         self.assertEqual(out, (1, scan))
@@ -631,7 +634,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
             "file": "compositions/frames/05-price.html",
             "selector": "h1.title", "container": "p.body"}])
         with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}), \
-             mock.patch.object(v, "_run_verify_all", side_effect=[
+             mock.patch.object(v, "_run_verify", side_effect=[
                  (1, remaining), (1, _scan(_ROWS_SAMPLE)), (0, "GATE: PASS ✓\n")]) as scan, \
              mock.patch.object(v, "run_claude", side_effect=self._edit_claude) as claude, \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
@@ -648,7 +651,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
             "file": "compositions/frames/05-price.html",
             "selector": "h1.title", "container": "p.body"}])
         with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}), \
-             mock.patch.object(v, "_run_verify_all", side_effect=[
+             mock.patch.object(v, "_run_verify", side_effect=[
                  (1, remaining), (0, "GATE: PASS ✓\n")]), \
              mock.patch.object(v, "run_claude", side_effect=self._edit_claude), \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
@@ -659,7 +662,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
             "file": "compositions/frames/05-price.html",
             "selector": "h1.title", "container": "p.body"}])
         with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}), \
-             mock.patch.object(v, "_run_verify_all", side_effect=[
+             mock.patch.object(v, "_run_verify", side_effect=[
                  (1, remaining), (1, remaining)]), \
              mock.patch.object(v, "run_claude", side_effect=self._edit_claude):
             with self.assertRaises(RuntimeError) as ctx:
@@ -671,7 +674,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
             "── actionable summary ──\n  #2 tell only. No action.\n\n"
             "GATE: FAIL ✗ (…, 0 error finding(s))\n"
         )
-        with mock.patch.object(v, "_run_verify_all",
+        with mock.patch.object(v, "_run_verify",
                                side_effect=[(1, _scan(_ROWS_SAMPLE)), (1, leftover)]), \
              mock.patch.object(v, "run_claude") as claude:
             os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
@@ -679,6 +682,71 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
                 v.verify_frame(self.d, self.logger)
         claude.assert_not_called()
         self.assertIn("0 actionable findings", str(ctx.exception))
+
+    def test_prepare_runs_once_across_rounds(self):
+        remaining = _scan([], real_collision=[{
+            "file": "compositions/frames/05-price.html",
+            "selector": "h1.title", "container": "p.body"}])
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}), \
+             mock.patch.object(v, "_run_verify", side_effect=[
+                 (1, remaining), (1, _scan(_ROWS_SAMPLE)), (0, "GATE: PASS ✓\n")]) as scan, \
+             mock.patch.object(v, "run_claude", side_effect=self._edit_claude), \
+             mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
+            os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
+            v.verify_frame(self.d, self.logger)
+        self.assertEqual(self.prep.call_count, 1)
+        self.assertEqual(scan.call_count, 3)
+
+    def test_prepare_failure_raises_without_verify_or_model(self):
+        self.prep.return_value = (2, "✗ inject failed: boom")
+        with mock.patch.object(v, "_run_verify") as verify, \
+             mock.patch.object(v, "run_claude") as claude:
+            with self.assertRaises(RuntimeError) as ctx:
+                v.verify_frame(self.d, self.logger)
+        self.assertIn("prepare failure", str(ctx.exception))
+        self.assertIn("boom", str(ctx.exception))
+        verify.assert_not_called()
+        claude.assert_not_called()
+
+
+class VerifyFramePrepareTest(unittest.TestCase):
+    def test_run_verify_phase_cmd_and_cwd(self):
+        d = tempfile.mkdtemp(prefix="verify-phase-")
+        self.addCleanup(shutil.rmtree, d, True)
+        logger = logging.getLogger("test.verify.phase")
+        proc = subprocess.CompletedProcess(args=[], returncode=1, stdout="x", stderr="")
+        with mock.patch.object(v.subprocess, "run", return_value=proc) as run:
+            rc, _out = v._run_verify(d, logger)
+        self.assertEqual(rc, 1)
+        args, kwargs = run.call_args
+        self.assertEqual(
+            args[0],
+            ["node", v.VERIFY_ALL_SCRIPT, "--videodir", d, "--phase", "verify"],
+        )
+        self.assertEqual(kwargs["cwd"], d)
+        self.assertEqual(kwargs["timeout"], 900)
+
+        with mock.patch.object(v.subprocess, "run", return_value=proc) as run:
+            v._run_prepare(d, logger)
+        args, kwargs = run.call_args
+        self.assertEqual(
+            args[0],
+            ["node", v.VERIFY_ALL_SCRIPT, "--videodir", d, "--phase", "prepare"],
+        )
+        self.assertEqual(kwargs["cwd"], d)
+        self.assertEqual(kwargs["timeout"], 300)
+
+    def test_run_verify_phase_timeout_returns_2(self):
+        d = tempfile.mkdtemp(prefix="verify-phase-")
+        self.addCleanup(shutil.rmtree, d, True)
+        logger = logging.getLogger("test.verify.phase")
+        with mock.patch.object(
+            v.subprocess, "run",
+            side_effect=subprocess.TimeoutExpired(cmd="node", timeout=900),
+        ):
+            rc, out = v._run_verify(d, logger)
+        self.assertEqual(rc, 2)
+        self.assertIn("--phase verify timed out", out)
 
 
 class FixPromptTest(unittest.TestCase):
@@ -688,8 +756,7 @@ class FixPromptTest(unittest.TestCase):
         self.assertIn("── actionable summary ──", p)
         self.assertIn("GATE: FAIL", p)
         self.assertIn("✗ [Layout] content_overlap", p)
-        self.assertNotIn("transitions inject: 6 transition(s)", p)
-        self.assertNotIn("✓ transitions inject", p)
+        self.assertNotIn("frame-selfcheck: 7/7 PASS", p)
         self.assertNotIn("[Contrast]", p)
         self.assertNotIn("AT: 1,2,3", p)
         self.assertNotIn(ao.FINDINGS_JSON_PREFIX.strip(), p)
@@ -698,7 +765,7 @@ class FixPromptTest(unittest.TestCase):
     def test_full_scan_rollback(self):
         with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_FULL_SCAN": "1"}):
             p = v._build_fix_prompt(_scan(_ROWS_SAMPLE))
-        self.assertIn("transitions inject: 6 transition(s)", p)
+        self.assertIn("frame-selfcheck: 7/7 PASS", p)
         self.assertNotIn(ao.FINDINGS_JSON_PREFIX.strip(), p)
 
     def test_missing_summary_falls_back_to_full(self):
