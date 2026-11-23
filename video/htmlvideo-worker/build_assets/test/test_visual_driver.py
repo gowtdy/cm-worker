@@ -192,6 +192,48 @@ class WorkerPromptTest(unittest.TestCase):
         self.assertIn("do NOT run any script or gate", p)
         self.assertIn("/rules/", p)
 
+    def test_worker_prompt_requires_rules_field(self):
+        p = vis._build_worker_prompt("7", "block", "design")
+        self.assertIn("- rules: <comma-separated rule ids", p)
+        self.assertIn("`- rules:` is REQUIRED", p)
+        self.assertIn("rejected and re-dispatched", p)
+        self.assertIn("`discrete-text-sequence` + `context-sensitive-cursor`", p)
+        self.assertIn("Valid rule ids: ", p)
+        self.assertIn("discrete-text-sequence", p.split("Valid rule ids: ", 1)[1])
+        self.assertNotIn("Candidate rule ids", p)
+
+    def test_worker_prompt_candidate_rules_after_shared_prefix(self):
+        p = vis._build_worker_prompt(
+            "7", "block", "DESIGN", "BP", ["discrete-text-sequence", "svg-path-draw"])
+        self.assertIn("Candidate rule ids (from this blueprint's rule mapping", p)
+        self.assertIn("discrete-text-sequence, svg-path-draw", p)
+        self.assertLess(p.index("[DESIGN CONTRACT]"), p.index("Candidate rule ids"))
+        self.assertLess(p.index("Candidate rule ids"), p.index("[CONTEXT"))
+
+    def test_worker_prompt_assignment_is_authoritative(self):
+        p = vis._build_worker_prompt(
+            "2", "block", "design", assigned_blueprint="grid-card-assemble (Adapt)")
+        self.assertIn("BLUEPRINT AUTHORITY", p)
+        self.assertIn("is FINAL", p)
+        self.assertIn("superseded outline leftover: ignore it", p)
+        self.assertIn("do NOT compare, weigh, or arbitrate blueprint ids", p)
+        self.assertIn("copied verbatim from your assignment line", p)
+        self.assertIn("Adapt/Reproduce and the Scenes", p)
+        self.assertTrue(p.rstrip().endswith(
+            "Your blueprint line is exactly: `- blueprint: grid-card-assemble (Adapt)`."))
+        self.assertLess(p.index("BLUEPRINT AUTHORITY"), p.index("[DESIGN CONTRACT]"))
+        self.assertNotIn("Your blueprint line is exactly",
+                         vis._build_worker_prompt("2", "block", "design"))
+
+    def test_assigned_blueprint_field_and_mode(self):
+        a = "## Blueprint assignment\nF2 = grid-card-assemble (Adapt)\nF3 = compose (Adapt)\n"
+        self.assertEqual(vis._frame_blueprint_mode(a, "2"), "Adapt")
+        self.assertEqual(vis._frame_blueprint_mode(a, "9"), "")
+        self.assertEqual(vis._assigned_blueprint_field("grid-card-assemble", "Adapt"),
+                         "grid-card-assemble (Adapt)")
+        self.assertEqual(vis._assigned_blueprint_field("compose", "Adapt"), "compose")
+        self.assertEqual(vis._assigned_blueprint_field("", ""), "compose")
+
     def test_split_design(self):
         d = vis._split_design(
             "## Video direction\ngrammar\n## Blueprint assignment\nF1 = a (Adapt)")
@@ -228,9 +270,113 @@ _GOOD_REPLY = (
     "- focal: the card grid\n"
     "- roles: grid = foreground · cream = background wallpaper\n"
     "- sfx: soft-pop\n"
-    "Scene 1 (0.0–2.0s): cards rise.\n"
+    "- rules: center-outward-expansion, spring-pop-entrance\n"
+    "Scene 1 (0.0–2.0s): cards rise (`center-outward-expansion`).\n"
     "Scene 2 (2.0–6.0s): grid locks.\n"
 )
+
+
+class StripConflictingBlueprintsTest(unittest.TestCase):
+    _HEAD = "## Frame 2 — Scorecard\n\n- scene: two columns\n"
+    _TAIL = "- duration: 8.2s\n- beat: comprehension\n"
+
+    def test_conflicting_line_dropped(self):
+        block = (self._HEAD + "- blueprint: titlecard-reveal — one restrained reveal, "
+                 "then a still hold.\n" + self._TAIL)
+        out, dropped = vis._strip_conflicting_blueprints(
+            block, "grid-card-assemble", "Adapt")
+        self.assertEqual(dropped, ["titlecard-reveal"])
+        self.assertNotIn("titlecard-reveal", out)
+        self.assertNotIn("blueprint", out)
+        self.assertEqual(out, self._HEAD + self._TAIL)
+
+    def test_same_id_kept_and_mode_aligned(self):
+        block = self._HEAD + "- blueprint: grid-card-assemble (Reproduce)\n" + self._TAIL
+        out, dropped = vis._strip_conflicting_blueprints(
+            block, "grid-card-assemble", "Adapt")
+        self.assertEqual(dropped, [])
+        self.assertIn("- blueprint: grid-card-assemble (Adapt)\n", out)
+        same = self._HEAD + "- blueprint: grid-card-assemble — tiles cascade\n" + self._TAIL
+        self.assertEqual(
+            vis._strip_conflicting_blueprints(same, "GRID-card-assemble", "Adapt"),
+            (same, []))
+
+    def test_no_blueprint_line_unchanged(self):
+        block = self._HEAD + self._TAIL
+        self.assertEqual(
+            vis._strip_conflicting_blueprints(block, "grid-card-assemble"), (block, []))
+        self.assertEqual(vis._strip_conflicting_blueprints("", "x"), ("", []))
+
+    def test_multiple_conflicts_and_duplicates_cleared(self):
+        block = (self._HEAD
+                 + "- blueprint: titlecard-reveal — old\n"
+                 + "  * **blueprint:** kinetic-type-beats\n"
+                 + "- blueprint: Adapt\n"
+                 + "- blueprint: grid-card-assemble — keep me\n"
+                 + "- blueprint: grid-card-assemble (Reproduce)\n"
+                 + "- blueprints: not-a-field\n"
+                 + self._TAIL)
+        out, dropped = vis._strip_conflicting_blueprints(block, "grid-card-assemble")
+        self.assertEqual(
+            dropped, ["titlecard-reveal", "kinetic-type-beats", "∅", "grid-card-assemble"])
+        self.assertEqual(out.count("blueprint:"), 1)
+        self.assertIn("- blueprint: grid-card-assemble — keep me", out)
+        self.assertIn("- blueprints: not-a-field", out)
+
+    def test_compose_assignment_drops_outline_candidate(self):
+        out, dropped = vis._strip_conflicting_blueprints(
+            self._HEAD + "- blueprint: titlecard-reveal\n", "")
+        self.assertEqual(dropped, ["titlecard-reveal"])
+        self.assertNotIn("blueprint", out)
+
+
+def _blueprint_lines(text: str) -> list[str]:
+    return [line for line in text.split("\n") if vis._BLUEPRINT_FIELD_RE.match(line)]
+
+
+class EnforceStoryboardBlueprintsTest(unittest.TestCase):
+    _ASSIGN = "F1 = grid-card-assemble (Adapt)\nF2 = compose\n"
+    _ADD = "- focal: f\n- roles: r\nScene 1 (0–3): a\n"
+
+    def _board(self, b1: str, b2: str) -> str:
+        return "---\nformat: 1\n---\n\n## Blueprint assignment\n" + self._ASSIGN + "\n" + b1 + "\n" + b2
+
+    def test_outline_conflict_and_worker_line_collapse_to_one(self):
+        b1 = (_BLOCKS["1"] + "- blueprint: titlecard-reveal — old\n\n"
+              "- blueprint: grid-card-assemble (Adapt)\n" + self._ADD)
+        b2 = _BLOCKS["2"] + "- blueprint: compose\n\n- blueprint: compose\n" + self._ADD
+        out, fixes = vis._enforce_storyboard_blueprints(self._board(b1, b2), self._ASSIGN)
+        _, blocks, _ = vis._split_storyboard(out)
+        self.assertEqual(_blueprint_lines(blocks["1"]), ["- blueprint: grid-card-assemble (Adapt)"])
+        self.assertEqual(_blueprint_lines(blocks["2"]), ["- blueprint: compose"])
+        self.assertEqual(fixes, {"1": ["titlecard-reveal"], "2": ["compose"]})
+        self.assertIn(_BLOCKS["1"], out)
+        self.assertIn("## Blueprint assignment\n" + self._ASSIGN, out)   # preamble untouched
+
+    def test_worker_off_assignment_line_rewritten_in_place(self):
+        b1 = _BLOCKS["1"] + "\n- blueprint: kinetic-type-beats (Reproduce)\n" + self._ADD
+        out, fixes = vis._enforce_storyboard_blueprints(
+            self._board(b1, _BLOCKS["2"] + "\n- blueprint: compose\n" + self._ADD), self._ASSIGN)
+        self.assertEqual(fixes, {"1": ["kinetic-type-beats"]})
+        self.assertIn("- beat: recognition + concern\n\n- blueprint: grid-card-assemble (Adapt)\n"
+                      "- focal: f", out)
+
+    def test_missing_line_injected_before_focal(self):
+        b1 = _BLOCKS["1"] + "\n" + self._ADD
+        out, fixes = vis._enforce_storyboard_blueprints(
+            self._board(b1, _BLOCKS["2"]), self._ASSIGN)
+        _, blocks, _ = vis._split_storyboard(out)
+        self.assertIn("\n\n- blueprint: grid-card-assemble (Adapt)\n- focal: f", blocks["1"])
+        self.assertEqual(_blueprint_lines(blocks["1"]), ["- blueprint: grid-card-assemble (Adapt)"])
+        self.assertEqual(fixes["1"], ["∅"])
+        # no anchor at all → appended at the end of the section
+        self.assertTrue(blocks["2"].endswith("- beat: comprehension\n- blueprint: compose"))
+
+    def test_canonical_board_is_a_noop(self):
+        b1 = _BLOCKS["1"] + "\n- blueprint: grid-card-assemble (Adapt)\n" + self._ADD
+        b2 = _BLOCKS["2"] + "\n- blueprint: compose\n" + self._ADD
+        board = self._board(b1, b2)
+        self.assertEqual(vis._enforce_storyboard_blueprints(board, self._ASSIGN), (board, {}))
 
 
 class SceneParseTest(unittest.TestCase):
@@ -238,7 +384,7 @@ class SceneParseTest(unittest.TestCase):
         reply = _GOOD_REPLY.replace("Scene 1", "- Scene 1").replace("Scene 2", "* Scene 2")
         out = vis._parse_worker_additions("6", reply)
         self.assertIsNotNone(out)
-        self.assertIn("\nScene 1 (0.0–2.0s): cards rise.", out)
+        self.assertIn("\nScene 1 (0.0–2.0s): cards rise (`center-outward-expansion`).", out)
         self.assertIn("\nScene 2 (2.0–6.0s): grid locks.", out)
         self.assertNotIn("- Scene", out)
         self.assertNotIn("done OK", out)
@@ -248,12 +394,14 @@ class SceneParseTest(unittest.TestCase):
             "  done OK 6\n"
             "  - focal: f\n"
             "  - roles: r\n"
+            "  - rules: gsap-effects\n"
             "**Scene 1 (0.0–2.0s):** a\n"
             "  Scene 2 (2.0–6.0s): b\n"
         )
         out = vis._parse_worker_additions("6", reply)
         self.assertEqual(
-            out, "- focal: f\n- roles: r\nScene 1 (0.0–2.0s): a\nScene 2 (2.0–6.0s): b")
+            out, "- focal: f\n- roles: r\n- rules: gsap-effects\n"
+                 "Scene 1 (0.0–2.0s): a\nScene 2 (2.0–6.0s): b")
 
     def test_diagnose_reasons(self):
         self.assertIsNone(vis._diagnose_worker_reply("6", _GOOD_REPLY))
@@ -265,6 +413,53 @@ class SceneParseTest(unittest.TestCase):
         self.assertIn("missing `done OK 6`",
                       vis._diagnose_worker_reply("6", _GOOD_REPLY.replace("done OK 6", "")))
         self.assertIn("does not match frame 7", vis._diagnose_worker_reply("7", _GOOD_REPLY))
+
+    def test_reply_without_rules_rejected(self):
+        no_rules = "\n".join(l for l in _GOOD_REPLY.split("\n") if "- rules:" not in l)
+        self.assertIn("`- rules:", vis._diagnose_worker_reply("6", no_rules))
+        self.assertIsNone(vis._parse_worker_additions("6", no_rules))
+        empty = _GOOD_REPLY.replace(
+            "- rules: center-outward-expansion, spring-pop-entrance", "- rules:")
+        self.assertIn("`- rules:", vis._diagnose_worker_reply("6", empty))
+        self.assertIsNone(vis._parse_worker_additions("6", empty))
+
+    def test_reply_with_only_unknown_rules_rejected(self):
+        bad = _GOOD_REPLY.replace(
+            "center-outward-expansion, spring-pop-entrance", "pop-stagger, hard-cut")
+        reason = vis._diagnose_worker_reply("6", bad)
+        self.assertIn("no known rule id", reason)
+        self.assertIn("pop-stagger", reason)
+        self.assertIsNone(vis._parse_worker_additions("6", bad))
+        self.assertIn("no known rule id", vis._dispatch_note(0, bad, "6"))
+
+    def test_rules_line_canonicalized_and_unknown_dropped(self):
+        reply = _GOOD_REPLY.replace(
+            "- rules: center-outward-expansion, spring-pop-entrance",
+            "- rules: `spring-pop-entrance`, cut-the-curve spring-pop-entrance, gsap-effects")
+        out = vis._parse_worker_additions("6", reply)
+        self.assertIn("\n- rules: spring-pop-entrance, gsap-effects\n", out)
+        self.assertNotIn("cut-the-curve", out)
+
+
+class RuleCatalogTest(unittest.TestCase):
+    def test_rule_catalog_matches_rules_dir(self):
+        cat = vis._rule_catalog()
+        self.assertIn("discrete-text-sequence", cat)
+        self.assertIn("context-sensitive-cursor", cat)
+        self.assertNotIn("typewriter-reveal", cat)   # a blueprint, not a rule
+
+    def test_blueprint_rule_ids_from_full_rule_mapping(self):
+        ids = vis._blueprint_rule_ids("typewriter-reveal")
+        self.assertEqual(ids[:2], ["context-sensitive-cursor", "discrete-text-sequence"])
+        self.assertIn("svg-path-draw", ids)
+        self.assertNotIn("techniques", ids)          # not an on-disk rule
+        self.assertTrue(set(ids) <= vis._rule_catalog())
+        self.assertEqual(vis._blueprint_rule_ids("compose"), [])
+        self.assertEqual(vis._blueprint_rule_ids("no-such-blueprint"), [])
+
+    def test_every_blueprint_yields_candidates(self):
+        for bp in vis._blueprint_catalog():
+            self.assertTrue(vis._blueprint_rule_ids(bp), bp)
 
     def test_dispatch_note_carries_reason_and_tail(self):
         bad = _GOOD_REPLY.replace("Scene", "Shot")
@@ -465,11 +660,11 @@ class DriverFanOutTest(unittest.TestCase):
             if label == "F1":
                 # A whole-round barrier would never start F2's retry while F1 runs.
                 self.assertTrue(f2_retry_started.wait(5), "F2 retry waited for F1")
-                return 0, ("done OK 1\n- focal: f\n- roles: r\n"
+                return 0, ("done OK 1\n- focal: f\n- roles: r\n- rules: discrete-text-sequence\n"
                            "Scene 1 (0.0–2.0s): a\nScene 2 (1.8–5.0s): b\n")
             if "[RE-DISPATCH]" in prompt:
                 f2_retry_started.set()
-                return 0, ("done OK 2\n- focal: g\n- roles: s\n"
+                return 0, ("done OK 2\n- focal: g\n- roles: s\n- rules: gsap-effects\n"
                            "- Scene 1 (0.0–3.0s): c\n- Scene 2 (3.0–8.2s): d\n")
             return 0, "done OK 2\n- focal: g\n- roles: s\nShot 1: no scene lines"
 
@@ -486,6 +681,10 @@ class DriverFanOutTest(unittest.TestCase):
                             if label == "F2" and "[RE-DISPATCH]" in p)
         self.assertIn("missing `Scene N", retry_prompt)
         self.assertIn("no scene lines", retry_prompt)
+        f1_prompt = next(p for label, p, _ in calls if label == "F1")
+        self.assertIn("Candidate rule ids", f1_prompt)      # titlecard-reveal mapping
+        f2_prompt = next(p for label, p, _ in calls if label == "F2")
+        self.assertNotIn("Candidate rule ids", f2_prompt)   # compose
 
         vdir = os.path.join(self.tmp, ".hyperframes", "visual")
         with open(os.path.join(vdir, "F1.md"), encoding="utf-8") as f:
@@ -502,6 +701,155 @@ class DriverFanOutTest(unittest.TestCase):
             self.assertIn(_BLOCKS[k].strip(), merged)   # narrative byte-exact
         self.assertIn("## Video direction", merged)
         self.assertNotIn("- Scene", merged)
+        self.assertIn("- rules: discrete-text-sequence", merged)
+        self.assertIn("- rules: gsap-effects", merged)
+
+    def test_worker_context_drops_conflicting_outline_blueprints(self):
+        import os
+        b1 = _BLOCKS["1"] + "- blueprint: titlecard-reveal — one restrained reveal\n"
+        b2 = _BLOCKS["2"] + "- blueprint: kinetic-type-beats — words swap\n"
+        with open(os.path.join(self.tmp, "STORYBOARD.md"), "w", encoding="utf-8") as f:
+            f.write("---\nformat: 1920x1080\n---\n\n" + b1 + "\n" + b2)
+        prompts = {}
+
+        def fake_result(project_dir, prompt, logger, **kw):
+            label = kw.get("label")
+            if label == "design":
+                return 0, ("## Blueprint assignment\nF1 = grid-card-assemble (Adapt)\n"
+                           "F2 = kinetic-type-beats (Reproduce)\n")
+            prompts[label] = prompt
+            return 0, (f"done OK {label[1:]}\n- focal: f\n- roles: r\n"
+                       "- rules: gsap-effects\nScene 1 (0–3): a\nScene 2 (3–6.2): b")
+
+        gate = mock.Mock(returncode=0, stdout="", stderr="")
+        log = logging.getLogger("test.visual.driver")
+        with mock.patch.object(vis, "run_claude_result", side_effect=fake_result), \
+                mock.patch.object(vis.subprocess, "run", return_value=gate), \
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}), \
+                self.assertLogs("test.visual.driver", level="INFO") as cm:
+            vis.build_frame_visual(self.tmp, log)
+
+        ctx1 = prompts["F1"].split("[CONTEXT", 1)[1]
+        self.assertNotIn("titlecard-reveal", ctx1)
+        self.assertIn("- beat: recognition + concern", ctx1)
+        self.assertIn("`- blueprint: grid-card-assemble (Adapt)`", ctx1)
+        ctx2 = prompts["F2"].split("[CONTEXT", 1)[1]
+        self.assertIn("- blueprint: kinetic-type-beats — words swap", ctx2)   # same id kept
+        self.assertIn("`- blueprint: kinetic-type-beats (Reproduce)`", ctx2)
+        self.assertTrue(any("F1 CONTEXT: dropped outline blueprint(s) titlecard-reveal"
+                            in m for m in cm.output))
+        self.assertFalse(any("F2 CONTEXT" in m for m in cm.output))
+        with open(os.path.join(self.tmp, "STORYBOARD.md"), encoding="utf-8") as f:
+            merged = f.read()
+        self.assertIn(_BLOCKS["1"].strip(), merged)   # narrative fields byte-exact
+        # workers emitted no blueprint line → assignment injected, outline leftovers gone
+        _, blocks, _ = vis._split_storyboard(merged)
+        self.assertEqual(_blueprint_lines(blocks["1"]), ["- blueprint: grid-card-assemble (Adapt)"])
+        self.assertEqual(_blueprint_lines(blocks["2"]),
+                         ["- blueprint: kinetic-type-beats (Reproduce)"])
+        self.assertNotIn("titlecard-reveal", blocks["1"])
+
+    def test_merge_keeps_one_authoritative_blueprint_per_frame(self):
+        import os
+        b1 = _BLOCKS["1"] + "- blueprint: titlecard-reveal — one restrained reveal\n"
+        b2 = (_BLOCKS["2"] + "- blueprint: kinetic-type-beats — words swap\n"
+              "- blueprint: Adapt\n")
+        with open(os.path.join(self.tmp, "STORYBOARD.md"), "w", encoding="utf-8") as f:
+            f.write("---\nformat: 1920x1080\n---\n\n" + b1 + "\n" + b2)
+
+        def fake_result(project_dir, prompt, logger, **kw):
+            label = kw.get("label")
+            if label == "design":
+                return 0, ("## Blueprint assignment\nF1 = grid-card-assemble (Adapt)\n"
+                           "F2 = kinetic-type-beats (Reproduce)\n")
+            bp = ("- blueprint: grid-card-assemble (Adapt)\n" if label == "F1"
+                  else "- blueprint: titlecard-reveal (Adapt)\n")   # F2 worker went off-assignment
+            return 0, (f"done OK {label[1:]}\n{bp}- focal: f\n- roles: r\n"
+                       "- rules: gsap-effects\nScene 1 (0–3): a\nScene 2 (3–6.2): b")
+
+        gate = mock.Mock(returncode=0, stdout="", stderr="")
+        log = logging.getLogger("test.visual.driver")
+        with mock.patch.object(vis, "run_claude_result", side_effect=fake_result), \
+                mock.patch.object(vis.subprocess, "run", return_value=gate), \
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}), \
+                self.assertLogs("test.visual.driver", level="INFO") as cm:
+            vis.build_frame_visual(self.tmp, log)
+
+        with open(os.path.join(self.tmp, "STORYBOARD.md"), encoding="utf-8") as f:
+            merged = f.read()
+        _, blocks, _ = vis._split_storyboard(merged)
+        self.assertEqual(_blueprint_lines(blocks["1"]),
+                         ["- blueprint: grid-card-assemble (Adapt)"])
+        self.assertEqual(_blueprint_lines(blocks["2"]),
+                         ["- blueprint: kinetic-type-beats (Reproduce)"])
+        # the surviving line sits in the worker additions (before `- focal:`)
+        self.assertLess(blocks["1"].index("- blueprint:"), blocks["1"].index("- focal: f"))
+        self.assertGreater(blocks["1"].index("- blueprint:"), blocks["1"].index("- beat:"))
+        self.assertNotIn("titlecard-reveal", merged.split("## Frame 1", 1)[1])
+        self.assertIn(_BLOCKS["2"].strip(), merged)
+        self.assertTrue(any("F1 merge: blueprint normalized" in m for m in cm.output))
+
+    def test_repair_round_cannot_restore_stale_blueprint(self):
+        import os
+
+        def fake_result(project_dir, prompt, logger, **kw):
+            label = kw.get("label")
+            if label == "design":
+                return 0, ("## Blueprint assignment\nF1 = grid-card-assemble (Adapt)\n"
+                           "F2 = compose\n")
+            return 0, (f"done OK {label[1:]}\n- focal: f\n- roles: r\n"
+                       "- rules: gsap-effects\nScene 1 (0–3): a\nScene 2 (3–6.2): b")
+
+        path = os.path.join(self.tmp, "STORYBOARD.md")
+
+        def fake_repair(project_dir, prompt, logger, **kw):
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            text = text.replace("## Frame 2", "- blueprint: titlecard-reveal (Adapt)\n\n## Frame 2")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            return 0
+
+        gates = iter([mock.Mock(returncode=1, stdout="bad", stderr=""),
+                      mock.Mock(returncode=0, stdout="", stderr="")])
+        log = logging.getLogger("test.visual.driver")
+        with mock.patch.object(vis, "run_claude_result", side_effect=fake_result), \
+                mock.patch.object(vis, "run_claude", side_effect=fake_repair), \
+                mock.patch.object(vis.subprocess, "run", side_effect=lambda *a, **k: next(gates)), \
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}), \
+                self.assertLogs("test.visual.driver", level="WARNING") as cm:
+            vis.build_frame_visual(self.tmp, log)
+
+        with open(path, encoding="utf-8") as f:
+            _, blocks, _ = vis._split_storyboard(f.read())
+        self.assertEqual(_blueprint_lines(blocks["1"]),
+                         ["- blueprint: grid-card-assemble (Adapt)"])
+        self.assertEqual(_blueprint_lines(blocks["2"]), ["- blueprint: compose"])
+        self.assertTrue(any("re-normalized F1:" in m and "titlecard-reveal" in m
+                            for m in cm.output))
+
+    def test_frame_without_rules_is_retried_then_fails(self):
+        import os
+        seen = []
+
+        def fake_result(project_dir, prompt, logger, **kw):
+            label = kw.get("label")
+            if label == "design":
+                return 0, ("## Blueprint assignment\nF1 = compose (Adapt)\n"
+                           "F2 = compose (Adapt)\n")
+            seen.append((label, prompt))
+            rules = "- rules: gsap-effects\n" if label == "F1" else ""
+            return 0, (f"done OK {label[1:]}\n- focal: f\n- roles: r\n{rules}"
+                       "Scene 1 (0–3): types on\nScene 2 (3–6.2): b")
+
+        log = logging.getLogger("test.visual.driver")
+        with mock.patch.object(vis, "run_claude_result", side_effect=fake_result), \
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}):
+            with self.assertRaisesRegex(RuntimeError, r"\['2'\]"):
+                vis.build_frame_visual(self.tmp, log)
+        f2 = [p for label, p in seen if label == "F2"]
+        self.assertEqual(len(f2), 1 + vis.MAX_RETRY_ROUNDS)
+        self.assertIn("`- rules:", f2[-1].split("[RE-DISPATCH]", 1)[1])
 
     def test_frame_failing_twice_raises(self):
         import os
@@ -511,7 +859,8 @@ class DriverFanOutTest(unittest.TestCase):
                 return 0, ("## Blueprint assignment\nF1 = compose (Adapt)\n"
                            "F2 = compose (Adapt)\n")
             if kw.get("label") == "F1":
-                return 0, "done OK 1\n- focal: f\n- roles: r\nScene 1 (0–3): a\nScene 2 (3–6.2): b"
+                return 0, ("done OK 1\n- focal: f\n- roles: r\n- rules: gsap-effects\n"
+                           "Scene 1 (0–3): a\nScene 2 (3–6.2): b")
             return 0, "nothing useful"
 
         log = logging.getLogger("test.visual.driver")
@@ -529,6 +878,67 @@ class DriverFanOutTest(unittest.TestCase):
                 vis.build_frame_visual(self.tmp, log)
         self.assertEqual(rc.call_args.kwargs["skill"], "visual_legacy")
         self.assertTrue(rc.call_args.args[1].startswith("/aiflow-build-frame-visual"))
+
+
+_GATE = "/app/scripts/storyboard-gate.mjs"
+
+
+def _gate_frame(rules_line: str, scenes: bool = True) -> str:
+    body = (
+        "## Frame 1 — Hook\n\n"
+        "- duration: 4.0s\n- transition_in: cut\n- status: outline\n"
+        "- src: compositions/frames/frame-01.html\n"
+    )
+    if scenes:
+        body += (
+            "- focal: hero word\n- roles: word = foreground\n" + rules_line
+            + "Scene 1 (0.0–2.0s): the word types on (`discrete-text-sequence`).\n"
+            "Scene 2 (2.0–4.0s): holds.\n"
+        )
+    return body
+
+
+@unittest.skipUnless(__import__("shutil").which("node"), "node not installed")
+class StoryboardGateRulesTest(unittest.TestCase):
+    def _run(self, frame: str, direction: bool = True):
+        import os
+        import subprocess
+        import tempfile
+        d = tempfile.mkdtemp(prefix="sb-gate-")
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        text = "---\nformat: 1920x1080\n---\n\n"
+        if direction:
+            text += "## Video direction\n\ncalm\n\n"
+        with open(os.path.join(d, "STORYBOARD.md"), "w", encoding="utf-8") as f:
+            f.write(text + frame)
+        p = subprocess.run(["node", _GATE, "--videodir", d],
+                           capture_output=True, text=True, timeout=60)
+        return p.returncode, p.stdout + p.stderr
+
+    def test_valid_rules_pass(self):
+        rc, out = self._run(_gate_frame("- rules: discrete-text-sequence, context-sensitive-cursor\n"))
+        self.assertEqual(rc, 0, out)
+
+    def test_missing_rules_fails_with_hint(self):
+        rc, out = self._run(_gate_frame(""))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("✗ Frame 1: missing non-empty `- rules:`", out)
+        self.assertIn("Scene text already cites: discrete-text-sequence", out)
+
+    def test_empty_rules_fails(self):
+        rc, out = self._run(_gate_frame("- rules:\n"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("missing non-empty `- rules:`", out)
+
+    def test_unknown_rule_id_fails(self):
+        rc, out = self._run(_gate_frame("- rules: discrete-text-sequence, cut-the-curve\n"))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("unknown rule id(s): cut-the-curve", out)
+
+    def test_pre_design_outline_not_flagged_for_rules(self):
+        _rc, out = self._run(_gate_frame("", scenes=False), direction=False)
+        self.assertIn("pre-design outline", out)
+        self.assertNotIn("rules:", out)
 
 
 if __name__ == "__main__":
