@@ -29,17 +29,19 @@ Goal: Verify the assembled video — inject transitions, pass lint/check, snapsh
 
 **Transitions inject — always run; it is idempotent:**
 
-`node /app/scripts/transitions.mjs inject --videodir ${videodir}` strips any prior stamp, re-derives id references / tracks from the current index, and converges frame durations toward the STORYBOARD contract (never drifts). Prefer `verify-all.mjs` (it always injects, then the full report verifies). Standalone `transitions.mjs verify` is only for diagnosis — do not use it as a pre-inject guard.
+`node /app/scripts/transitions.mjs inject --videodir ${videodir}` strips any prior stamp, re-derives id references / tracks from the current index, and converges frame durations toward the STORYBOARD contract (never drifts). Prefer `verify-all.mjs` (its prepare phase injects once, then the verify phase runs the full report). Standalone `transitions.mjs verify` is only for diagnosis — do not use it as a pre-inject guard.
 
-**One-command loop (preferred):** `node /app/scripts/verify-all.mjs --videodir ${videodir}` runs the whole mechanical phase — font-imports (step 0, non-fatal) → idempotent transitions inject → full report → (on gate pass) midpoints + snapshot + verify-pixels — and returns one verdict. Use it first; fall back to the individual commands below only when its exit code already says which single step to rerun.
+**One-command loop (preferred):** `node /app/scripts/verify-all.mjs --videodir ${videodir}` runs prepare (known-failure autofix → font-imports (non-fatal) → idempotent transitions inject; exit 2 on a blocker) then verify (full report → on gate pass midpoints + snapshot + verify-pixels) and returns one verdict. After fixing findings, rerun only `--phase verify` — prepare does not need to run again.
 
 **First command is `verify-all.mjs` — no pre-exploration.** This skill's content is already loaded into context, and `verify-all.mjs` prints every finding, the GATE verdict, and the `verify-pixels` result in one shot. Do not `find`/`cat` the skill files, do not `ls` the frames or project first, do not build a task list (it is blocked by the profile anyway).
 
 ```bash
-node /app/scripts/font-imports.mjs --videodir ${videodir} --scope all   # step 0; also runs inside verify-all (non-fatal)
-node /app/scripts/verify-all.mjs --videodir ${videodir}   # exit 0 = gate+snapshot done; 1 = findings, fix & rerun; 2 = blocker
+node /app/scripts/font-imports.mjs --videodir ${videodir} --scope all   # also runs inside verify-all --phase prepare (non-fatal)
+node /app/scripts/verify-all.mjs --videodir ${videodir}                  # prepare + verify; 0 = gate+snapshot; 1 = findings; 2 = blocker
+node /app/scripts/verify-all.mjs --videodir ${videodir} --phase prepare  # once: autofix + fonts + inject; 0 ok / 2 blocker
+node /app/scripts/verify-all.mjs --videodir ${videodir} --phase verify   # rerun after fixes; exit 0/1/2 like verify-report
 node /app/scripts/verify-report.mjs --videodir ${videodir} --preflight   # ~3s: prerequisites, stub check, frames vs STORYBOARD
-node /app/scripts/transitions.mjs inject --videodir ${videodir}          # idempotent; also runs inside verify-all
+node /app/scripts/transitions.mjs inject --videodir ${videodir}          # idempotent; also runs inside verify-all --phase prepare
 node /app/scripts/transitions.mjs verify --videodir ${videodir}          # diagnosis only; report also checks
 node /app/scripts/verify-report.mjs --videodir ${videodir}               # full one-shot diagnosis + gates
 AT="$(node /app/scripts/frame-midpoints.mjs --videodir ${videodir} | tail -1)"
@@ -62,11 +64,10 @@ If a command fails (`transitions inject` / `transitions verify` / `lint` / `chec
 ## Known failures — single source: `scripts/known-failures.mjs`
 
 Every per-failure rule — how to recognize it (`match`), whether it is fixed by
-script (`mode: autofix`, run by `verify-all.mjs`) or needs the model (`mode:
+script (`mode: autofix`, run by the verify-all.mjs prepare phase) or needs the model (`mode:
 model`, its rule auto-loaded into the fix prompt when matched) or is a known
 false-positive (`mode: ignore` / `info`) — lives in `/app/scripts/known-failures.mjs`,
-shared with the `verify-report.mjs` actionable summary and the `verify-all.mjs`
-autofix pass. **Add / read / update a failure there — never re-hardcode a rule
+shared with the `verify-report.mjs` actionable summary and run by the verify-all.mjs prepare phase. **Add / read / update a failure there — never re-hardcode a rule
 in this file or in `verify.py`.** The discipline below still governs how you work.
 
 **Discipline (applies to every failure, listed in the catalog or not):**
@@ -77,10 +78,10 @@ in this file or in `verify.py`.** The discipline below still governs how you wor
 4. **Do not chase warnings.** Warnings that are known non-blockers (`google_fonts_import`, and `id_requires_css_escape` once you have confirmed the file has no digit-led *selectors*) are not grounds for edits.
 5. **Batch independent tool calls.** In one message, issue every Read/grep/Bash that does NOT depend on another call's output — reading five frames is five parallel Reads in one round, not five rounds. Only a call whose input comes from a previous result waits for that result.
 6. **Absolute paths, no cwd trust.** Every Bash command uses absolute paths; the shell cwd can reset between calls in this environment. Need a different directory? `cd /abs/path && …` inside that same compound command, nothing persists.
-7. **Trust the merged report — do not re-run its internals.** `verify-report.mjs` already runs the per-frame structural gate (`frame-selfcheck`), `lint --json`, `check`, and `transitions verify` inside ONE command. Re-issuing `npx hyperframes lint` / `check` / `transitions verify` yourself duplicates its work and spawns extra rounds. Run the report, act on its findings, rerun ONLY the report (or `verify-all.mjs`).
+7. **Trust the merged report — do not re-run its internals.** `verify-report.mjs` already runs the per-frame structural gate (`frame-selfcheck`), `lint --json`, `check`, and `transitions verify` inside ONE command. Re-issuing `npx hyperframes lint` / `check` / `transitions verify` yourself duplicates its work and spawns extra rounds. Run the report, act on its findings, rerun ONLY the report (or `verify-all.mjs --phase verify`).
 8. **Never read `/app/scripts/*.mjs` source.** `transitions.mjs`, `verify-report.mjs`, `frame-midpoints.mjs`, `frame-selfcheck.mjs`, `known-failures.mjs` are deterministic gates; their behaviour is documented above and in their exit codes. Reading them to "understand" a failure is a rabbit-hole (discipline #3) — the smoking gun is already in the output you just ran.
 
-**Where the numbered failures went:** the old mechanical fixes are now catalog entries in `scripts/known-failures.mjs` — `assemble-index-stub` / `transitions-verify` (±1), `digit-led-selectors` (#2), `font-family-no-face` (#3), `content-overlap` (#4), `caption-text-box-overflow` (#5), plus the newer `text-occluded` and `text-not-painted`. Each entry's `prompt` is the exact rule the fix model sees; each `autofix` (when present) is run by `verify-all.mjs` with no model. To add a failure, add one entry there.
+**Where the numbered failures went:** the old mechanical fixes are now catalog entries in `scripts/known-failures.mjs` — `assemble-index-stub` / `transitions-verify` (±1), `digit-led-selectors` (#2), `font-family-no-face` (#3), `content-overlap` (#4), `caption-text-box-overflow` (#5), plus the newer `text-occluded` and `text-not-painted`. Each entry's `prompt` is the exact rule the fix model sees; each `autofix` (when present) is run by the verify-all.mjs prepare phase with no model. To add a failure, add one entry there.
 
 ---
 
