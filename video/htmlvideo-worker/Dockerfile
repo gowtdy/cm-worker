@@ -10,10 +10,10 @@ RUN mkdir -p /app
 COPY build_assets/ /app/
 
 # 创建 log 目录并设置权限
-RUN mkdir -p /app/log /app/output /app/data
+RUN mkdir -p /app/log /app/log/claude /app/log/codex /app/log/grok /app/output /app/data
 
 RUN chmod -R 755 /app
-RUN chmod -R 777 /app/log /app/output /app/data
+RUN chmod -R 777 /app/log /app/log/claude /app/log/codex /app/log/grok /app/output /app/data
 
 # 给脚本执行权限
 RUN chmod +x /app/start_htmlvideo-task.sh
