@@ -337,6 +337,12 @@ HEDGE_AFTER_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_AFTER"
 DEFAULT_HEDGE_AFTER = 660
 HEDGE_POLL_SECONDS = 5
 HEDGE_DIR = os.path.join(".hyperframes", "hedge")
+# A hedge races a minimal fallback, not the primary's full build: degrade cap +
+# short turns + short wall-clock so it returns before the slow primary does
+# (the hedge only ever launches because the primary is already slow/stuck).
+HEDGE_MAX_OUTPUT = "32000"
+HEDGE_MAX_TURNS = 30
+HEDGE_TIMEOUT = 600
 # P2-5: retries started with < DEGRADE_WINDOW s left before the stage deadline
 # use the minimal-motion prompt.
 DEGRADE_ENV = "HTMLVIDEO_FRAME_HTML_DEGRADE"
@@ -487,13 +493,20 @@ narrative prose. frame.md token VALUES (hex, font families) are always exact.
 If the block lists several `- blueprint:` lines, the one under
 `## Selected blueprint` is authoritative.
 
-Never edit STORYBOARD.md. Turn discipline: every turn ends with a tool call or
-visible text; your first edit must land by your second turn (right after the
-recipe batch read, if any); keep each turn's thinking to at most one short
-paragraph of layout/beat notes — never burn a turn on marathon deliberation.
-Never draft CSS/HTML/JS in thinking: code goes only into Edit/Write arguments.
-Place elements on the card / frame.md cqw·cqh grid and tokens; no per-pixel
-math, no re-verifying positions.
+Never edit STORYBOARD.md. Turn discipline: your Write (or first Edit) is your
+FIRST action after reading the skeleton and any recipe batch read — there is
+nothing to reason about between Read and Write, because the dispatch BELOW
+already carries your complete spec. You are TRANSCRIBING that spec into HTML,
+not redesigning it. Hard no-ops in thinking (each wastes the whole turn):
+- do NOT re-list the Scene beats — they are in your storyboard block below;
+- do NOT recompute cqw/cqh pixel equivalents or re-verify positions — place
+  elements straight off the roles/`focal`/Scene text on the composition's
+  cqw·cqh grid; write cqw/cqh values, not pixel math;
+- do NOT re-decide colors, type sizes, or layout — frame.md tokens and the
+  `## Video direction` block already fix them; name elements after their roles.
+Keep thinking to a few lines of transcription notes. Draft CSS/HTML/JS only
+inside Write/Edit arguments, never in thinking. Every turn ends with a tool
+call or visible text.
 
 ## Dispatch (authoritative — already complete)
 
@@ -752,6 +765,28 @@ def _degrade_suffix(note, remaining_s):
     )
 
 
+def _hedge_suffix():
+    """A hedge is a FAST fallback, not a repeat of the primary's full build.
+
+    The primary is (by definition) slow/stuck — usually marathoning its thinking
+    on a complex blueprint. Running the hedge on the identical full prompt at the
+    same 64000 cap just reproduces the same marathon and truncates too (observed
+    2026-11-23: hedge for frame 01 read the skeleton then burned 45k thinking and
+    died with no Write). The hedge instead races a minimal-but-valid version at a
+    low cap so it actually returns before the primary.
+    """
+    return (
+        "\n[HEDGE — fast fallback] The primary attempt for this frame is running "
+        "slow (long thinking). Do NOT re-run its full build — that just races the "
+        "same marathon. Build the SIMPLEST fully-valid version as fast as "
+        "possible: every Scene as one timeline phase, at most 1–2 simple tweens "
+        "per element (rise/fade/scale-pop), static per-Scene layout, no 3D, no "
+        "particles, no counters. Priority: a valid file with every Scene present "
+        "> visual richness. Write in your FIRST turn, then reply done OK — no "
+        "summary.\n"
+    )
+
+
 def _base_worker_env(logger):
     """P2-4 cap/effort overrides applied to normal worker attempts."""
     env = {"CLAUDE_CODE_SUBAGENT_EFFORT": "high"}
@@ -913,9 +948,14 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
                 extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = DEGRADE_MAX_OUTPUT
                 kw["max_turns"] = DEGRADE_MAX_TURNS
                 kw["timeout"] = max(DEGRADE_MIN_TIMEOUT, int(remaining or 0))
+            elif mode == "hedge":
+                prompt += _hedge_suffix()
+                extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = HEDGE_MAX_OUTPUT
+                kw["max_turns"] = HEDGE_MAX_TURNS
+                kw["timeout"] = HEDGE_TIMEOUT
             elif note:
                 prompt += _redispatch_suffix(note)
-            if mode != "degraded" and prev_rc == TRUNCATED_RC:
+            if mode not in ("degraded", "hedge") and prev_rc == TRUNCATED_RC:
                 extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = _trunc_retry_cap(base_env)
         phased = two_phase and mode == "normal" and attempt_no == 1
         if phased:

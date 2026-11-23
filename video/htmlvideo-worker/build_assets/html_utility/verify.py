@@ -23,9 +23,14 @@ import os
 import re
 import subprocess
 
-from html_utility.claude_cli import _env_positive_int, run_claude
+from html_utility.claude_cli import (
+    TRUNCATED_RC,
+    _env_positive_int,
+    run_claude_result,
+)
 from html_utility.verify_overlap_autofix import (
     auto_overlap_enabled,
+    autofix_caption_keepout,
     autofix_designed_overlays,
     strip_findings_payload,
 )
@@ -107,7 +112,10 @@ knowledge lives in /app/scripts/known-failures.mjs; nothing here overrides it.
 - Apply the rule that names your finding, then stop. Do not invent a different fix.
 - A finding with no matching rule → cheapest safe edit, one line of note.
 - `id_requires_css_escape` / `google_fonts_import` warnings and the caption
-  `text_box_overflow` finding are non-blockers — do not act on them."""
+  `text_box_overflow` finding are non-blockers — do not act on them.
+- Decide each finding in ≤2 sentences and emit every Edit in ONE batched pass on
+  your FIRST turn. Do NOT re-derive cqw/cqh geometry or re-trace the GSAP
+  timeline — the scan already measured the boxes, so trust its classification."""
 
 _FIX_HARD_CONSTRAINTS = """Hard constraints for this fix role (override project CLAUDE.md / plugins):
 - Do NOT Read `/app/scripts/*`, `/app/hyperframes/**`, or any CLI/gate source.
@@ -126,6 +134,9 @@ _FIX_REPLY = (
 
 _ACTIONABLE_HEADER = "── actionable summary ──"
 _ERROR_LINE_RE = re.compile(r"^\s+✗ ")
+# The one stable anchor in every finding line, regardless of whether it was a
+# lint error (code then file) or a check finding (`in <file>`).
+_FRAME_FILE_RE = re.compile(r"compositions/frames/[A-Za-z0-9._-]+\.html")
 
 
 def _env_flag(name: str) -> bool:
@@ -174,17 +185,8 @@ def _trim_scan_for_fix(scan_output: str) -> str:
     return "".join(parts)
 
 
-def _build_fix_prompt(scan_output: str, project_dir: str = "") -> str:
-    """Prompt for the one model turn that is still genuinely needed: apply the
-    mechanical fixes the scan already enumerated. Only the actionable part of
-    the scan is inlined (``HTMLVIDEO_VERIFY_FIX_FULL_SCAN=1`` restores the full
-    output) so the model edits directly instead of re-investigating.
-    """
-    if _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN"):
-        scan_text, label = strip_findings_payload(scan_output), "scan output"
-    else:
-        scan_text, label = _trim_scan_for_fix(scan_output), "scan findings"
-    root_line = f"Project root (absolute): {project_dir}\n\n" if project_dir else ""
+def _fix_prompt_prefix(root_line: str, label: str) -> str:
+    """Fixed header/hard-constraints/playbook shared by every fix prompt."""
     return (
         "Fix the verification findings below in this HyperFrames project root. "
         "The deterministic scan (`node /app/scripts/verify-all.mjs --phase verify`, after a one-time prepare pass) has ALREADY "
@@ -198,10 +200,65 @@ def _build_fix_prompt(scan_output: str, project_dir: str = "") -> str:
         "build, assemble, preview or render.\n\n"
         + _FIX_PLAYBOOK
         + "\n\n" + _FIX_REPLY + "\n\n"
-        f"── {label} (already run — do not re-run) ──\n"
-        + scan_text
+        + f"── {label} (already run — do not re-run) ──\n"
+    )
+
+
+def _build_fix_prompt_from_fragment(fragment: str, project_dir: str, label: str) -> str:
+    root_line = f"Project root (absolute): {project_dir}\n\n" if project_dir else ""
+    return (
+        _fix_prompt_prefix(root_line, label)
+        + fragment
         + f"\n── end {label} ──\n"
     )
+
+
+def _build_fix_prompt(scan_output: str, project_dir: str = "") -> str:
+    """Prompt for the one model turn that is still genuinely needed: apply the
+    mechanical fixes the scan already enumerated. Only the actionable part of
+    the scan is inlined (``HTMLVIDEO_VERIFY_FIX_FULL_SCAN=1`` restores the full
+    output) so the model edits directly instead of re-investigating.
+    """
+    if _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN"):
+        scan_text, label = strip_findings_payload(scan_output), "scan output"
+    else:
+        scan_text, label = _trim_scan_for_fix(scan_output), "scan findings"
+    return _build_fix_prompt_from_fragment(scan_text, project_dir, label)
+
+
+def _split_scan_by_file(scan_text: str) -> tuple[dict[str, str], str]:
+    """Split the trimmed scan findings into one error block per frame file.
+
+    Returns ``(files: dict[rel_path -> fragment], shared_tail)``. The ``shared_tail``
+    is the actionable summary onward (file-agnostic rules + GATE line). When the
+    scan carries findings in only one file the dict has that single key; when the
+    findings cannot be attributed to distinct frame files the dict is empty and
+    the caller must fall back to the whole scan.
+    """
+    idx = scan_text.find(_ACTIONABLE_HEADER)
+    if idx < 0:
+        return {}, scan_text
+    head, tail = scan_text[:idx], scan_text[idx:]
+    groups: dict[str, list[str]] = {}
+    order: list[str] = []
+    current: str | None = None
+    for line in _error_blocks(head):
+        if _ERROR_LINE_RE.match(line):
+            m = _FRAME_FILE_RE.search(line)
+            current = m.group(0) if m else "__other__"
+            if current not in groups:
+                groups[current] = []
+                order.append(current)
+        if current is not None:
+            groups[current].append(line)
+    # A single (or zero) group is not worth splitting.
+    if len(order) <= 1:
+        return {}, scan_text
+    fragments = {
+        f: "── error findings ──\n" + "\n".join(groups[f]) + "\n\n" + tail
+        for f in order
+    }
+    return fragments, tail
 
 
 _VISUAL_SECTION = "── visual gate (snapshot + pixels) ──"
@@ -395,37 +452,108 @@ def _auto_fix_overlaps(
     round_no: int,
     logger: logging.Logger,
 ) -> tuple[int, str]:
-    """Deterministically mark safe ``designed_overlay`` rows, then rescan if
-    any file was written. Returns the (possibly unchanged) ``(rc, output)``;
-    an auto-fix crash is logged and never fails verify.
+    """Deterministically mark safe ``designed_overlay`` rows and delete
+    redundant in-frame caption strips, then rescan if any file was written.
+    Returns the (possibly unchanged) ``(rc, output)``; an auto-fix crash is
+    logged and never fails verify.
     """
-    try:
-        result = autofix_designed_overlays(project_dir, output, logger)
-    except Exception:
-        logger.exception("auto-overlap (round %d) crashed — continuing without it", round_no)
+    changed = False
+    for autofix, name in (
+        (autofix_designed_overlays, "auto-overlap"),
+        (autofix_caption_keepout, "auto-caption"),
+    ):
+        try:
+            result = autofix(project_dir, output, logger)
+        except Exception:
+            logger.exception(
+                "%s (round %d) crashed — continuing without it", name, round_no
+            )
+            continue
+        if not result.changed:
+            continue
+        changed = True
+        logger.info(
+            "%s (round %d): wrote %d node(s) across %d file(s) [%s]; %d unresolved",
+            name, round_no, result.nodes_marked, len(result.files_changed),
+            ", ".join(result.files_changed), len(result.unresolved),
+        )
+    if not changed:
         return rc, output
-    if not result.changed:
-        return rc, output
-    logger.info(
-        "auto-overlap (round %d): marked %d node(s) in %d file(s) [%s] for %d "
-        "designed_overlay row(s); %d unresolved — rescanning",
-        round_no, result.nodes_marked, len(result.files_changed),
-        ", ".join(result.files_changed), result.handled, len(result.unresolved),
-    )
     return _run_verify(project_dir, logger)
 
 
-def _apply_model_fix(
+def _run_fix_worker(
+    project_dir: str,
+    prompt: str,
+    logger: logging.Logger,
+    label: str | None,
+) -> int:
+    """Dispatch one fix turn with the truncation watcher armed (P0 fail-fast).
+
+    ``trunc_kill`` kills a thinking-only turn that hit the output cap in seconds
+    (rc 125) instead of letting the model re-think into the cap for minutes and
+    return with zero edits — the 2026-11-23 runaway (2× 16000-token thinking-only
+    turns, no Edit). Kept as a thin, easily-mocked seam for the unit tests.
+    """
+    fix_rc, _result = run_claude_result(
+        project_dir, prompt, logger, skill="verify", label=label, trunc_kill=True
+    )
+    return fix_rc
+
+
+def _dispatch_fix(
     project_dir: str,
     prompt: str,
     round_no: int,
     logger: logging.Logger,
-) -> tuple[int, str]:
-    """One batched model turn, then rescan. Raises on a zero-edit digest."""
-    before_digest = _composition_html_digest(project_dir)
-    fix_rc = run_claude(project_dir, prompt, logger, skill="verify")
+    label: str | None,
+) -> None:
+    """One batched model turn, raising on a truncation or non-zero exit."""
+    fix_rc = _run_fix_worker(project_dir, prompt, logger, label)
+    if fix_rc == TRUNCATED_RC:
+        raise RuntimeError(
+            f"verify fix round {round_no} [{label or '-'}] truncated: the model "
+            "burned its output budget on thinking without emitting an Edit"
+        )
     if fix_rc != 0:
-        raise RuntimeError(f"claude verify fix failed rc:{fix_rc}")
+        raise RuntimeError(f"claude verify fix failed rc:{fix_rc} [{label or '-'}]")
+
+
+def _apply_model_fix(
+    project_dir: str,
+    scan_output: str,
+    round_no: int,
+    logger: logging.Logger,
+) -> tuple[int, str]:
+    """Batched model fixes, then rescan. Raises on a zero-edit digest.
+
+    When the mechanical findings span more than one frame file they are split
+    into one small self-contained worker per file (P2): a single worker facing
+    10 findings across 4 files runs its adaptive thinking into the output cap;
+    a per-file worker of 1–2 findings edits on turn 1. Falls back to the whole
+    scan for a single-file failure or ``HTMLVIDEO_VERIFY_FIX_FULL_SCAN=1``.
+    """
+    before_digest = _composition_html_digest(project_dir)
+    fragments: dict[str, str] = {}
+    if not _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN"):
+        fragments, _tail = _split_scan_by_file(_trim_scan_for_fix(scan_output))
+    if fragments:
+        for rel, fragment in fragments.items():
+            prompt = _build_fix_prompt_from_fragment(fragment, project_dir, "scan findings")
+            _dispatch_fix(project_dir, prompt, round_no, logger, rel)
+    else:
+        prompt = _build_fix_prompt(scan_output, project_dir)
+        _dispatch_fix(project_dir, prompt, round_no, logger, None)
+    return _require_changed_and_rescan(project_dir, before_digest, round_no, logger)
+
+
+def _require_changed_and_rescan(
+    project_dir: str,
+    before_digest: str,
+    round_no: int,
+    logger: logging.Logger,
+) -> tuple[int, str]:
+    """Zero-edit guard + rescan. Raises when the model turn changed nothing."""
     after_digest = _composition_html_digest(project_dir)
     if after_digest == before_digest:
         raise RuntimeError(
@@ -434,6 +562,18 @@ def _apply_model_fix(
             "(model produced no Edit, or scan findings were non-actionable)"
         )
     return _run_verify(project_dir, logger)
+
+
+def _apply_visual_fix(
+    project_dir: str,
+    prompt: str,
+    round_no: int,
+    logger: logging.Logger,
+) -> tuple[int, str]:
+    """One pixels-fix model turn (no file split), zero-edit guard, then rescan."""
+    before_digest = _composition_html_digest(project_dir)
+    _dispatch_fix(project_dir, prompt, round_no, logger, None)
+    return _require_changed_and_rescan(project_dir, before_digest, round_no, logger)
 
 
 def verify_frame(
@@ -523,15 +663,14 @@ def verify_frame(
                     "verify-all mechanical findings (round %d) — invoking claude for batched fixes",
                     round_no,
                 )
-                prompt = _build_fix_prompt(output, project_dir)
-                rc, output = _apply_model_fix(project_dir, prompt, round_no, logger)
+                rc, output = _apply_model_fix(project_dir, output, round_no, logger)
                 continue
         logger.info(
             "verify-all visual findings (round %d) — invoking claude for pixels fix",
             round_no,
         )
         prompt = _build_visual_fix_prompt(output, project_dir)
-        rc, output = _apply_model_fix(project_dir, prompt, round_no, logger)
+        rc, output = _apply_visual_fix(project_dir, prompt, round_no, logger)
 
     if (
         rc == 1

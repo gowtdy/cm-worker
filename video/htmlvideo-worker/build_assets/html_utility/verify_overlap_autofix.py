@@ -22,6 +22,7 @@ attribute is inserted into the original bytes without reformatting the file.
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import os
@@ -169,6 +170,7 @@ class Node:
     raw: str
     parent: "Node | None" = None
     children: list["Node"] = field(default_factory=list)
+    end: int = -1  # offset just past the closing tag (start+len(raw) for void)
 
     @property
     def classes(self) -> list[str]:
@@ -203,6 +205,7 @@ class _TreeBuilder(HTMLParser):
             raw,
             parent=self._stack[-1],
         )
+        node.end = (start + len(raw)) if start >= 0 else -1
         self._stack[-1].children.append(node)
         self.nodes.append(node)
         if push and node.tag not in _VOID_TAGS:
@@ -216,8 +219,12 @@ class _TreeBuilder(HTMLParser):
 
     def handle_endtag(self, tag):
         tag = tag.lower()
+        offset = self._offset()
+        gt = self.source.find(">", offset)
+        end = gt + 1 if gt != -1 else offset
         for i in range(len(self._stack) - 1, 0, -1):
             if self._stack[i].tag == tag:
+                self._stack[i].end = end
                 del self._stack[i:]
                 return
 
@@ -512,6 +519,152 @@ def autofix_designed_overlays(
     if result.unresolved:
         logger.info(
             "auto-overlap: %d designed_overlay row(s) left for the model: %s",
+            len(result.unresolved), "; ".join(result.unresolved[:6]),
+        )
+    return result
+
+
+# ── caption keep-out band: delete the redundant in-frame caption strip ─────
+
+# Runtime caption words (scripts/captions.mjs); same shape as the JS triage's
+# CAPTION_WORD_RE. Frame text overlapping them sits in the caption keep-out band.
+CAPTION_WORD_RE = re.compile(r"^(?:[a-z][\w-]*)?#caption-word-\d+-\d+$", re.I)
+
+# A frame's own caption strip: a class token that names "caption" / "cap-line" /
+# "subtitle" etc. The auto-caption is injected (never in this source), so any
+# element here matching this is the frame drawing a second, redundant caption.
+_CAPTION_STRIP_TOKEN_RE = re.compile(
+    r"caption|cap[-_](line|pill|band|sub|scrim)|subtitle", re.I,
+)
+
+_CAPTION_ROOT_TAGS = frozenset({"html", "head", "body", "template"})
+
+
+def _side_is_caption_word(side: str) -> bool:
+    s = (side or "").strip()
+    return bool(s) and (CAPTION_WORD_RE.match(s) is not None or "#caption-word" in s)
+
+
+def _is_caption_root(node: Node) -> bool:
+    return node.tag in _CAPTION_ROOT_TAGS or "data-composition-id" in node.attrs
+
+
+def _is_caption_strip(node: Node) -> bool:
+    return any(_CAPTION_STRIP_TOKEN_RE.search(c) for c in node.classes)
+
+
+def _caption_strip_ancestor(node: Node) -> Node | None:
+    """Highest ancestor that is still a frame caption strip, else ``None``."""
+    best = None
+    cur = node
+    while cur is not None and not _is_caption_root(cur):
+        if _is_caption_strip(cur):
+            best = cur
+        cur = cur.parent
+    return best
+
+
+def _delete_caption_spans(
+    source: str, builder: "_TreeBuilder", nodes: list["Node"]
+) -> tuple[str, int]:
+    """Remove caption-strip elements whole (line-aware), preserving tag balance."""
+    spans: set[tuple[int, int]] = set()
+    for node in nodes:
+        if node.start < 0 or node.end < node.start:
+            continue
+        s = _line_start(builder, node.start)
+        if (source[s:node.start]).strip():
+            s = node.start
+        e = node.end
+        if e < len(source) and source[e] == "\n":
+            e += 1
+        spans.add((s, e))
+    if not spans:
+        return source, 0
+    out = source
+    removed = 0
+    for s, e in sorted(spans, reverse=True):
+        if s < 0 or e > len(out):
+            continue
+        out = out[:s] + out[e:]
+        removed += 1
+    return out, removed
+
+
+def _line_start(builder: "_TreeBuilder", offset: int) -> int:
+    starts = builder._line_starts
+    i = bisect.bisect_right(starts, offset) - 1
+    return starts[i] if i >= 0 else 0
+
+
+def autofix_caption_keepout(
+    project_dir: str, scan_output: str, logger: logging.Logger
+) -> AutofixResult:
+    """Determinstic fix for real_collision caption-keep-out content_overlap rows.
+
+    When a frame draws its own caption strip that overlaps the runtime
+    ``#caption-word-*`` auto-captions, the strip is redundant — delete it. Each
+    row's non-caption side is resolved and its highest caption-strip ancestor
+    removed; rows without a caption-strip ancestor (or with caption words on both
+    sides) are left for the model.
+    """
+    result = AutofixResult()
+    payload = parse_findings_payload(scan_output)
+    if payload is None or payload.get("version") != PAYLOAD_VERSION:
+        return result
+    rows = payload.get("real_collision") or []
+    if not isinstance(rows, list) or not rows:
+        return result
+    by_file: dict[str, list[str]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sel = str(row.get("selector") or "")
+        con = str(row.get("container") or "")
+        sel_cap = _side_is_caption_word(sel)
+        con_cap = _side_is_caption_word(con)
+        if sel_cap == con_cap:
+            continue  # neither side caption, or both sides caption — not ours
+        non_caption = con if sel_cap else sel
+        by_file.setdefault(str(row.get("file") or ""), []).append(non_caption)
+    for rel, sides in by_file.items():
+        abs_path = _safe_composition_path(project_dir, rel)
+        if abs_path is None:
+            result.unresolved.append(f"{rel or '?'}: (file not under compositions/)")
+            continue
+        source = _read_text(abs_path)
+        tree = build_tree(source)
+        to_delete: dict[int, Node] = {}
+        for sel in sides:
+            picked, note = resolve_target(tree, sel)
+            if not picked:
+                logger.info("auto-caption: unresolved %s %s — %s", rel, sel, note)
+                result.unresolved.append(f"{rel}: {sel} ({note})")
+                continue
+            for node in picked:
+                strip = _caption_strip_ancestor(node)
+                if strip is None:
+                    logger.info(
+                        "auto-caption: %s %s — no caption-strip ancestor", rel, sel
+                    )
+                    result.unresolved.append(f"{rel}: {sel} (no caption-strip ancestor)")
+                    continue
+                to_delete[id(strip)] = strip
+        if not to_delete:
+            continue
+        nodes = list(to_delete.values())
+        new_source, n = _delete_caption_spans(source, tree, nodes)
+        if n:
+            _write_text_atomic(abs_path, new_source)
+            result.files_changed.append(rel)
+            result.nodes_marked += n
+            result.handled += len(nodes)
+            logger.info(
+                "auto-caption: %s deleted %d caption strip(s)", rel, n,
+            )
+    if result.unresolved:
+        logger.info(
+            "auto-caption: %d caption-keep-out row(s) left for the model: %s",
             len(result.unresolved), "; ".join(result.unresolved[:6]),
         )
     return result
