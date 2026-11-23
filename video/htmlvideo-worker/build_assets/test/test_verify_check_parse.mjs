@@ -321,6 +321,31 @@ function testTriageAutofixWhitelist() {
   console.log("triage autofix whitelist OK");
 }
 
+function testTriageNumCheck() {
+  // A number + checkmark in the SAME badge = status overlay → deterministic
+  // allow-overlap (mark the check side). Two numbers are NOT an overlay.
+  const full = (o) => triageContentOverlap({ code: "content_overlap", ...o });
+  const badge = full({ selector: "span.f04-num", container: "span.f04-ck" });
+  assert.deepEqual(
+    badge,
+    { kind: "designed_overlay", reason: "number + check status overlay", autofix: true, mark_side: "container" },
+  );
+  // Reversed side still overlays, marking the check side.
+  assert.deepEqual(
+    full({ selector: "span.ck", container: "span.num" }),
+    { kind: "designed_overlay", reason: "number + check status overlay", autofix: true, mark_side: "selector" },
+  );
+  // Spelled-out forms.
+  assert.equal(full({ selector: "span.checkmark", container: "span.number" }).kind, "designed_overlay");
+  // num × num is a real collision signal, never an overlay.
+  assert.equal(full({ selector: "span.num", container: "span.num" }).kind, "ambiguous");
+  // A lone check (no number on the other side) is not an overlay.
+  assert.equal(full({ selector: "span.ck", container: "#hero" }).kind, "ambiguous");
+  // A real two-text collision still wins over number+check.
+  assert.equal(full({ selector: "h1.headline", container: "p.body-copy" }).kind, "real_collision");
+  console.log("triage num+check OK");
+}
+
 function test6b01Artifact() {
   const dir = path.join(SAMPLE_6B01, ".hyperframes", "artifacts", "checks");
   if (!fs.existsSync(dir)) {
@@ -437,6 +462,7 @@ function testFindingsPayload() {
 testTriage();
 testTriageCaptionBand();
 testTriageAutofixWhitelist();
+testTriageNumCheck();
 testFindingsPayload();
 test6b01Artifact();
 console.log("all verify-check-parse tests passed");

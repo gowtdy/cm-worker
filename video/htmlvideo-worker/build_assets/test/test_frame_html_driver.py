@@ -183,6 +183,17 @@ class DriverTest(unittest.TestCase):
             "01-hook", skeleton_mode=True, project_dir=d)
         self.assertIn("DISK-TOKEN", p2)
 
+    def test_worker_prompt_transcribe_not_redesign(self):
+        # P0 (2026-11-23): the worker must transcribe the inlined spec, not
+        # re-derive it — the three observed thinking wastes are named outright.
+        p = fh._worker_prompt(
+            "01-hook", skeleton_mode=True, dispatch_text="# Dispatch stub\n")
+        self.assertIn("TRANSCRIBING that spec into HTML", p)
+        self.assertIn("not redesigning it", p)
+        self.assertIn("do NOT re-list the Scene beats", p)
+        self.assertIn("do NOT recompute cqw/cqh", p)
+        self.assertIn("do NOT re-decide colors, type sizes, or layout", p)
+
     def test_worker_done_ok_accepts_hyphen_suffix_ids(self):
         # 2026-11-21: empty-slug frames were ``01-``; trailing ``\b`` rejected
         # a correct ``done OK 01-`` and forced a false retry round.
@@ -602,6 +613,12 @@ class HardeningP1P2Test(unittest.TestCase):
                 return 0, "done OK 01-hook"
             if label.endswith("-hedge"):
                 self.assertIn(os.path.join(".hyperframes", "hedge"), project_dir)
+                # P2: a hedge races a degraded minimal fallback, not the full build.
+                self.assertIn("[HEDGE", prompt)
+                self.assertEqual((extra_env or {}).get("CLAUDE_CODE_MAX_OUTPUT_TOKENS"),
+                                 fh.HEDGE_MAX_OUTPUT)
+                self.assertEqual(kw.get("max_turns"), fh.HEDGE_MAX_TURNS)
+                self.assertEqual(kw.get("timeout"), fh.HEDGE_TIMEOUT)
                 with open(fh._frame_path(project_dir, fid), "w") as f:
                     f.write("<!-- HEDGE-CONTENT -->")
                 return 0, "done OK 02-answer"

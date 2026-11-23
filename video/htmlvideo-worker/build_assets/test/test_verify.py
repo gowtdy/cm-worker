@@ -135,7 +135,7 @@ class VerifyFramePrecheckTest(unittest.TestCase):
             "GATE: FAIL ✗ (…, 0 error finding(s))\n"
         )
         with mock.patch.object(v, "_run_verify", return_value=(1, scan)), \
-             mock.patch.object(v, "run_claude") as claude:
+             mock.patch.object(v, "_run_fix_worker") as claude:
             with self.assertRaises(RuntimeError) as ctx:
                 v.verify_frame(self.d, self.logger)
         claude.assert_not_called()
@@ -152,7 +152,7 @@ class VerifyFramePrecheckTest(unittest.TestCase):
                  (1, scan),
                  (0, "GATE: PASS ✓\n"),
              ]), \
-             mock.patch.object(v, "run_claude", return_value=0) as claude, \
+             mock.patch.object(v, "_run_fix_worker", return_value=0) as claude, \
              mock.patch.object(v, "_composition_html_digest", side_effect=["a", "b"]), \
              mock.patch.object(
                  v, "_validate_verify_outputs",
@@ -581,6 +581,28 @@ class OverlapAutofixUnitTest(unittest.TestCase, _ProjectMixin):
         self.assertFalse(res.changed)
         self.assertIsNone(ao.parse_findings_payload("VERIFY_FINDINGS_JSON {bad"))
 
+    def test_caption_keepout_deletes_strip(self):
+        d = self._make_project()
+        row = {"file": "compositions/frames/05-price.html",
+               "selector": "div.cap-sub", "container": "#caption-word-32-0"}
+        res = ao.autofix_caption_keepout(d, _scan([], real_collision=[row]), self.logger)
+        self.assertTrue(res.changed)
+        self.assertEqual(res.handled, 1)
+        f5 = self._read(d, "05-price.html")
+        self.assertNotIn("cap-sub", f5)
+        # The overlapping frame caption strip is gone; siblings survive.
+        self.assertIn('<div class="price-tag">', f5)
+        self.assertIn('<div class="f5-stamp">', f5)
+
+    def test_caption_keepout_ignores_non_caption_row(self):
+        d = self._make_project()
+        row = {"file": "compositions/frames/05-price.html",
+               "selector": "div.price-num", "container": "div.price-tag"}
+        before = self._read(d, "05-price.html")
+        res = ao.autofix_caption_keepout(d, _scan([], real_collision=[row]), self.logger)
+        self.assertFalse(res.changed)
+        self.assertEqual(before, self._read(d, "05-price.html"))
+
 
 class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
     def setUp(self):
@@ -594,7 +616,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
         env = env or {}
         with mock.patch.dict(os.environ, env, clear=False), \
              mock.patch.object(v, "_run_verify", side_effect=scans) as scan, \
-             mock.patch.object(v, "run_claude", return_value=claude_rc) as claude, \
+             mock.patch.object(v, "_run_fix_worker", return_value=claude_rc) as claude, \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
             if "HTMLVIDEO_VERIFY_AUTO_OVERLAP" not in env:
                 os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
@@ -625,7 +647,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
         with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_AUTO_OVERLAP": "0"}), \
              mock.patch.object(v, "_run_verify",
                                side_effect=[(1, _scan(_ROWS_SAMPLE)), (0, "GATE: PASS ✓\n")]), \
-             mock.patch.object(v, "run_claude", side_effect=fake_claude) as claude, \
+             mock.patch.object(v, "_run_fix_worker", side_effect=fake_claude) as claude, \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
             v.verify_frame(self.d, self.logger)
         claude.assert_called_once()
@@ -651,7 +673,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
         with mock.patch.dict(os.environ, {}, clear=False), \
              mock.patch.object(v, "_run_verify", side_effect=[
                  (1, _scan(_ROWS_SAMPLE)), (1, remaining), (0, "GATE: PASS ✓\n")]), \
-             mock.patch.object(v, "run_claude", side_effect=fake_claude), \
+             mock.patch.object(v, "_run_fix_worker", side_effect=fake_claude), \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
             os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
             v.verify_frame(self.d, self.logger)
@@ -683,7 +705,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
         with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}), \
              mock.patch.object(v, "_run_verify", side_effect=[
                  (1, remaining), (1, _scan(_ROWS_SAMPLE)), (0, "GATE: PASS ✓\n")]) as scan, \
-             mock.patch.object(v, "run_claude", side_effect=self._edit_claude) as claude, \
+             mock.patch.object(v, "_run_fix_worker", side_effect=self._edit_claude) as claude, \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
             os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
             out = v.verify_frame(self.d, self.logger)
@@ -700,7 +722,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
         with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}), \
              mock.patch.object(v, "_run_verify", side_effect=[
                  (1, remaining), (0, "GATE: PASS ✓\n")]), \
-             mock.patch.object(v, "run_claude", side_effect=self._edit_claude), \
+             mock.patch.object(v, "_run_fix_worker", side_effect=self._edit_claude), \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
             self.assertEqual(v.verify_frame(self.d, self.logger), self.sheet)
 
@@ -711,7 +733,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
         with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}), \
              mock.patch.object(v, "_run_verify", side_effect=[
                  (1, remaining), (1, remaining)]), \
-             mock.patch.object(v, "run_claude", side_effect=self._edit_claude):
+             mock.patch.object(v, "_run_fix_worker", side_effect=self._edit_claude):
             with self.assertRaises(RuntimeError) as ctx:
                 v.verify_frame(self.d, self.logger)
         self.assertIn("after 1 fix rounds", str(ctx.exception))
@@ -723,7 +745,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
         )
         with mock.patch.object(v, "_run_verify",
                                side_effect=[(1, _scan(_ROWS_SAMPLE)), (1, leftover)]), \
-             mock.patch.object(v, "run_claude") as claude:
+             mock.patch.object(v, "_run_fix_worker") as claude:
             os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
             with self.assertRaises(RuntimeError) as ctx:
                 v.verify_frame(self.d, self.logger)
@@ -737,7 +759,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
         with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}), \
              mock.patch.object(v, "_run_verify", side_effect=[
                  (1, remaining), (1, _scan(_ROWS_SAMPLE)), (0, "GATE: PASS ✓\n")]) as scan, \
-             mock.patch.object(v, "run_claude", side_effect=self._edit_claude), \
+             mock.patch.object(v, "_run_fix_worker", side_effect=self._edit_claude), \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
             os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
             v.verify_frame(self.d, self.logger)
@@ -747,7 +769,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
     def test_prepare_failure_raises_without_verify_or_model(self):
         self.prep.return_value = (2, "✗ inject failed: boom")
         with mock.patch.object(v, "_run_verify") as verify, \
-             mock.patch.object(v, "run_claude") as claude:
+             mock.patch.object(v, "_run_fix_worker") as claude:
             with self.assertRaises(RuntimeError) as ctx:
                 v.verify_frame(self.d, self.logger)
         self.assertIn("prepare failure", str(ctx.exception))
@@ -772,7 +794,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
                  (1, _visual_scan(with_payload=True)),
                  (0, passed),
              ]), \
-             mock.patch.object(v, "run_claude", side_effect=fake_claude) as claude, \
+             mock.patch.object(v, "_run_fix_worker", side_effect=fake_claude) as claude, \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
             os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
             out = v.verify_frame(self.d, self.logger)
@@ -793,7 +815,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
     def test_visual_zero_edit_raises_without_overlap(self):
         with mock.patch.object(v, "autofix_designed_overlays") as overlap, \
              mock.patch.object(v, "_run_verify", return_value=(1, _visual_scan())), \
-             mock.patch.object(v, "run_claude", return_value=0):
+             mock.patch.object(v, "_run_fix_worker", return_value=0):
             os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
             with self.assertRaises(RuntimeError) as ctx:
                 v.verify_frame(self.d, self.logger)
@@ -816,7 +838,7 @@ class VerifyFrameAutoOverlapTest(unittest.TestCase, _ProjectMixin):
                  (1, _mechanical_scan()),
                  (0, passed),
              ]), \
-             mock.patch.object(v, "run_claude", side_effect=fake_claude), \
+             mock.patch.object(v, "_run_fix_worker", side_effect=fake_claude), \
              mock.patch.object(v, "_validate_verify_outputs", return_value=self.sheet):
             os.environ.pop("HTMLVIDEO_VERIFY_AUTO_OVERLAP", None)
             self.assertEqual(v.verify_frame(self.d, self.logger), self.sheet)
