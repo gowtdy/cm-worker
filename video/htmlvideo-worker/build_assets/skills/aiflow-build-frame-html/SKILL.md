@@ -59,7 +59,8 @@ and `../hyperframes-animation/`.
      backend each worker is one long single-request marathon, so splitting A+B
      only adds a cold start); single-phase workers run at the frame_html
      profile cap of 64000. `_DEGRADE` default ON; `_MAX_OUTPUT` / `_EFFORT`
-     optional overrides. One `frame-html stage summary` INFO line per stage.
+     optional overrides (medium×64000 A/B:
+     docs/2026-11-22-frame-html-effort-medium-ab.md). One `frame-html stage summary` INFO line per stage.
 5. Mark landed frames `animated` in STORYBOARD as each frame completes
    (regex, deterministic, serialized by a lock).
 6. Assemble via `assemble-index.mjs`; on failure run ONE `repair`-profile
@@ -76,9 +77,11 @@ set `off` to index-only, or `full` for complete recipes). When snippets/full
 are present, Read a full `RULES_DIR/<id>.md` only if a detail is missing; when
 `off`, the first tool turn Reads every indexed recipe in one parallel batch.
 A trailing `## Resolved conflicts` block carries final packet-time rulings. Then FILL the pre-built skeleton at
-`compositions/frames/<frame_id>.html` (never write a new skeleton): chunked
-Edit/Write style → body → script, each ≤ ~20 KB, first edit by turn 2 →
-reply `done OK <frame_id>` (or `fail <frame_id>: <reason>`). Do **not** run
+`compositions/frames/<frame_id>.html` (never write a new skeleton): final
+file < ~15 KB → one Write (or one large Edit) of the whole file, no
+style → body → script split; any single Write input ≤ ~20 KB; first edit by
+turn 2 → reply **only** `done OK <frame_id>` (or `fail <frame_id>: <reason>`),
+no summary. Do **not** run
 `frame-selfcheck` or Bash — the driver runs the gate and re-dispatches with
 FAIL findings when needed. Cut catalog only for within-scene cut seams; never
 open `frame.md` / `_role.md`.
