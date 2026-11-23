@@ -97,7 +97,7 @@ function prepare() {
       videodir,
       stub: isStub(),
       digitSelectors: [], lintErrors: [], checkErrors: [],
-      transitions: { status: 0, error: null }, missingFrames: [],
+      transitions: { status: 0, error: null },
       digitTell: new Map(), googleImport: new Map(),
     };
     let changedAny = false;
