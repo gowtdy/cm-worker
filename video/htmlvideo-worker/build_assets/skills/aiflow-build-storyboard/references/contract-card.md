@@ -180,7 +180,7 @@ Write each `voiceover` as the final spoken line:
 
 1. Compose the plan: structure → hook → frame list with all required fields (quality `voiceover` lines included).
 2. **First tool call MUST be** `Write("STORYBOARD.md")`. Do not Bash/Read/Glob project or skill files — every input is already inlined. Do not Write `SCRIPT.md`.
-3. End with the heads-up summary as the final text: echo **"This video tells [audience] that [message]"**, then a frame table — one row per frame: `frame · beat (type, duration) · on screen · why (its narrativeRole traced to the message)` — plus the chosen structure/hook/transition set. No board, no approval questions, no waiting.
+3. Write the file in the SAME response as your reasoning — no draft or summary text before the Write. After the Write succeeds, reply with exactly one confirmation line (`STORYBOARD.md written — <N> frames, arc <arc>`) and stop. Do NOT echo a frame table or re-summarize `scene`/`voiceover`/`on screen`/`why` — the file is the deliverable, and the harness derives `SCRIPT.md` and the plan summary itself. No board, no approval questions, no waiting.
 
 ## Self-check before writing
 

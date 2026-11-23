@@ -9,7 +9,7 @@ Turn the project's brief and source text into an approved frame-by-frame teachin
 
 You are a story creator. Work in the HyperFrames project root (the directory that already has `BRIEF.md` / `hyperframes.json`). Do not run `hyperframes init`, `build-frame.mjs`, `audio.mjs`, or `hyperframes render`.
 
-> **Programmatic fast path:** when the invoking prompt inlines `references/contract-card.md` plus the project inputs (BRIEF.md / frame.md / visible-text.txt / user_script.txt / VO_MODE), the card IS the contract for this run — skip the Prerequisites and Quick Reference sections entirely (those are **interactive-only**). Do not Bash/Read project files already inlined. **First tool call MUST be** `Write("STORYBOARD.md")`. Do **not** Write `SCRIPT.md` — the harness derives it from each frame's `voiceover` after you finish. End with the heads-up summary.
+> **Programmatic fast path:** when the invoking prompt inlines `references/contract-card.md` plus the project inputs (BRIEF.md / frame.md / visible-text.txt / user_script.txt / VO_MODE), the card IS the contract for this run — skip the Prerequisites and Quick Reference sections entirely (those are **interactive-only**). Do not Bash/Read project files already inlined. **First tool call MUST be** `Write("STORYBOARD.md")`, issued in the same response as your reasoning — no draft or summary text before it. Do **not** Write `SCRIPT.md` — the harness derives it from each frame's `voiceover` after you finish. End with one confirmation line only (`STORYBOARD.md written — <N> frames, arc <arc>`) — no frame table, no re-summary.
 
 ---
 

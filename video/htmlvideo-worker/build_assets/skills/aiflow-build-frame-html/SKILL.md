@@ -55,6 +55,10 @@ and `../hyperframes-animation/`.
    - Switches (docs/2026-11-22-frame-html-critical-path-hardening.md):
      rich skeleton / hedge **default ON**
      (`HTMLVIDEO_FRAME_HTML_RICH_SKELETON` / `_HEDGE`; set `0` to disable);
+     **a hedge races a minimal fallback, not the full build** — it runs the
+     degraded simplest-version prompt at 32000 cap / 30 turns / 600s so it
+     returns before the slow primary does (a full-prompt hedge would just
+     reproduce the primary's thinking marathon and truncate too);
      two-phase **default OFF** (`_TWO_PHASE=1` opts in — on the deepseek
      backend each worker is one long single-request marathon, so splitting A+B
      only adds a cold start); single-phase workers run at the frame_html
@@ -81,7 +85,10 @@ A trailing `## Resolved conflicts` block carries final packet-time rulings. Then
 file < ~15 KB → one Write (or one large Edit) of the whole file, no
 style → body → script split; any single Write input ≤ ~20 KB; first edit by
 turn 2 → reply **only** `done OK <frame_id>` (or `fail <frame_id>: <reason>`),
-no summary. Do **not** run
+no summary. The dispatch is a **complete spec to transcribe, not a brief to
+redesign** — do not re-list the Scene beats, re-compute cqw/cqh pixels, or
+re-decide colors/type/layout in thinking; place elements straight off the
+roles/`focal`/Scene text. Do **not** run
 `frame-selfcheck` or Bash — the driver runs the gate and re-dispatches with
 FAIL findings when needed. Cut catalog only for within-scene cut seams; never
 open `frame.md` / `_role.md`.
