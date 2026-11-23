@@ -663,6 +663,35 @@ class PromptModesTest(unittest.TestCase):
             "01-hook", True, dispatch_text=f"# D\n{fh.RECIPES_FULL_HEADING}\n")
         self.assertIn("Do\nNOT Read any recipe".replace("\n", " "), p.replace("\n", " "))
 
+    def test_backticked_heading_in_card_is_not_snippet_mode(self):
+        card = ("## Rule card\n> Recipes default to `## Rule recipes (snippets)` "
+                "in the dispatch; `## Rule recipes (full)` only when set.\n")
+        p = fh._worker_prompt(
+            "01-hook", True, dispatch_text=f"# D\n{card}## Rule index\n- a\n")
+        self.assertIn("Rule recipes are NOT inlined", p)
+        self.assertIn("In your FIRST tool turn, Read every", p)
+        self.assertNotIn("do NOT batch-read", p)
+        p = fh._worker_prompt(
+            "01-hook", True,
+            dispatch_text=f"# D\n{card}## Rule index\n\n{fh.RECIPES_SNIPPET_HEADING}\n\n### x\n")
+        self.assertIn("do NOT batch-read", p)
+        self.assertNotIn("Rule recipes are NOT inlined", p)
+
+    def test_recipes_mode_line_start(self):
+        self.assertIsNone(fh._recipes_mode("see `## Rule recipes (snippets)`\n"))
+        self.assertIsNone(fh._recipes_mode("x ## Rule recipes (full)\n"))
+        self.assertEqual(fh._recipes_mode("a\n## Rule recipes (snippets)\n"), "snippets")
+        self.assertEqual(fh._recipes_mode("## Rule recipes (full)\nb"), "full")
+
+    def test_single_write_and_terse_reply_contract(self):
+        p = fh._worker_prompt("01-hook", True, dispatch_text="# D\n")
+        flat = " ".join(p.split())
+        self.assertIn("under ~15 KB", flat)
+        self.assertIn("ONE Write", flat)
+        self.assertIn("under ~20 KB (InputValidationError)", flat)
+        self.assertIn("final reply is ONLY this one line: done OK 01-hook", flat)
+        self.assertIn("No summary, checklist, or explanation", flat)
+
     def test_rich_skeleton_line(self):
         d = make_project(skeleton=True)
         with open(fh._frame_path(d, "01-hook"), "w") as f:
