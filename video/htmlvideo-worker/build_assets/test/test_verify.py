@@ -45,12 +45,15 @@ GATE: FAIL ✗ (…, 8 error finding(s))
 
 
 class FixPlaybookTest(unittest.TestCase):
-    def test_content_overlap_rule_follows_triage(self):
+    def test_playbook_delegates_to_catalog_single_source(self):
         pb = v._FIX_PLAYBOOK
-        self.assertIn("designed_overlay", pb)
-        self.assertIn("real_collision", pb)
-        self.assertIn("ambiguous", pb)
-        self.assertNotIn("do NOT reposition", pb)
+        self.assertIn("known-failures.mjs", pb)
+        # Per-failure rules moved out of the playbook into the catalog; the
+        # playbook must not keep a second copy (that drift was the bug).
+        self.assertNotIn("designed_overlay", pb)
+        self.assertNotIn("real_collision", pb)
+        self.assertNotIn("ambiguous", pb)
+        self.assertNotIn("data-layout-allow-overlap", pb)
 
     def test_partial_miss_marker_is_unactionable(self):
         out = (
@@ -702,12 +705,11 @@ class FixPromptTest(unittest.TestCase):
         p = v._build_fix_prompt("weird output without header\nGATE: FAIL ✗\n")
         self.assertIn("weird output without header", p)
 
-    def test_reply_contract_and_attribute_value(self):
+    def test_reply_contract(self):
         p = v._build_fix_prompt(_scan(_ROWS_SAMPLE))
         self.assertIn("fixed <n>", p)
         self.assertIn("fixed 0", p)
         self.assertNotIn("list — one line each", p)
-        self.assertIn('data-layout-allow-overlap="true"', v._FIX_PLAYBOOK)
         self.assertNotIn("do NOT read the whole file first", p)
         self.assertIn("Read each target file (absolute path) at most ONCE, then Edit", p)
         self.assertIn("Do NOT\n  Grep / Glob", p)
