@@ -2,7 +2,7 @@
  * known-failures.mjs — single source of truth for verify-frame "known failures".
  *
  * This is the ONE place the mechanical fix knowledge lives. Both the
- * deterministic autofix phase (run by verify-all.mjs) and the model-facing
+ * deterministic autofix phase (run once by verify-all.mjs --phase prepare) and the model-facing
  * fix prompt (emitted by verify-report.mjs, forwarded by html_utility/verify.py)
  * consume the SAME catalog, so SKILL.md's playbook and verify.py's cheat sheet
  * can never drift away from the report again.
@@ -14,7 +14,7 @@
  *   match   (ctx) => hit[]   — return the matched findings (or [] if none)
  *   mode    "autofix" | "model" | "ignore" | "info"
  *       autofix → has `autofix(ctx, hits) => { changed, note }`, run by
- *                 verify-all's ordered autofix pass (deterministic, no model).
+ *                 verify-all's prepare-phase ordered autofix pass (deterministic, no model, once per verify session).
  *       model   → has `prompt` (string, or (ctx, hits) => string); emitted into
  *                 the actionable summary and loaded into the model prompt only
  *                 when the finding is actually present.
@@ -198,7 +198,7 @@ export const KNOWN_FAILURES = [
       return { changed: true, note: "ran assemble-index.mjs" };
     },
     prompt:
-      "Run `node /app/scripts/assemble-index.mjs --videodir <project>` then rerun (verify-all does this automatically).",
+      "Run `node /app/scripts/assemble-index.mjs --videodir <project>` then rerun (the verify-all prepare phase does this automatically).",
     reason: "pipeline assemble step was skipped; deterministic recovery, <10s.",
   },
 
@@ -221,7 +221,7 @@ export const KNOWN_FAILURES = [
       return { changed, note: changed ? "stripped data-duration unit suffixes" : "nothing to strip" };
     },
     prompt:
-      'Strip root/clip `data-duration="Ns"` to a plain number `data-duration="N"`. Do NOT diagnose transitions by reading scripts (verify-all strips this automatically).',
+      'Strip root/clip `data-duration="Ns"` to a plain number `data-duration="N"`. Do NOT diagnose transitions by reading scripts (the verify-all prepare phase strips this automatically).',
     reason: "STORYBOARD `duration: 6.664s` is copied verbatim into frame roots; the deployed transitions regex only matches a bare number (2026-11-21 regression).",
   },
 
@@ -243,10 +243,10 @@ export const KNOWN_FAILURES = [
     match: (ctx) => (ctx.lintErrors || []).filter((e) => e.code === "font_family_without_font_face"),
     mode: "model",
     prompt: (ctx, hits) =>
-      "Residual only (verify-all already ran font-imports): drop dead non-primary fallback names named in the lint message; if a ramp family is still missing, paste the marked block below.\n"
+      "Residual only (the prepare phase already ran font-imports once): drop dead non-primary fallback names named in the lint message; if a ramp family is still missing, paste the marked block below.\n"
       + fontActionLines(ctx, hits).join("\n")
       + "\nDo not add `@font-face`, do not hunt local fonts, do not fetch URL fonts.",
-    reason: "verify-all step 0 runs font-imports (idempotent); only hand-fixable residuals reach the model.",
+    reason: "verify-all prepare phase runs font-imports once per verify session (idempotent); only hand-fixable residuals reach the model.",
   },
 
   {
@@ -299,9 +299,9 @@ export const KNOWN_FAILURES = [
         : [],
     mode: "info",
     prompt:
-      "verify-all already ran the idempotent transitions inject (step 1) and re-injects on every rerun; do NOT hand-edit transition blocks or re-inject yourself — strip any data-duration unit suffix instead.",
+      "The prepare phase already ran the idempotent transitions inject once for this verify session (after stripping data-duration unit suffixes); do NOT hand-edit transition blocks or re-inject yourself.",
     reason:
-      "self-healing via verify-all step 1 (always inject); the 's' suffix is the usual root cause (handled by data-duration-unit-suffix).",
+      "prepare phase injects once per verify session (idempotent, after the data-duration-unit-suffix autofix); a residual failure is not a model fix.",
   },
 
   /* ————— ignore entries (false positive / non-issue) ————— */
