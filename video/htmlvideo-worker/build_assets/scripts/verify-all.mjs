@@ -6,8 +6,8 @@
  * model makes ONE decision instead of re-running the individual gates:
  *   0. font-imports — idempotent marked @import / brand @font-face.
  *      Non-fatal. Skipped when HTMLVIDEO_FONT_IMPORTS is 0/false/off/no.
- *   1. transitions inject guard — `verify`; if "no injected block" run the
- *      idempotent `inject`, then `verify` again. (The report re-checks anyway.)
+ *   1. transitions inject      — always run the idempotent `inject` (strips any
+ *      prior stamp first). The report re-verifies transitions anyway.
  *   2. verify-report (full)     — the single diagnosis + gate. Its exit code is
  *      the verdict; its output is teed verbatim.
  *   3. on gate pass only        — frame-midpoints → snapshot → verify-pixels, so
@@ -62,7 +62,7 @@ console.log("videodir:", videodir);
 /* Catalog entries with mode="autofix" run here, in catalog order, before the
  * font-imports / transitions steps so their fixes land upstream of the checks
  * that depend on them (assemble before transitions, duration-strip before
- * transitions verify).                                  */
+ * transitions inject).                                  */
 const isStub = () => {
   try {
     const idx = fs.readFileSync(path.join(videodir, "index.html"), "utf8");
@@ -117,31 +117,17 @@ if (fontFlag === "0" || fontFlag === "false" || fontFlag === "off" || fontFlag =
   }
 }
 
-/* ── 1. transitions inject guard ────────────────────────────────────────── */
-console.log("\n── transitions inject guard ──");
-let tv = run("node", ["/app/scripts/transitions.mjs", "verify", "--videodir", videodir], { timeout: 30_000 });
-if (tv.error) {
-  console.log(`  ⚠ cannot run transitions verify: ${tv.error}`);
-} else if (tv.status === 0) {
-  console.log("  " + combined(tv).split("\n").join("\n  "));
-  console.log("  ✓ already stamped — skip inject");
-} else if (combined(tv).includes("no injected block")) {
-  console.log("  " + combined(tv).split("\n").join("\n  "));
-  console.log("  → running idempotent inject");
+/* ── 1. transitions inject (idempotent) ─────────────────────────────────── */
+console.log("\n── transitions inject ──");
+{
   const inj = run("node", ["/app/scripts/transitions.mjs", "inject", "--videodir", videodir], { timeout: 60_000 });
   if (inj.error || inj.status !== 0) {
     console.log("  ✗ inject failed: " + (inj.error || combined(inj)));
     console.log("  → the full report below will surface the blocker");
   } else {
     console.log("  " + combined(inj).split("\n").join("\n  "));
-    tv = run("node", ["/app/scripts/transitions.mjs", "verify", "--videodir", videodir], { timeout: 30_000 });
-    console.log(tv.status === 0
-      ? "  ✓ verify after inject OK"
-      : "  " + combined(tv).split("\n").join("\n  "));
+    console.log("  ✓ transitions inject");
   }
-} else {
-  console.log("  " + combined(tv).split("\n").join("\n  "));
-  console.log("  → non-zero (boundary mismatch) — the report's gate decides");
 }
 
 /* ── 2. full report ─────────────────────────────────────────────────────── */
