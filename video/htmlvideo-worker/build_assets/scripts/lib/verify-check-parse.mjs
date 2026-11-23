@@ -254,6 +254,12 @@ const TEXT_TOKENS = new Set([
   "headline", "heading", "title", "subtitle", "body", "line", "copy", "caption",
   "paragraph", "lede", "quote", "text", "h1", "h2", "h3", "h4", "p",
 ]);
+// Occlusion-only. Not consulted by triageContentOverlap. A card / CTA / label
+// sitting on text is usually intentional layering (allow-occlusion), unlike
+// two solid text blocks.
+const OCCLUSION_SOFT_TOKENS = new Set([
+  "card", "notecard", "anchor", "cta", "buy", "label",
+]);
 
 function tokens(s) {
   return String(s || "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
@@ -330,6 +336,62 @@ export function triageOverlaps(errors) {
   for (const e of errors || []) {
     if (!String(e?.code || "").includes("overlap")) continue;
     const t = triageContentOverlap(e);
+    groups[t.kind].push({ ...e, triage: t });
+  }
+  return groups;
+}
+
+function sideIsCaptionWord(side) {
+  const s = String(side || "").trim();
+  if (!s) return false;
+  return CAPTION_WORD_RE.test(s) || /caption-word/i.test(s);
+}
+
+/**
+ * Heuristic split of a text_occluded finding. Does not change overlap triage.
+ *  designed_layering → data-layout-allow-occlusion is appropriate
+ *  buried            → raise z-index / move; do not blanket-allow (caption
+ *                      keep-out included — never paper over a caption-word)
+ *  ambiguous         → inspect layering intent first
+ * Order matches the overlap helper: dataAttributes, then caption, then
+ * text-vs-text, then decorative / soft-layer tokens.
+ * @returns {{ kind: "designed_layering"|"buried"|"ambiguous", reason: string }}
+ */
+export function triageOcclusion(item) {
+  const { selector, container } = overlapSides(item || {});
+  const attrs = [
+    ...Object.keys(item?.dataAttributes || {}),
+    ...Object.values(item?.dataAttributes || {}).map((v) => String(v ?? "")),
+  ].join(" ");
+  if (/allow-occlusion|allow-overlap|layout-ignore|decor|overlay/i.test(attrs)) {
+    return { kind: "designed_layering", reason: "dataAttributes mark the layering intentional" };
+  }
+  if (sideIsCaptionWord(selector) || sideIsCaptionWord(container)) {
+    return {
+      kind: "buried",
+      reason: "caption keep-out: move the frame text; do not allow-occlusion",
+    };
+  }
+  const selT = tokens(selector);
+  const conT = tokens(container);
+  const hasText = (ts) => ts.some((t) => TEXT_TOKENS.has(t));
+  if (selector && container && hasText(selT) && hasText(conT)) {
+    return { kind: "buried", reason: "both sides are text blocks" };
+  }
+  const soft = (ts) => ts.some((t) => DECOR_TOKENS.has(t) || OCCLUSION_SOFT_TOKENS.has(t));
+  if (soft(selT) || soft(conT)) {
+    const found = [...selT, ...conT].find((t) => DECOR_TOKENS.has(t) || OCCLUSION_SOFT_TOKENS.has(t));
+    return { kind: "designed_layering", reason: `decorative or soft-layer token "${found}"` };
+  }
+  return { kind: "ambiguous", reason: "no decorative, soft-layer, or text-block signal" };
+}
+
+/** Group text_occluded errors by triage kind. Other codes are ignored. */
+export function triageOcclusions(errors) {
+  const groups = { designed_layering: [], buried: [], ambiguous: [] };
+  for (const e of errors || []) {
+    if (e?.code !== "text_occluded") continue;
+    const t = triageOcclusion(e);
     groups[t.kind].push({ ...e, triage: t });
   }
   return groups;
