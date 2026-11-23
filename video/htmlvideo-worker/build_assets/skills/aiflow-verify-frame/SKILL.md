@@ -27,14 +27,11 @@ If `index.html` is the un-assembled stub → that is **Known failure #1**: apply
 
 Goal: Verify the assembled video — inject transitions, pass lint/check, snapshot frame midpoints, glance at the contact sheet.
 
-**Inject guard — a project may already be injected, and runs must be idempotent:**
+**Transitions inject — always run; it is idempotent:**
 
-1. Always start with `node /app/scripts/transitions.mjs verify --videodir ${videodir}` (read-only, ~1s);
-2. exit 0 → transitions already stamped — **skip `inject`**, go to the full report;
-3. output contains `no injected block found` → run `inject` once, then `verify` again (must exit 0);
-4. boundary failures (block exists but mismatches) → don't guess; run the full report — its gate and actionable summary decide. Re-`inject` is safe (idempotent since 2026-11-14: re-derives id references and tracks from the current index, removes the stale block first, and frame durations only converge toward the STORYBOARD contract, never drift).
+`node /app/scripts/transitions.mjs inject --videodir ${videodir}` strips any prior stamp, re-derives id references / tracks from the current index, and converges frame durations toward the STORYBOARD contract (never drifts). Prefer `verify-all.mjs` (it always injects, then the full report verifies). Standalone `transitions.mjs verify` is only for diagnosis — do not use it as a pre-inject guard.
 
-**One-command loop (preferred):** `node /app/scripts/verify-all.mjs --videodir ${videodir}` runs the whole mechanical phase — font-imports (step 0, non-fatal) → inject guard → full report → (on gate pass) midpoints + snapshot + verify-pixels — and returns one verdict. Use it first; fall back to the individual commands below only when its exit code already says which single step to rerun.
+**One-command loop (preferred):** `node /app/scripts/verify-all.mjs --videodir ${videodir}` runs the whole mechanical phase — font-imports (step 0, non-fatal) → idempotent transitions inject → full report → (on gate pass) midpoints + snapshot + verify-pixels — and returns one verdict. Use it first; fall back to the individual commands below only when its exit code already says which single step to rerun.
 
 **First command is `verify-all.mjs` — no pre-exploration.** This skill's content is already loaded into context, and `verify-all.mjs` prints every finding, the GATE verdict, and the `verify-pixels` result in one shot. Do not `find`/`cat` the skill files, do not `ls` the frames or project first, do not build a task list (it is blocked by the profile anyway).
 
@@ -42,8 +39,8 @@ Goal: Verify the assembled video — inject transitions, pass lint/check, snapsh
 node /app/scripts/font-imports.mjs --videodir ${videodir} --scope all   # step 0; also runs inside verify-all (non-fatal)
 node /app/scripts/verify-all.mjs --videodir ${videodir}   # exit 0 = gate+snapshot done; 1 = findings, fix & rerun; 2 = blocker
 node /app/scripts/verify-report.mjs --videodir ${videodir} --preflight   # ~3s: prerequisites, stub check, frames vs STORYBOARD
-node /app/scripts/transitions.mjs verify --videodir ${videodir}          # inject guard above
-node /app/scripts/transitions.mjs inject --videodir ${videodir}          # only per guard step 3
+node /app/scripts/transitions.mjs inject --videodir ${videodir}          # idempotent; also runs inside verify-all
+node /app/scripts/transitions.mjs verify --videodir ${videodir}          # diagnosis only; report also checks
 node /app/scripts/verify-report.mjs --videodir ${videodir}               # full one-shot diagnosis + gates
 AT="$(node /app/scripts/frame-midpoints.mjs --videodir ${videodir} | tail -1)"
 npx hyperframes snapshot ${videodir} --at "${AT}"
