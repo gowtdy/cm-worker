@@ -154,8 +154,9 @@ def _payload_line(rows: list[dict], **extra) -> str:
 def _scan(rows: list[dict], actionable: str = "", **extra) -> str:
     return (
         "══ verify-all ══\n"
-        "── transitions inject guard ──\n"
-        "  ✓ verified 9 boundaries\n  ✓ already stamped — skip inject\n"
+        "── transitions inject ──\n"
+        "  ✓ transitions inject: 6 transition(s) stamped into index.html\n"
+        "  ✓ transitions inject\n"
         "── check ──\n"
         "  ✗ [Layout] content_overlap in compositions/frames/05-price.html — "
         "div.price-num inside div.price-tag\n"
@@ -687,8 +688,8 @@ class FixPromptTest(unittest.TestCase):
         self.assertIn("── actionable summary ──", p)
         self.assertIn("GATE: FAIL", p)
         self.assertIn("✗ [Layout] content_overlap", p)
-        self.assertNotIn("already stamped", p)
-        self.assertNotIn("verified 9 boundaries", p)
+        self.assertNotIn("transitions inject: 6 transition(s)", p)
+        self.assertNotIn("✓ transitions inject", p)
         self.assertNotIn("[Contrast]", p)
         self.assertNotIn("AT: 1,2,3", p)
         self.assertNotIn(ao.FINDINGS_JSON_PREFIX.strip(), p)
@@ -697,7 +698,7 @@ class FixPromptTest(unittest.TestCase):
     def test_full_scan_rollback(self):
         with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_FULL_SCAN": "1"}):
             p = v._build_fix_prompt(_scan(_ROWS_SAMPLE))
-        self.assertIn("already stamped", p)
+        self.assertIn("transitions inject: 6 transition(s)", p)
         self.assertNotIn(ao.FINDINGS_JSON_PREFIX.strip(), p)
 
     def test_missing_summary_falls_back_to_full(self):
