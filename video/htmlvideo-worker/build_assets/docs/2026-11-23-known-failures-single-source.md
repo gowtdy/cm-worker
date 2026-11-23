@@ -72,7 +72,7 @@ report 硬编码 4 处),新增 finding 类型时三处都跟不上。本设计�
 }
 ```
 
-## 目录内容(11 条)
+## 目录内容(14 条)
 
 | id | mode | 说明 |
 |---|---|---|
@@ -81,12 +81,15 @@ report 硬编码 4 处),新增 finding 类型时三处都跟不上。本设计�
 | `digit-led-selectors` | model | 选择器转 `[id=…]`/`[class~=…]`(未脚本化,见「未做」) |
 | `font-family-no-face` | model | residual:删 dead fallback / 贴 `@import` 块(复用 `fontActionLines`,自 verify-report 迁入) |
 | `content-overlap` | model | `triageOverlaps` 三分流 designed/real/ambiguous + caption 保留带禁令 |
-| `text-occluded` | **model(新增)** | `data-layout-allow-occlusion`(不是 overlap),或提 z-index —— 直接修掉 22点失败 |
+| `text-occluded` | model | `triageOcclusions` 分行:designed_layering → `data-layout-allow-occlusion`;buried(双侧 text / caption keep-out)→ 提 z-index 或挪开;仍 **NOT** `data-layout-allow-overlap` |
 | `text-not-painted` | **model(新增)** | 修 `-webkit-text-fill-color` / `color` 透明填充 |
 | `transitions-verify` | info | prepare 阶段每个 verify 会话幂等 inject 一次;残留非模型可修;「s」后缀由 duration entry 处理 |
-| `caption-text-box-overflow` | ignore | 已知误报(贴合 line-height + 无 overflow:hidden) |
+| `caption-text-box-overflow` | ignore | 已知误报(贴合 line-height + 无 overflow:hidden);必须排在下一条之前 |
+| `text-box-overflow` | **model** | 非 caption 的 `text_box_overflow`:收紧盒子 / 降字号 / line-height / padding;只改命名元素 |
 | `id-requires-css-escape` | info | tell,非缺陷 |
 | `google-fonts-import` | info | 非阻塞 |
+| `other-check-errors` | **model** | catch-all:尚未被具体 check entry 吃掉的 code(排除含 `overlap`、以及 `text_occluded` / `text_not_painted` / `text_box_overflow`) |
+| `other-lint-errors` | **model** | catch-all:`lintErrors` 中 `code !== font_family_without_font_face`;不处理 `google_fonts_import` / `id_requires_css_escape` |
 
 > `data-duration-drift`(帧与 index wrapper 的 duration 差异是设计行为)是**无 finding 的负向规则**,
 > 放在文件头注释而非一条永不命中的 entry。
@@ -148,7 +151,7 @@ test/test_verify.py                   # _FIX_PLAYBOOK 断言改为「指向 cata
 ## 验证
 
 ```bash
-node test/test_known_failures.mjs          # 7/7:完整性、text_occluded/caption/digit 命中、duration strip 幂等
+node test/test_known_failures.mjs          # 完整性、occlusion triage、caption/非 caption overflow、catch-all、duration strip 幂等
 node test/test_verify_check_parse.mjs      # 不变、仍全过
 python3 -m unittest test.test_verify test.test_claude_cli   # 85 OK
 ```
@@ -156,9 +159,10 @@ python3 -m unittest test.test_verify test.test_claude_cli   # 85 OK
 端到端(只读)对失败样本 `6b02f91ca413f854` 复扫,actionable summary 现在是:
 
 ```
-  1) text_occluded — If the layering is intentional, add data-layout-allow-occlusion="true"
-     on the text element or an ancestor — … (NOT data-layout-allow-overlap, which only
-     exempts content_overlap). …
+  1) text_occluded — Follow this triage (never blanket-allow occlusion):
+     - designed_layering×… → add data-layout-allow-occlusion="true" …
+       (NOT data-layout-allow-overlap, which only exempts content_overlap).
+     - caption keep-out: … NEVER data-layout-allow-occlusion to paper over a caption
   • google_fonts_import (non-blocking) — Non-blocking warning — ignore.
 ```
 
@@ -169,11 +173,15 @@ python3 -m unittest test.test_verify test.test_claude_cli   # 85 OK
 
 - `digit-led-selectors` 仍是 `model`(跨文件改选择器需要真 HTML 编辑引擎;若把
   `verify_overlap_autofix.py` 的「解析选择器→建树→插属性」下沉到 JS,可升级为 autofix)。
-- `text_occluded` 未做 triage 前置:白胶囊压白卡(`.anchor-line.buy` #FFFFFF on `.notecard` #FFFFFF)
-  可能是设计意图而非缺陷,当前一律交给模型加 `data-layout-allow-occlusion`。若白底白误报频发,
-  应像 `designed_overlay` 一样在 triage 层识别豁免,而不是丢给模型。
+- `text_occluded` triage **已做**:`scripts/lib/verify-check-parse.mjs` 的 `triageOcclusion` /
+  `triageOcclusions` 分成 `designed_layering`(dataAttributes,或任一侧 `DECOR_TOKENS` / 软层 token
+  `card`/`notecard`/`anchor`/`cta`/`buy`/`label` → 允许 `data-layout-allow-occlusion`)、
+  `buried`(任一侧 caption-word,或两侧都是 text token → 提 z-index / 挪开,prompt 禁止用
+  allow-occlusion 糊弄 caption)、`ambiguous`。白胶囊压白卡(`.anchor-line.buy` on `.notecard`)
+  走 designed_layering。prompt 仍强调 **NOT data-layout-allow-overlap**。
+- visual gate / verify-pixels 的 finding 仍不入 catalog。
 - `fixHint` 渲染对 `content_overlap` 刻意跳过(其通用 hint 无 per-finding 信号);对未知 code 是
-  CLI 提示的唯一兜底。
+  CLI 提示的唯一兜底(`other-check-errors` 按行上的 `[hint: …]` 修)。
 - overlap designed_overlay 的确定性修仍在 Python(`verify_overlap_autofix.py` + `VERIFY_FINDINGS_JSON`
   payload),catalog 只声明不重写;未做 JS 下沉。
 - 相关开关路径不变:`HTMLVIDEO_VERIFY_AUTO_OVERLAP` / `HTMLVIDEO_VERIFY_FIX_FULL_SCAN` /
