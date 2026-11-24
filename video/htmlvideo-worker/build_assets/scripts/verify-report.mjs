@@ -4,16 +4,19 @@
  *
  * Replaces the model-driven "poke one file / run one grep per round" discovery
  * phase with a single command that prints everything the playbook needs:
- *   --preflight : prerequisites + assembly state + frames vs STORYBOARD (~3s)
- *   (full)       : preflight + transitions-verify echo + lint --json (errors +
- *                  the two tell warnings per file) + check findings grouped
- *                  and annotated + frame midpoints + AT line
+ * Mechanical gates only: per-frame structural + transitions-verify +
+ * lint --json + check findings + actionable summary.
+ *
+ * Assumed done upstream (not re-checked here):
+ *   project files / frame completeness — verify.py::_validate_prerequisites
+ *   index assembly — frame-html (_assemble_index) + prepare autofix
+ *   midpoints / snapshot — verify-all visual gate (only after GATE PASS)
  *
  * Usage:
- *   node /app/scripts/verify-report.mjs --videodir /abs/project [--preflight]
+ *   node /app/scripts/verify-report.mjs --videodir /abs/project
  *
  * Exit codes:
- *   0 = gates pass (preflight: all ok)          -> go straight to snapshot
+ *   0 = gates pass                               -> go straight to snapshot
  *   1 = findings with a mechanical fix          -> playbook, batched fixes,
  *                                                  rerun ONLY this report
  *   2 = infrastructure/project blocker          -> surface and stop
@@ -26,15 +29,6 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import {
-  canonicalImport,
-  renderBlock,
-  loadCliAliases,
-  normFamily,
-  parseBrandFaces,
-  parseFrameFamilies,
-  planFile,
-} from "./lib/fonts.mjs";
-import {
   parseCheckJson,
   parseCheckText,
   extractJsonObject,
@@ -42,13 +36,14 @@ import {
   checkParseMismatch,
   jsonDeclaredErrorCount,
   jsonLintErrorCount,
-  triageOverlaps,
+  findingsPayload,
+  FINDINGS_JSON_PREFIX,
 } from "./lib/verify-check-parse.mjs";
+import { matchKnownFailures, renderPrompt } from "./known-failures.mjs";
 
 const argv = process.argv.slice(2);
 const vi = argv.indexOf("--videodir");
 const videodir = path.resolve(vi >= 0 ? argv[vi + 1] || "" : process.cwd());
-const preflightMode = argv.includes("--preflight");
 
 const out = [];
 const say = (...a) => out.push(a.join(" "));
@@ -66,161 +61,13 @@ function run(cmd, args, { timeout = 300_000 } = {}) {
 
 const trunc = (s, n = 140) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
-function fontActionLines(root, errors) {
-  const lines = [];
-  try {
-    const mdPath = path.join(root, "frame.md");
-    const md = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, "utf8") : "";
-    const frameFamilies = parseFrameFamilies(md);
-    const ramp = new Set(frameFamilies.map((f) => normFamily(f)));
-    const brandFaces = parseBrandFaces(md);
-    const aliases = loadCliAliases();
-    const files = [...new Set(
-      errors.filter((e) => e.code === "font_family_without_font_face").map((e) => e.file),
-    )];
-    const injected = [];
-    const seenImp = new Set();
-    const faceRules = [];
-    const drops = [];
-    for (const relFile of files) {
-      const abs = path.resolve(root, relFile);
-      if (!fs.existsSync(abs)) continue;
-      const plan = planFile(fs.readFileSync(abs, "utf8"), {
-        frameFamilies, brandFaces, aliases, prune: true,
-      });
-      for (const fam of plan.faces) {
-        const n = normFamily(fam);
-        if (!n || seenImp.has(n)) continue;
-        seenImp.add(n);
-        for (const rule of brandFaces.get(n)?.rules || []) faceRules.push(rule);
-      }
-      for (const fam of plan.injected) {
-        const n = normFamily(fam);
-        if (n && !seenImp.has(n)) { seenImp.add(n); injected.push(fam); }
-      }
-      for (const fam of plan.unresolved) {
-        const hit = frameFamilies.find((f) => normFamily(f) === fam);
-        if (hit && !seenImp.has(normFamily(hit))) {
-          seenImp.add(normFamily(hit));
-          injected.push(hit);
-        }
-      }
-      const names = new Set([
-        ...plan.dropped,
-        ...plan.unresolved.filter((u) => !ramp.has(u)),
-      ]);
-      for (const name of names) drops.push(`${name} (${relFile})`);
-    }
-    const block = renderBlock(canonicalImport(injected), faceRules);
-    if (block) {
-      lines.push("     paste at the top of the first <style> inside <template> (after @charset):");
-      for (const l of block.split("\n")) lines.push("     " + l);
-    }
-    if (drops.length) {
-      lines.push("     drop:");
-      for (const d of drops) lines.push("     " + d);
-    } else if (!block) {
-      lines.push("     no paste line — ramp families are already covered; drop dead non-primary fallbacks named in the lint message.");
-    }
-  } catch (err) {
-    lines.push("     font plan unavailable (" + (err && err.message ? err.message : err) + ") — rerun node /app/scripts/font-imports.mjs --videodir <project> --scope all --dry-run for the plan.");
-  }
-  return lines;
-}
-
-let infraError = null;
-
 say("══ verify-report ══");
 say("videodir:", videodir);
-say("mode:", preflightMode ? "--preflight" : "full");
-
-/* ── prerequisites ──────────────────────────────────────────────────────── */
-say("");
-say("── prerequisites ──");
-const needFiles = ["hyperframes.json", "index.html", "STORYBOARD.md"];
-let missingProject = [];
-for (const f of needFiles) {
-  const ok = fs.existsSync(path.join(videodir, f));
-  say(`  ${ok ? "✓" : "✗"} ${f}`);
-  if (!ok) missingProject.push(f);
-}
 
 const framesDir = path.join(videodir, "compositions", "frames");
 const diskFrames = fs.existsSync(framesDir)
   ? fs.readdirSync(framesDir).filter((f) => f.endsWith(".html"))
   : [];
-if (!fs.existsSync(framesDir)) {
-  say("  ✗ compositions/frames/ missing");
-  missingProject.push("compositions/frames/");
-} else {
-  say(`  frames on disk: ${diskFrames.length}`);
-}
-
-/* storyboard frames from `- src:` lines */
-let storySrcs = [];
-if (!missingProject.includes("STORYBOARD.md")) {
-  try {
-    const sb = fs.readFileSync(path.join(videodir, "STORYBOARD.md"), "utf8");
-    storySrcs = [...sb.matchAll(/^\s*-\s*src:\s*compositions\/frames\/([^\s]+\.html)/gm)].map((m) => m[1]);
-  } catch (e) {
-    infraError = `cannot read STORYBOARD.md: ${e.message}`;
-  }
-}
-let missingFrames = [];
-if (storySrcs.length) {
-  missingFrames = storySrcs.filter((s) => !diskFrames.includes(s));
-  const extraFrames = diskFrames.filter((f) => !storySrcs.includes(f));
-  say(`  STORYBOARD frames: ${storySrcs.length} (disk ${diskFrames.length})`);
-  if (missingFrames.length) say(`  ✗ MISSING on disk: ${missingFrames.join(", ")}`);
-  if (extraFrames.length) say(`  ⓘ extra on disk (not in STORYBOARD): ${extraFrames.join(", ")}`);
-} else {
-  say("  ⚠ STORYBOARD has no `- src:` frame lines — cannot cross-check frames against disk");
-}
-
-const preflightOk = missingProject.length === 0 && storySrcs.every((s) => diskFrames.includes(s));
-
-/* ── assembly state ─────────────────────────────────────────────────────── */
-say("");
-say("── assembly ──");
-let stub = false;
-if (!missingProject.includes("index.html")) {
-  const idx = fs.readFileSync(path.join(videodir, "index.html"), "utf8");
-  const refs = (idx.match(/data-composition-src="compositions\/frames\//g) || []).length;
-  if (refs === 0) {
-    stub = true;
-    say(`  ✗ index.html is the un-assembled STUB (0 composition refs)`);
-    say(`    → Known failure #1: node /app/scripts/assemble-index.mjs --videodir ${videodir}   (then rerun this report)`);
-  } else {
-    say(`  ✓ index.html assembled (${refs} composition refs)`);
-  }
-}
-
-if (preflightMode) {
-  if (infraError) {
-    console.error(`[report] ${infraError}`);
-    process.exit(2);
-  }
-  const ok = preflightOk && !stub;
-  say("");
-  say(ok ? "PREFLIGHT OK" : "PREFLIGHT: actionable findings above");
-  console.log(out.join("\n"));
-  process.exit(ok ? 0 : missingProject.length ? 2 : 1);
-}
-
-if (infraError) {
-  console.error(`[report] ${infraError}`);
-  process.exit(2);
-}
-if (missingProject.length) {
-  console.log(out.join("\n"));
-  console.error(`[report] blocker: missing ${missingProject.join(", ")} — stop and report, do not invent files.`);
-  process.exit(2);
-}
-if (stub) {
-  console.log(out.join("\n"));
-  console.error("[report] index is the stub — assemble first (see recovery line above), then rerun.");
-  process.exit(1);
-}
 
 /* ── per-frame structural gate (frame-selfcheck) ────────────────────────── */
 say("");
@@ -270,7 +117,6 @@ let lintErrors = [];
 let warnByCode = new Map();
 let digitTell = new Map();   // file -> count
 let googleImport = new Map(); // file -> count
-let otherWarnCount = 0;
 
 function parseLintJson(stdout) {
   const first = stdout.indexOf("{");
@@ -360,9 +206,13 @@ if (check.error) {
   // attachments and auto-injects whole HTML into the fix prompt (~70KB).
   const printGroup = (list) => {
     for (const c of list) {
-      const tag = isCaptionFP(c) ? "  (expected false-positive per playbook #5)" : "";
+      const tag = isCaptionFP(c) ? "  (expected false-positive — see known-failures caption-text-box-overflow)" : "";
+      // Render the CLI's own fixHint for codes the catalog doesn't own
+      // (content_overlap's fixHint is the same generic allow-overlap line for
+      // every finding, so skip it there — the catalog triages it precisely).
+      const hint = c.fixHint && c.code !== "content_overlap" ? `  [hint: ${trunc(c.fixHint, 200)}]` : "";
       const where = c.file ? ` in ${c.file}` : "";
-      say(`  ${c.mark} [${c.section}] ${c.code}${where} — ${c.msg}${tag}`);
+      say(`  ${c.mark} [${c.section}] ${c.code}${where} — ${c.msg}${hint}${tag}`);
     }
     if (list.length > 20) say(`    …+${list.length - 20} more`);
   };
@@ -391,56 +241,42 @@ if (check.error) {
   }
 }
 
-/* ── midpoints ──────────────────────────────────────────────────────────── */
-say("");
-say("── frame midpoints ──");
-const mp = run("node", ["/app/scripts/frame-midpoints.mjs", "--videodir", videodir], { timeout: 30_000 });
-let atLine = "";
-if (mp.error || !mp.stdout.trim()) {
-  say(`  ⚠ unavailable: ${mp.error || "empty output"}`);
-} else {
-  say(mp.stdout.trimEnd());
-  const lines = mp.stdout.split("\n").filter((l) => l.trim());
-  atLine = lines[lines.length - 1];
-  say("  AT: " + atLine);
-}
-
-/* ── actionable summary ─────────────────────────────────────────────────── */
+/* ── actionable summary (known-failures single source) ───────────────────── */
 say("");
 say("── actionable summary ──");
+const ctx = {
+  videodir,
+  digitSelectors: self.digit,
+  lintErrors,
+  checkErrors: chk.errors,
+  transitions: { status: tv.status, error: tv.error },
+  digitTell,
+  googleImport,
+};
 let n = 0;
-if (self.digit.length) {
-  const frames = [...new Set(self.digit.map((d) => d.split(":")[0]))].join(", ");
-  say(`  ${++n}) Known failure #2 CONFIRMED — digit-led selectors in ${frames}: convert CSS/JS selector strings to [id=…]/[class~=…] attribute forms (getElementById stays). Mechanical, one pass.`);
-} else if (digitTell.size) {
-  say(`  #2 tell only — digit-led ids exist but no digit-led selectors (structural gate clean). No action.`);
+for (const { entry, hits } of matchKnownFailures(ctx)) {
+  // autofix entries are owned by verify-all prepare — do not surface them here.
+  if (entry.mode === "autofix") continue;
+  const text = (renderPrompt(entry, ctx, hits) || "").trim();
+  const [head, ...rest] = text.split("\n");
+  if (entry.mode === "model") {
+    say(`  ${++n}) ${entry.title} — ${head}`);
+  } else {
+    say(`  • ${entry.title} (${entry.mode === "ignore" ? "known false-positive" : "non-blocking"}) — ${head}`);
+  }
+  for (const line of rest) say(`     ${line}`);
 }
-if (lintErrors.some((e) => e.code === "font_family_without_font_face")) {
-  say(`  ${++n}) Known failure #3 residual — verify-all step 0 already ran font-imports. Hand-fix only what it left.`);
-  for (const line of fontActionLines(videodir, lintErrors)) say(line);
-}
-if (chk.errors.some((c) => c.code.includes("overlap"))) {
-  const tri = triageOverlaps(chk.errors);
-  const where = (list) => {
-    const parts = list.slice(0, 4).map((e) => {
-      const side = e.container ? `${e.selector} inside ${e.container}` : (e.selector || e.msg.split(" — ")[0]);
-      return `${e.file || "?"}: ${trunc(side, 70)}`;
-    });
-    if (list.length > 4) parts.push(`…+${list.length - 4}`);
-    return parts.join("; ");
-  };
-  const rows = [];
-  if (tri.designed_overlay.length) rows.push(`designed_overlay×${tri.designed_overlay.length} (${where(tri.designed_overlay)}): add data-layout-allow-overlap on the text or an inner container (not the scene root)`);
-  if (tri.real_collision.length) rows.push(`real_collision×${tri.real_collision.length} (${where(tri.real_collision)}): reposition / reduce size; do NOT blanket-allow`);
-  if (tri.ambiguous.length) rows.push(`ambiguous×${tri.ambiguous.length} (${where(tri.ambiguous)}): inspect midpoints for design intent before choosing allow-overlap vs reposition`);
-  say(`  ${++n}) Known failure #4 — content_overlap triage — ${rows[0]}`);
-  for (const r of rows.slice(1)) say(`     ${r}`);
-}
-if (!tv.error && tv.status !== 0) say(`  ${++n}) transitions verify failures — if "no injected block found": run transitions.mjs inject, then rerun this report. If the block exists but mismatches: re-inject is safe (idempotent since 2026-11-14 — re-derives id references and tracks, removes the stale block first, and durations only converge toward the STORYBOARD contract).`);
 const realErrors = chk.errors.length + lintErrors.length + self.digit.length;
-const gate = (lintOk === true) && checkOk && self.digit.length === 0 && missingFrames.length === 0 && !tv.error && tv.status === 0;
+const gate = (lintOk === true) && checkOk && self.digit.length === 0 && !tv.error && tv.status === 0;
 say("");
-say(`GATE: ${gate ? "PASS ✓ (lint+check+structural+transitions — go to snapshot)" : `FAIL ✗ (lint ok=${lintOk}, check exit=${check.status === null ? "n/a" : check.status}, digit-led selectors=${self.digit.length}, missing frames=${missingFrames.length}, transitions=${tv.error ? "n/a" : tv.status === 0 ? "ok" : tv.status}, ${realErrors} error finding(s))`}`);
+say(`GATE: ${gate ? "PASS ✓ (lint+check+structural+transitions — go to snapshot)" : `FAIL ✗ (lint ok=${lintOk}, check exit=${check.status === null ? "n/a" : check.status}, digit-led selectors=${self.digit.length}, transitions=${tv.error ? "n/a" : tv.status === 0 ? "ok" : tv.status}, ${realErrors} error finding(s))`}`);
+if (!gate) {
+  const payload = findingsPayload(chk.errors);
+  payload.lint_errors = lintErrors.length;
+  payload.digit_led_selectors = self.digit.length;
+  payload.transitions_ok = !tv.error && tv.status === 0;
+  say(FINDINGS_JSON_PREFIX + JSON.stringify(payload));
+}
 
 console.log(out.join("\n"));
 if (lint.error || check.error || tv.error || checkContradiction) process.exit(2);

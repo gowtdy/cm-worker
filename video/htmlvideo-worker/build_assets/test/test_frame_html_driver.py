@@ -183,6 +183,17 @@ class DriverTest(unittest.TestCase):
             "01-hook", skeleton_mode=True, project_dir=d)
         self.assertIn("DISK-TOKEN", p2)
 
+    def test_worker_prompt_transcribe_not_redesign(self):
+        # P0 (2026-11-23): the worker must transcribe the inlined spec, not
+        # re-derive it — the three observed thinking wastes are named outright.
+        p = fh._worker_prompt(
+            "01-hook", skeleton_mode=True, dispatch_text="# Dispatch stub\n")
+        self.assertIn("TRANSCRIBING that spec into HTML", p)
+        self.assertIn("not redesigning it", p)
+        self.assertIn("do NOT re-list the Scene beats", p)
+        self.assertIn("do NOT recompute cqw/cqh", p)
+        self.assertIn("do NOT re-decide colors, type sizes, or layout", p)
+
     def test_worker_done_ok_accepts_hyphen_suffix_ids(self):
         # 2026-11-21: empty-slug frames were ``01-``; trailing ``\b`` rejected
         # a correct ``done OK 01-`` and forced a false retry round.
@@ -602,6 +613,12 @@ class HardeningP1P2Test(unittest.TestCase):
                 return 0, "done OK 01-hook"
             if label.endswith("-hedge"):
                 self.assertIn(os.path.join(".hyperframes", "hedge"), project_dir)
+                # P2: a hedge races a degraded minimal fallback, not the full build.
+                self.assertIn("[HEDGE", prompt)
+                self.assertEqual((extra_env or {}).get("CLAUDE_CODE_MAX_OUTPUT_TOKENS"),
+                                 fh.HEDGE_MAX_OUTPUT)
+                self.assertEqual(kw.get("max_turns"), fh.HEDGE_MAX_TURNS)
+                self.assertEqual(kw.get("timeout"), fh.HEDGE_TIMEOUT)
                 with open(fh._frame_path(project_dir, fid), "w") as f:
                     f.write("<!-- HEDGE-CONTENT -->")
                 return 0, "done OK 02-answer"
@@ -662,6 +679,35 @@ class PromptModesTest(unittest.TestCase):
         p = fh._worker_prompt(
             "01-hook", True, dispatch_text=f"# D\n{fh.RECIPES_FULL_HEADING}\n")
         self.assertIn("Do\nNOT Read any recipe".replace("\n", " "), p.replace("\n", " "))
+
+    def test_backticked_heading_in_card_is_not_snippet_mode(self):
+        card = ("## Rule card\n> Recipes default to `## Rule recipes (snippets)` "
+                "in the dispatch; `## Rule recipes (full)` only when set.\n")
+        p = fh._worker_prompt(
+            "01-hook", True, dispatch_text=f"# D\n{card}## Rule index\n- a\n")
+        self.assertIn("Rule recipes are NOT inlined", p)
+        self.assertIn("In your FIRST tool turn, Read every", p)
+        self.assertNotIn("do NOT batch-read", p)
+        p = fh._worker_prompt(
+            "01-hook", True,
+            dispatch_text=f"# D\n{card}## Rule index\n\n{fh.RECIPES_SNIPPET_HEADING}\n\n### x\n")
+        self.assertIn("do NOT batch-read", p)
+        self.assertNotIn("Rule recipes are NOT inlined", p)
+
+    def test_recipes_mode_line_start(self):
+        self.assertIsNone(fh._recipes_mode("see `## Rule recipes (snippets)`\n"))
+        self.assertIsNone(fh._recipes_mode("x ## Rule recipes (full)\n"))
+        self.assertEqual(fh._recipes_mode("a\n## Rule recipes (snippets)\n"), "snippets")
+        self.assertEqual(fh._recipes_mode("## Rule recipes (full)\nb"), "full")
+
+    def test_single_write_and_terse_reply_contract(self):
+        p = fh._worker_prompt("01-hook", True, dispatch_text="# D\n")
+        flat = " ".join(p.split())
+        self.assertIn("under ~15 KB", flat)
+        self.assertIn("ONE Write", flat)
+        self.assertIn("under ~20 KB (InputValidationError)", flat)
+        self.assertIn("final reply is ONLY this one line: done OK 01-hook", flat)
+        self.assertIn("No summary, checklist, or explanation", flat)
 
     def test_rich_skeleton_line(self):
         d = make_project(skeleton=True)

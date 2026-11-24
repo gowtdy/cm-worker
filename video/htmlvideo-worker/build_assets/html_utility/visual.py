@@ -4,7 +4,7 @@
 Deterministic fan-out (mirrors frame_html.py): a single "design contract"
 session produces the video-wide `## Video direction` + per-frame blueprint
 assignment, then N parallel workers each append ONE frame's shot-sequence lines
-(blueprint/focal/roles/sfx/Adapt/Scene) to its OWN fragment file. Python re-
+(blueprint/focal/roles/sfx/rules/Adapt/Scene) to its OWN fragment file. Python re-
 assembles STORYBOARD.md, so the narrative fields are preserved byte-exact by
 construction (the model never re-types them). Rollback: HTMLVIDEO_FRAME_VISUAL_DRIVER=0.
 """
@@ -44,6 +44,7 @@ DESIGN_FILE = os.path.join(VISUAL_DIR, "_design.md")
 ANIMATION_DIR = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "skills", "hyperframes-animation"))
 BLUEPRINTS_DIR = os.path.join(ANIMATION_DIR, "blueprints")
+RULES_DIR = os.path.join(ANIMATION_DIR, "rules")
 
 _SPLIT_RE = re.compile(r"(?=^## Frame\s+\d+)", re.M)
 _FRAME_HEAD_RE = re.compile(r"^## Frame\s+(\d+)", re.M)
@@ -54,9 +55,11 @@ _SCENES_RE = re.compile(r"^\s*(?:[-*]+\s+)?(?:\*\*\s*)?Scene\s+\d+", re.M)
 _SCENE_LINE_RE = re.compile(
     r"^[ \t]*((?:[-*]+[ \t]+)?(?:\*\*[ \t]*)?)(Scene[ \t]+\d+.*)$", re.M)
 _INDENTED_FIELD_RE = re.compile(
-    r"^[ \t]+(-[ \t]*(?:blueprint|focal|roles|sfx):|(?:Adapt|Reproduce):)", re.M)
+    r"^[ \t]+(-[ \t]*(?:blueprint|focal|roles|sfx|rules):|(?:Adapt|Reproduce):)", re.M)
 _FOCAL_RE = re.compile(r"^\s*-\s*focal:", re.M)
 _ROLES_RE = re.compile(r"^\s*-\s*roles:", re.M)
+_RULES_LINE_RE = re.compile(r"^[ \t]*-[ \t]*rules:[ \t]*(.*)$", re.M)
+_RULE_TOKEN_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _WINDOW_RE = re.compile(
     r"^(Scene\s+\d+\s*\(\s*)(\d+(?:\.\d+)?)\s*s?\s*[–—-]\s*(\d+(?:\.\d+)?)\s*s?\s*\)",
     re.M)
@@ -69,6 +72,12 @@ GATE_COVERAGE = 0.9
 GATE_OVERRUN = 0.2
 _DONE_RE = re.compile(r"\bdone\s+OK\s+(\d+)\b")
 _ASSIGN_LINE_RE = re.compile(r"^F(\d+)\s*=\s*([\w-]+)(.*)$", re.M)
+_MODE_RE = re.compile(r"\((adapt|reproduce)\)", re.I)
+# `- blueprint: <id> …` field line (bullet/bold tolerant); group 1 is the id,
+# None on a mode-only line such as `- blueprint: Adapt`.
+_BLUEPRINT_FIELD_RE = re.compile(
+    r"^[ \t]*(?:[-*][ \t]*)?(?:\*\*)?blueprint(?:\*\*)?[ \t]*:(?:\*\*)?[ \t]*"
+    r"(?:(?!(?:adapt|reproduce)\b)([\w-]+))?", re.I)
 # One rewrite after Phase A when any assigned blueprint is outside the catalog.
 MAX_DESIGN_ASSIGN_REPAIRS = 1
 # `compose` = intentional no-shape; workers invent without an inlined blueprint body.
@@ -140,6 +149,68 @@ def _blueprint_catalog() -> frozenset[str]:
     except OSError:
         pass
     return frozenset(ids)
+
+
+def _rule_catalog() -> frozenset[str]:
+    """Motion recipe ids on disk under `hyperframes-animation/rules/*.md` — the
+    same stems storyboard-gate.mjs and frame-packets `citedRules` accept."""
+    ids: set[str] = set()
+    try:
+        for name in os.listdir(RULES_DIR):
+            if name.endswith(".md") and not name.startswith("."):
+                ids.add(name[:-3])
+    except OSError:
+        pass
+    return frozenset(ids)
+
+
+def _blueprint_rule_ids(blueprint_id: str, catalog: frozenset[str] | None = None) -> list[str]:
+    """Rule ids named after `→` in the blueprint's `rule mapping` section, in
+    document order, filtered to on-disk rules. Reads the FULL file: the inlined
+    body is truncated and `rule mapping` is the first section dropped."""
+    if not blueprint_id or blueprint_id.lower() == COMPOSE_BLUEPRINT:
+        return []
+    try:
+        with open(os.path.join(BLUEPRINTS_DIR, f"{blueprint_id}.md"), encoding="utf-8") as f:
+            body = f.read()
+    except OSError:
+        return []
+    cat = catalog if catalog is not None else _rule_catalog()
+    out: list[str] = []
+    for section in _BP_SECTION_RE.split(body):
+        if "rule mapping" not in section.split("\n", 1)[0].lower():
+            continue
+        for line in section.split("\n"):
+            if "→" not in line:
+                continue
+            for tok in _RULE_TOKEN_RE.findall(line.split("→", 1)[1]):
+                if tok in cat and tok not in out:
+                    out.append(tok)
+    return out
+
+
+def _rules_field_ids(text: str) -> list[str] | None:
+    """Ids listed on the `- rules:` line (backticks tolerated); None when absent."""
+    m = _RULES_LINE_RE.search(text or "")
+    if not m:
+        return None
+    raw = m.group(1).replace("`", " ")
+    return [t for t in re.split(r"[,\s]+", raw) if t]
+
+
+def _normalize_rules_line(text: str, catalog: frozenset[str] | None = None) -> tuple[str, list[str]]:
+    """Rewrite `- rules:` to the canonical `- rules: a, b` with only on-disk ids
+    (deduped). Returns (text, dropped unknown ids)."""
+    ids = _rules_field_ids(text)
+    if ids is None:
+        return text, []
+    cat = catalog if catalog is not None else _rule_catalog()
+    known = list(dict.fromkeys(i for i in ids if i in cat))
+    dropped = [i for i in ids if i not in cat]
+    if not known:
+        return text, dropped
+    line = "- rules: " + ", ".join(known)
+    return _RULES_LINE_RE.sub(lambda _m: line, text, count=1), dropped
 
 
 def _type_token_names(tokens: str) -> list[str]:
@@ -366,6 +437,97 @@ def _frame_assignment_line(assignment: str, frame_num: str) -> str:
     return m.group(0) if m else ""
 
 
+def _frame_blueprint_mode(assignment: str, frame_num: str) -> str:
+    """`Adapt` / `Reproduce` from the frame's assignment line, else empty."""
+    m = _MODE_RE.search(_frame_assignment_line(assignment, frame_num))
+    return m.group(1).capitalize() if m else ""
+
+
+def _assigned_blueprint_field(blueprint_id: str, mode: str = "") -> str:
+    """The exact `- blueprint:` value a worker must emit for its assignment."""
+    bp = blueprint_id or COMPOSE_BLUEPRINT
+    if bp.lower() == COMPOSE_BLUEPRINT or not mode:
+        return bp
+    return f"{bp} ({mode})"
+
+
+def _strip_conflicting_blueprints(
+    block: str, assigned_id: str, mode: str | None = None,
+) -> tuple[str, list[str]]:
+    """Prompt-only copy of a frame block with every `blueprint:` field line that
+    disagrees with the assignment removed. Returns (block, dropped ids).
+
+    A line naming the assigned id survives once (its `(Adapt|Reproduce)` is
+    rewritten to ``mode`` when given); other ids, mode-only lines and repeats
+    are dropped so the worker never sees two competing shapes."""
+    want = (assigned_id or COMPOSE_BLUEPRINT).lower()
+    kept_one = False
+    dropped: list[str] = []
+    out: list[str] = []
+    for line in (block or "").split("\n"):
+        m = _BLUEPRINT_FIELD_RE.match(line)
+        if not m:
+            out.append(line)
+            continue
+        bp = m.group(1) or ""
+        if bp.lower() != want or kept_one:
+            dropped.append(bp or "∅")
+            continue
+        kept_one = True
+        if mode:
+            line = _MODE_RE.sub(f"({mode})", line, count=1)
+        out.append(line)
+    return "\n".join(out), dropped
+
+
+_FIELD_ANCHOR_RE = re.compile(r"^[ \t]*(?:-[ \t]*focal:|Scene[ \t]+\d+)")
+
+
+def _canonicalize_frame_blueprint(frame_text: str, canonical: str) -> tuple[str, list[str]]:
+    """Leave exactly one `blueprint:` field line in a merged frame section.
+
+    The LAST such line (the worker's, since additions follow the outline) is
+    rewritten to ``canonical``; every other one is removed. With none present,
+    ``canonical`` goes before the first `- focal:` / `Scene N` line, else at the
+    end. Returns (text, ids of removed or rewritten non-canonical lines)."""
+    lines = frame_text.split("\n")
+    hits = [i for i, line in enumerate(lines) if _BLUEPRINT_FIELD_RE.match(line)]
+    if not hits:
+        at = next((i for i, line in enumerate(lines) if _FIELD_ANCHOR_RE.match(line)), None)
+        if at is None:
+            at = len(lines)
+            while at and not lines[at - 1].strip():
+                at -= 1
+        lines.insert(at, canonical)
+        return "\n".join(lines), ["∅"]
+    keep = hits[-1]
+    dropped = [_BLUEPRINT_FIELD_RE.match(lines[i]).group(1) or "∅"
+               for i in hits if i != keep or lines[i].strip() != canonical]
+    lines[keep] = canonical
+    drop = set(hits[:-1])
+    return "\n".join(line for i, line in enumerate(lines) if i not in drop), dropped
+
+
+def _enforce_storyboard_blueprints(text: str, assignment: str) -> tuple[str, dict[str, list[str]]]:
+    """Deterministic post-merge / post-repair pass: every `## Frame N` section
+    ends with exactly one `- blueprint: <assignment field>` line. Bytes outside
+    the blueprint lines are untouched. Returns (text, {frame: changed ids})."""
+    parts = _SPLIT_RE.split(text)
+    fixes: dict[str, list[str]] = {}
+    for idx in range(1, len(parts)):
+        m = _FRAME_HEAD_RE.match(parts[idx])
+        if not m:
+            continue
+        fn = m.group(1)
+        bp = _frame_blueprint(assignment, fn) or COMPOSE_BLUEPRINT
+        canonical = "- blueprint: " + _assigned_blueprint_field(
+            bp, _frame_blueprint_mode(assignment, fn))
+        parts[idx], changed = _canonicalize_frame_blueprint(parts[idx], canonical)
+        if changed:
+            fixes[fn] = changed
+    return "".join(parts), fixes
+
+
 def _is_catalog_blueprint(blueprint_id: str, catalog: frozenset[str] | None = None) -> bool:
     """True when the id is `compose` or an on-disk blueprint stem."""
     if not blueprint_id:
@@ -529,13 +691,21 @@ def _build_worker_prompt(
     block: str,
     design: str,
     blueprint_body: str = "",
+    candidate_rules: list[str] | None = None,
+    rule_catalog: frozenset[str] | None = None,
+    assigned_blueprint: str = "",
 ) -> str:
     bp_section = (
         "\n[SELECTED BLUEPRINT — instantiate this shape, keep its signature move]\n"
         + blueprint_body
         if blueprint_body else ""
     )
-    rules_dir = os.path.join(ANIMATION_DIR, "rules")
+    if candidate_rules:
+        bp_section += (
+            "\n\nCandidate rule ids (from this blueprint's rule mapping — pick the ones "
+            "your Scenes actually use): " + ", ".join(candidate_rules))
+    rules_dir = RULES_DIR
+    rule_ids = sorted(rule_catalog if rule_catalog is not None else _rule_catalog())
     # Order = shared prefix first (prompt cache): fixed frame-agnostic
     # instructions → design contract → blueprint → this frame's block.
     return (
@@ -553,14 +723,36 @@ def _build_worker_prompt(
         "Output, in this exact order, as your FINAL message text (lines start at "
         "column 0; no bullet or bold before `Scene`):\n"
         "done OK <frame number>\n"
-        "- blueprint: <blueprint (Adapt|Reproduce)>        (from the assignment line)\n"
+        "- blueprint: <id (Adapt|Reproduce)>   (copied verbatim from your assignment line)\n"
         "- focal: <the invented focal element>\n"
         "- roles: <focal = foreground · ... · ... = background wallpaper>\n"
         "- sfx: <soft sfx names, comma-separated>\n"
+        "- rules: <comma-separated rule ids from hyperframes-animation/rules>\n"
         "<an 'Adapt:'/'Reproduce:' line only when the blueprint needs instantiation>\n"
-        "Scene 1 (0.0–Xs): <layout + motion, inline vocab, from-state-to-reveal>\n"
+        "Scene 1 (0.0–Xs): <layout + motion, inline vocab + `rule-id`, from-state-to-reveal>\n"
         "Scene 2 (...): ...  (≥2 Scenes, monotonic non-overlapping windows, coverage "
         "≥90% of duration, first starts at 0.0 — voiceover-paced, never front-loaded)\n\n"
+        "BLUEPRINT AUTHORITY: your `F<n> = <id> (Adapt|Reproduce)` line under `## Blueprint "
+        "assignment` is FINAL — copy its id and mode into `- blueprint:`. Any other "
+        "blueprint id in the frame CONTEXT is a superseded outline leftover: ignore it, and do "
+        "NOT compare, weigh, or arbitrate blueprint ids in your thinking. Spend the "
+        "thinking on Adapt/Reproduce and the Scenes.\n\n"
+        "SHAPE vs MOTION-GRAMMAR TIEBREAK: the design contract's motion grammar (e.g. "
+        "\"each new item pushes the previous off-screen\") overrides your blueprint's "
+        "default shape (e.g. \"assemble and hold\"). When they clash, follow the motion "
+        "grammar and state the adaptation in ONE Adapt sentence — decide once here, do "
+        "NOT re-read or re-derive the tension in your thinking.\n\n"
+        "`- rules:` is REQUIRED (a reply without it is rejected and re-dispatched): ≥1, "
+        "ideally 2–4 ids, plain comma-separated, each an exact rule id from the list "
+        "below. Pick the ids for the motions your Scenes actually use — from the "
+        "SELECTED BLUEPRINT's rule mapping / candidate list when present; for `compose`, "
+        "from the common entrance/reveal rules. Every Scene that names a concrete motion "
+        "cites its rule id in backticks right beside it (e.g. \"… types on with a trailing "
+        "caret `discrete-text-sequence` + `context-sensitive-cursor` …\") — a motion named "
+        "only in plain words (\"types on\", \"pop-stagger\", \"hard-cut\") is not a "
+        "citation. Within-frame seam cuts (zoom-through / cut-the-curve / waterfall) are "
+        "NOT rule ids: name them in the Scene text only, never in `- rules:`.\n"
+        "Valid rule ids: " + ", ".join(rule_ids) + "\n\n"
         "Do NOT emit the `- scene`, `- voiceover`, `- duration`, `- transition_in`, "
         "`- status`, `- src`, `- type`, `- persuasion`, or `- beat` lines — the harness "
         "keeps those byte-exact. Do NOT Write or edit any file, do NOT redesign other "
@@ -575,6 +767,8 @@ def _build_worker_prompt(
         + block
         + f"\n\n[YOUR FRAME] Frame {frame_num} — start your reply with "
         f"`done OK {frame_num}`.\n"
+        + (f"Your blueprint line is exactly: `- blueprint: {assigned_blueprint}`.\n"
+           if assigned_blueprint else "")
     )
 
 
@@ -638,7 +832,9 @@ def _validate_design_contract(design_text: str) -> str:
     return text
 
 
-def _diagnose_worker_reply(frame_num: str, text: str) -> str | None:
+def _diagnose_worker_reply(
+    frame_num: str, text: str, rule_catalog: frozenset[str] | None = None,
+) -> str | None:
     """Why a worker reply fails its completion gate; None when it passes."""
     if not text or not text.strip():
         return "empty reply"
@@ -648,6 +844,13 @@ def _diagnose_worker_reply(frame_num: str, text: str) -> str | None:
                if not rx.search(text)]
     if missing:
         return "missing " + " / ".join(f"`- {m}:`" for m in missing) + " line"
+    rules = _rules_field_ids(text)
+    if not rules:
+        return "missing non-empty `- rules: <rule ids>` line"
+    cat = rule_catalog if rule_catalog is not None else _rule_catalog()
+    if not any(r in cat for r in rules):
+        return ("`- rules:` names no known rule id (got: " + ", ".join(rules)
+                + ") — use exact hyperframes-animation/rules stems")
     done = _DONE_RE.search(text)
     if not done:
         return f"missing `done OK {frame_num}` marker"
@@ -668,16 +871,25 @@ def _normalize_scene_lines(text: str) -> str:
     return _INDENTED_FIELD_RE.sub(r"\1", text)
 
 
-def _parse_worker_additions(frame_num: str, text: str) -> str | None:
+def _parse_worker_additions(
+    frame_num: str, text: str, rule_catalog: frozenset[str] | None = None,
+) -> str | None:
     """Validate a worker reply and return the normalized additions block
     (without the `done OK` marker). None when the reply failed its completion
-    gate — `_diagnose_worker_reply` says why."""
-    if _diagnose_worker_reply(frame_num, text) is not None:
+    gate — `_diagnose_worker_reply` says why. Unknown ids on `- rules:` are
+    dropped (at least one known id survives, or the reply was rejected)."""
+    cat = rule_catalog if rule_catalog is not None else _rule_catalog()
+    if _diagnose_worker_reply(frame_num, text, cat) is not None:
         return None
     # Strip the `done OK <num>` marker line; the rest is the additions.
     body = _DONE_RE.sub("", text, count=1).strip()
     body = re.sub(r"\A[ \t]*\n", "", body)
-    return _normalize_scene_lines(body).strip() or None
+    body = _normalize_scene_lines(body)
+    body, dropped = _normalize_rules_line(body, cat)
+    if dropped:
+        logging.getLogger(__name__).info(
+            "visual F%s dropped unknown rule ids: %s", frame_num, ", ".join(dropped))
+    return body.strip() or None
 
 
 def _fmt_seconds(x: float) -> str:
@@ -776,7 +988,9 @@ def _visual_repair_prompt(gate_msg: str) -> str:
         f"{(gate_msg or '')[-3000:]}\n"
         "Make the CHEAPEST safe edit(s) to STORYBOARD.md's shot sequences that fix "
         "the reported finding(s). Do NOT change narrative fields (scene/voiceover/"
-        "duration/status/src/transition_in/type/beat). Stop after the edit — the "
+        "duration/status/src/transition_in/type/beat). A `- rules:` finding is fixed "
+        f"by adding/correcting that frame's `- rules: id1, id2` line with exact stems of "
+        f"`{RULES_DIR}/*.md` matching its Scene motions. Stop after the edit — the "
         "pipeline re-runs the gate itself."
     )
 
@@ -839,20 +1053,38 @@ def _run_frame_workers(
     # Video direction + ITS OWN blueprint assignment line (drop the other frames'
     # lines), and inline its blueprint body so it does not Read the blueprint file.
     direction, assignment = _split_design(design)
+    rule_catalog = _rule_catalog()
+    if not rule_catalog:
+        raise RuntimeError(
+            f"rule catalog empty under {RULES_DIR} — cannot validate `- rules:`")
+
+    # Prompt-only CONTEXT: outline `- blueprint:` candidates that disagree with
+    # the assignment are removed; `blocks` itself stays byte-exact for the merge.
+    contexts: dict[str, str] = {}
+    for fn in order:
+        bp = _frame_blueprint(assignment, fn) or COMPOSE_BLUEPRINT
+        contexts[fn], dropped = _strip_conflicting_blueprints(
+            blocks[fn], bp, _frame_blueprint_mode(assignment, fn))
+        if dropped:
+            log("visual F%s CONTEXT: dropped outline blueprint(s) %s (assignment=%s)",
+                fn, ", ".join(dropped), bp)
 
     def run_one(fn: str, attempt: int, note: str | None):
         bp = _frame_blueprint(assignment, fn)
         bp_body = _blueprint_body(bp, logger)
         line = _frame_assignment_line(assignment, fn) or f"F{fn} = {COMPOSE_BLUEPRINT}"
         trimmed = f"{direction}\n\n## Blueprint assignment\n{line}"
-        prompt = _build_worker_prompt(fn, blocks[fn], trimmed, bp_body)
+        prompt = _build_worker_prompt(
+            fn, contexts[fn], trimmed, bp_body,
+            _blueprint_rule_ids(bp, rule_catalog), rule_catalog,
+            _assigned_blueprint_field(bp, _frame_blueprint_mode(assignment, fn)))
         if note:
             prompt += f"\n[RE-DISPATCH] {note} — output the additions now."
         t0 = time.monotonic()
         rc, reply = run_claude_result(
             project_dir, prompt, logger, skill="visual", label=f"F{fn}")
         wall = time.monotonic() - t0
-        addition = _parse_worker_additions(fn, reply)
+        addition = _parse_worker_additions(fn, reply, rule_catalog)
         log("visual worker F%s attempt=%s wall=%.1fs rc=%s out=%d chars ok=%s",
             fn, attempt, wall, rc, len(reply or ""), addition is not None)
         return rc, reply, addition
@@ -993,9 +1225,31 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
         parts.append(_read_fragment(visual_dir, fn) or additions[fn])
         parts.append("")
     assembled = "\n".join(parts).strip() + "\n"
+    # One authoritative `- blueprint:` per frame: superseded outline lines and
+    # off-assignment worker lines must not reach readers that take the first.
+    _direction, assignment = _split_design(design)
+    assembled, bp_fixes = _enforce_storyboard_blueprints(assembled, assignment)
+    for fn, changed in bp_fixes.items():
+        log("visual F%s merge: blueprint normalized to assignment (dropped %s)",
+            fn, ", ".join(changed))
     with open(storyboard_path, "w", encoding="utf-8") as f:
         f.write(assembled)
     log("visual driver: merged STORYBOARD (%d chars)", len(assembled))
+
+    def reenforce_blueprints() -> None:
+        try:
+            with open(storyboard_path, "r", encoding="utf-8") as f:
+                current = f.read()
+        except OSError:
+            return
+        fixed, fixes = _enforce_storyboard_blueprints(current, assignment)
+        if not fixes:
+            return
+        warn = logger.warning if logger else logging.getLogger(__name__).warning
+        warn("visual repair touched blueprint lines; re-normalized %s",
+             "; ".join(f"F{fn}: {', '.join(c)}" for fn, c in fixes.items()))
+        with open(storyboard_path, "w", encoding="utf-8") as f:
+            f.write(fixed)
 
     # ── Gate: storyboard-gate.mjs (deterministic, ~1s) + configurable repair ──
     max_repair = _env_positive_int(
@@ -1016,6 +1270,7 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
         if round_no < max_repair:
             log("visual driver: gate FAILED, repair round %d/%d", round_no + 1, max_repair)
             run_claude(project_dir, _visual_repair_prompt(gate_msg), logger, skill="repair")
+            reenforce_blueprints()
     raise RuntimeError(
         f"storyboard-gate failed after {max_repair} repair round(s):\n{gate_msg}")
 

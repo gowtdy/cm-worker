@@ -321,7 +321,8 @@ SALVAGE_MAX_TURNS = 10
 SALVAGE_TIMEOUT = 300
 # P2-4: driver-level cap/effort override for every normal worker attempt
 # (salvage/degraded/phase-A keep their own caps). Unset = frame_html profile
-# default (64000 cap / high effort).
+# default (64000 cap / high effort). medium×64000 A/B procedure:
+# docs/2026-11-22-frame-html-effort-medium-ab.md (do not lower the cap).
 MAX_OUTPUT_ENV = "HTMLVIDEO_FRAME_HTML_MAX_OUTPUT"
 EFFORT_ENV = "HTMLVIDEO_FRAME_HTML_EFFORT"
 # P2-2: attempt 1 split into Phase A (style + body) → Phase B (script).
@@ -336,6 +337,12 @@ HEDGE_AFTER_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_AFTER"
 DEFAULT_HEDGE_AFTER = 660
 HEDGE_POLL_SECONDS = 5
 HEDGE_DIR = os.path.join(".hyperframes", "hedge")
+# A hedge races a minimal fallback, not the primary's full build: degrade cap +
+# short turns + short wall-clock so it returns before the slow primary does
+# (the hedge only ever launches because the primary is already slow/stuck).
+HEDGE_MAX_OUTPUT = "32000"
+HEDGE_MAX_TURNS = 30
+HEDGE_TIMEOUT = 600
 # P2-5: retries started with < DEGRADE_WINDOW s left before the stage deadline
 # use the minimal-motion prompt.
 DEGRADE_ENV = "HTMLVIDEO_FRAME_HTML_DEGRADE"
@@ -346,6 +353,8 @@ DEGRADE_MAX_TURNS = 30
 DEGRADE_MIN_TIMEOUT = 300
 RECIPES_SNIPPET_HEADING = "## Rule recipes (snippets)"
 RECIPES_FULL_HEADING = "## Rule recipes (full)"
+# Line-start only: the rule card mentions these headings in backticks.
+_RECIPES_HEADING_RE = re.compile(r"^## Rule recipes \((snippets|full)\)[ \t]*$", re.M)
 RICH_SKELETON_MARK = f"{SKELETON_MARK} (rich)"
 CUT_CATALOG_PATH = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "skills",
@@ -385,6 +394,15 @@ def _load_dispatch_text(project_dir: str, frame_id: str) -> str:
         return f.read()
 
 
+def _recipes_mode(dispatch_text: str) -> str | None:
+    """``"full"`` / ``"snippets"`` when the dispatch carries a real line-start
+    recipes heading, else ``None`` (index-only)."""
+    modes = {m.group(1) for m in _RECIPES_HEADING_RE.finditer(dispatch_text)}
+    if "full" in modes:
+        return "full"
+    return "snippets" if "snippets" in modes else None
+
+
 def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None):
     """Build the per-frame worker prompt with dispatch inlined.
 
@@ -400,13 +418,17 @@ def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None
     frame_file = f"compositions/frames/{frame_id}.html"
     fill_line = (
         f"A pre-built skeleton already exists at {frame_file} (a `{SKELETON_MARK}` "
-        "comment marks it). Your job is to FILL it, not design from scratch: edit in "
-        "chunks — style block → body → script block, each payload under ~20 KB. You may "
-        "add/remove any node or rewrite the file wholly (last write wins). Do NOT write "
-        "a new minimal skeleton first — it is already there."
+        "comment marks it). Your job is to FILL it, not design from scratch: after "
+        "reading the skeleton, write the complete file in ONE Write (or one large "
+        "Edit) when it will be under ~15 KB — do not split style → body → script "
+        "into separate edits. Only a larger file is chunked; any single Write input "
+        "must stay under ~20 KB (InputValidationError). You may add/remove any node "
+        "or rewrite the file wholly (last write wins). Do NOT write a new minimal "
+        "skeleton first — it is already there."
         if skeleton_mode else
-        f"You must create {frame_file}: build it in chunks — style block → body → "
-        "script block, each payload under ~20 KB."
+        f"You must create {frame_file}: write it in ONE Write when it will be under "
+        "~15 KB; only a larger file is chunked, and any single Write input must stay "
+        "under ~20 KB (InputValidationError)."
     )
     if skeleton_mode and project_dir and _is_rich_skeleton(project_dir, frame_id):
         fill_line += (
@@ -414,7 +436,8 @@ def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None
             "(`data-skeleton=\"bg\"`, track 0) and Scene labels (`scene1`, "
             "`scene2`, …) on the registered `tl` — style and reuse them, and drop "
             "`data-skeleton` from the ground clip once it is styled.")
-    if RECIPES_FULL_HEADING in dispatch_text:
+    recipes_mode = _recipes_mode(dispatch_text)
+    if recipes_mode == "full":
         recipe_line = (
             "What the dispatch inlines: the frame.md design-token excerpt, the rule "
             "card, your storyboard block, the selected blueprint body, and every "
@@ -422,7 +445,7 @@ def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None
             "`## Rule index` lists their RULES_DIR paths for reference only). Do "
             "NOT Read any recipe; never open frame.md or _role.md — they cannot "
             "add what the dispatch already carries.")
-    elif RECIPES_SNIPPET_HEADING in dispatch_text:
+    elif recipes_mode == "snippets":
         recipe_line = (
             "What the dispatch inlines: the frame.md design-token excerpt, the rule "
             "card, your storyboard block, the selected blueprint body, and a "
@@ -455,8 +478,9 @@ burns turns and cannot help this frame.
 Do NOT run frame-selfcheck and do NOT use Bash — the driver runs
 `node {FRAME_SELFCHECK_SCRIPT} {frame_file}` after you finish and will
 re-dispatch you (bounded) with FAIL findings if needed. When you have written
-the fill, reply exactly: done OK {frame_id}
-On an unrecoverable failure instead reply: fail {frame_id}: <reason>
+the fill, your final reply is ONLY this one line: done OK {frame_id}
+On an unrecoverable failure instead reply only: fail {frame_id}: <reason>
+No summary, checklist, or explanation — any extra text is wasted wall time.
 
 {recipe_line} Optional, at most once: {CUT_CATALOG_PATH}
 (only for within-scene cut seams).
@@ -469,13 +493,20 @@ narrative prose. frame.md token VALUES (hex, font families) are always exact.
 If the block lists several `- blueprint:` lines, the one under
 `## Selected blueprint` is authoritative.
 
-Never edit STORYBOARD.md. Turn discipline: every turn ends with a tool call or
-visible text; your first edit must land by your second turn (right after the
-recipe batch read, if any); keep each turn's thinking to at most one short
-paragraph of layout/beat notes — never burn a turn on marathon deliberation.
-Never draft CSS/HTML/JS in thinking: code goes only into Edit/Write arguments.
-Place elements on the card / frame.md cqw·cqh grid and tokens; no per-pixel
-math, no re-verifying positions.
+Never edit STORYBOARD.md. Turn discipline: your Write (or first Edit) is your
+FIRST action after reading the skeleton and any recipe batch read — there is
+nothing to reason about between Read and Write, because the dispatch BELOW
+already carries your complete spec. You are TRANSCRIBING that spec into HTML,
+not redesigning it. Hard no-ops in thinking (each wastes the whole turn):
+- do NOT re-list the Scene beats — they are in your storyboard block below;
+- do NOT recompute cqw/cqh pixel equivalents or re-verify positions — place
+  elements straight off the roles/`focal`/Scene text on the composition's
+  cqw·cqh grid; write cqw/cqh values, not pixel math;
+- do NOT re-decide colors, type sizes, or layout — frame.md tokens and the
+  `## Video direction` block already fix them; name elements after their roles.
+Keep thinking to a few lines of transcription notes. Draft CSS/HTML/JS only
+inside Write/Edit arguments, never in thinking. Every turn ends with a tool
+call or visible text.
 
 ## Dispatch (authoritative — already complete)
 
@@ -734,6 +765,28 @@ def _degrade_suffix(note, remaining_s):
     )
 
 
+def _hedge_suffix():
+    """A hedge is a FAST fallback, not a repeat of the primary's full build.
+
+    The primary is (by definition) slow/stuck — usually marathoning its thinking
+    on a complex blueprint. Running the hedge on the identical full prompt at the
+    same 64000 cap just reproduces the same marathon and truncates too (observed
+    2026-11-23: hedge for frame 01 read the skeleton then burned 45k thinking and
+    died with no Write). The hedge instead races a minimal-but-valid version at a
+    low cap so it actually returns before the primary.
+    """
+    return (
+        "\n[HEDGE — fast fallback] The primary attempt for this frame is running "
+        "slow (long thinking). Do NOT re-run its full build — that just races the "
+        "same marathon. Build the SIMPLEST fully-valid version as fast as "
+        "possible: every Scene as one timeline phase, at most 1–2 simple tweens "
+        "per element (rise/fade/scale-pop), static per-Scene layout, no 3D, no "
+        "particles, no counters. Priority: a valid file with every Scene present "
+        "> visual richness. Write in your FIRST turn, then reply done OK — no "
+        "summary.\n"
+    )
+
+
 def _base_worker_env(logger):
     """P2-4 cap/effort overrides applied to normal worker attempts."""
     env = {"CLAUDE_CODE_SUBAGENT_EFFORT": "high"}
@@ -895,9 +948,14 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
                 extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = DEGRADE_MAX_OUTPUT
                 kw["max_turns"] = DEGRADE_MAX_TURNS
                 kw["timeout"] = max(DEGRADE_MIN_TIMEOUT, int(remaining or 0))
+            elif mode == "hedge":
+                prompt += _hedge_suffix()
+                extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = HEDGE_MAX_OUTPUT
+                kw["max_turns"] = HEDGE_MAX_TURNS
+                kw["timeout"] = HEDGE_TIMEOUT
             elif note:
                 prompt += _redispatch_suffix(note)
-            if mode != "degraded" and prev_rc == TRUNCATED_RC:
+            if mode not in ("degraded", "hedge") and prev_rc == TRUNCATED_RC:
                 extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = _trunc_retry_cap(base_env)
         phased = two_phase and mode == "normal" and attempt_no == 1
         if phased:

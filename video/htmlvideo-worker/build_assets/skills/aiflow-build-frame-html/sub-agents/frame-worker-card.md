@@ -22,9 +22,9 @@
 
 - **Fonts (Override).** Write only `frame.md` family names plus a generic fallback (`sans-serif` / `serif`). Never write `@import`, `<link>`, or `@font-face` — the driver runs `font-imports.mjs`. Lint still checks `font_family_without_font_face`; `google_fonts_import` is a warning only.
 - **GSAP.** Ship `<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>` inside `<template>`, pinned `3.14.2`.
-- **Template / root shape.** Root: `<div id="root" data-composition-id="<frame_id>" data-width="1920" data-height="1080" data-duration="<duration>">`; style via `#root`, never a class.
+- **Root shape.** `<div id="root" data-composition-id="<frame_id>" data-width="1920" data-height="1080" data-duration="<duration>">`; style via `#root`.
 - **Units.** Primary `cqw` / `cqh` (ramp is cqw-based; 1cqw = 19.2px at 1920-wide); fixed-size décor (4/6/8/12px shadows/dots/strokes) uses px. Place on the card / frame.md cqw·cqh grid and tokens — no per-pixel math, no re-verifying positions, no conversion tables.
-- **Turn discipline.** Every turn ends with a tool call or visible text — never thinking-only (silent turns discarded); undecided upstream → pick sibling-consistent, proceed within this turn (≤ ~1 min).
+- **Turn discipline.** Every turn ends with a tool call or visible text (thinking-only turns are discarded); undecided → pick sibling-consistent, proceed this turn.
 - **Thinking = layout/beat notes only.** Never draft CSS/HTML/JS in thinking; code appears only in Edit/Write arguments.
 
 ## Frame visual law
@@ -35,16 +35,25 @@
 - **Whole shot — never front-load.** Reveal pieces as voiceover reaches them (esp. back ~50%), macro camera move underneath — full canvas from ~25% = slide. Mid-shot reveals free; exits banned (`exit_animation_on_non_final_scene` — root transition IS the exit; settle/fade-out only if final frame); stillness note → entrance + quiet settle. Entrances via `fromTo`, not CSS-hidden starts; hero visible by `t <= 0.5s`.
 - **Shot-sequence fidelity.** Every Scene is a timeline phase; named motions reproduce their `RULES_DIR` recipe — never name-guess; blueprint's signature move recognizable (`compose` = no template).
 - **Roles design** — all invented. `focal` = hero; `foreground subject` — eye lands there, keep-out respected, text around not over; `background` — full-bleed, dimmed ~30–50% for legibility; `supporting` — quiet. Built in SVG/CSS/type, never from a file. Only real media: user image in `roles:`/`focal:` — `[video]` `.mp4` → muted `<video class="clip">`, direct child of frame root (nested in a timed element it freezes); untagged → `<img>`.
-- **Same-track clips never overlap** (`timeline_track_too_dense`) — track = temporal lane, stacking = CSS `z-index`; concurrent layers → distinct tracks, or non-timed décor in parent clip; prefer nesting full-duration ambient wallpaper (pills/stickers/grain) in the background clip over N full-duration siblings on track `0`.
-- **Glow / badge décor: not a second timed sibling on the same track.** Glow/bloom/punch-glow/badge-glow/accent lines with a hero/badge are concurrent — never another `class="clip"` sharing the hero's `data-track-index` while windows overlap. Prefer nest: parent clip owns the window, glow/badge children no timing attrs, GSAP drives them on the parent timeline. Or split: each concurrent timed element its own `data-track-index`. Side-by-side badges → distinct tracks (or one parent clip) — a comment is not legal.
+- **Same-track clips never overlap** (`timeline_track_too_dense`) — track = temporal lane, stacking = CSS `z-index`; nest full-duration ambient décor (pills/stickers/grain) in the background clip, not N siblings on track `0`.
+- **Glow / badge décor: not a second timed sibling on the same track.** Glow/bloom/badge/accent lines with a hero are concurrent — never another `class="clip"` on the hero's `data-track-index` while windows overlap. Prefer nest (parent clip owns the window; children no timing attrs, GSAP drives them) or split (own `data-track-index` each). Side-by-side badges → distinct tracks or one parent clip.
 - **Full-bleed ground on a `class="clip"`, never `background` on `#root`.** One dedicated full-duration background clip (color field / gradient / grid) on the lowest content track — a root background is scene-clipped at assembly, so dark content can render invisible over the host body; the assembler paints the base ground.
-- **GSAP owns transforms — transform-only motion.** Never a CSS `transform` (e.g. `translateY(-50%)` centering) on an element you later GSAP-animate transform props on — GSAP overwrites the whole `transform`, the centering jumps (`gsap_css_transform_conflict`): center with `margin` / `inset` (fold the offset into `xPercent`/`yPercent`) or use `fromTo`. Never tween layout props — `fontSize`, `letterSpacing`, `wordSpacing`, `width`, `height`, `top`, `left`, `margin*`, `padding*`, `roundProps` (`gsap_non_transform_motion`); a size change: fix CSS `font-size` at the larger size, keep `display: inline-block` (or block), tween `scale: endSize/startSize`.
+- **GSAP owns transforms — transform-only motion.** Never a CSS `transform` (e.g. `translateY(-50%)`) on a GSAP-animated element — GSAP overwrites it, centering jumps (`gsap_css_transform_conflict`); center via `xPercent`/`yPercent` (idioms below). Never tween layout props — `fontSize`, `letterSpacing`, `wordSpacing`, `width`, `height`, `top`, `left`, `margin*`, `padding*`, `roundProps` (`gsap_non_transform_motion`); a size change: fix CSS `font-size` at the larger size, keep `display: inline-block` (or block), tween `scale: endSize/startSize`.
 
 ## Workflow
 
 - **Read** — the inlined dispatch; in your FIRST tool turn Read every `RULES_DIR/<id>.md` in the Rule index as one parallel batch, never re-read (with `## Rule recipes` inlined: no batch read, a full recipe only if a detail is missing). Never `frame.md`, `_role.md`, `STORYBOARD.md`, skill files. Retry findings (`frame-selfcheck`/lint): read first, re-author away.
-- **FILL the pre-built skeleton** — `compositions/frames/<frame_id>.html` already exists (`skeleton-v1`); do not write a new skeleton. First edit by turn 2; chunked edits ≤ ~20 KB — style, then body, then script.
-- **Reply** — `done OK <frame_id>` (terminal) or `fail <frame_id>: <reason>`. Do NOT run frame-selfcheck / Bash — the driver runs it and re-dispatches with FAIL findings.
+- **FILL the pre-built skeleton** — `compositions/frames/<frame_id>.html` already exists (`skeleton-v1`); never a new skeleton; first edit by turn 2. Final file < ~15 KB: after Reading the skeleton, **one Write (or one large Edit) of the whole file** — no style → body → script split. Hard cap: a single Write input ≤ ~20 KB (InputValidationError).
+- **Reply** — **only** `done OK <frame_id>` (or `fail <frame_id>: <reason>`); no summary / checklist / explanation. Do NOT run frame-selfcheck / Bash — the driver runs it and re-dispatches with FAIL findings.
 - **Not yours** — prefix authored ids & reusable classes with `<frame_id>-` (`#root` / `.clip` excepted); you don't decide narration, duration, between-frame transitions, audio, tokens, or motions/assets.
 
 Cut catalog (path in your dispatch prompt): open only for Scene-seam swaps / scene cuts / text-to-text changes.
+
+## GSAP idioms (copy)
+
+```js
+// CSS: #root{width:100cqw;height:100cqh} .X{position:absolute;left:50%;top:40%} — no CSS transform
+tl.set(".X", { xPercent: -50, yPercent: -50 }, 0); // centering lives in GSAP
+tl.fromTo(".X", { autoAlpha: 0, y: 40 }, { autoAlpha: 1, y: 0, duration: 0.6 }, 0.1);
+// fromTo paints "from" at build (immediateRender); a 2nd fromTo on same prop → immediateRender: false
+```

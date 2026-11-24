@@ -46,7 +46,7 @@ selfcheck / assemble 原先不查字体；captions 仅在本地有 `assets/fonts
 
 verify_frame → verify-all.mjs
   0. font-imports --scope all     ← 不致命；HTMLVIDEO_FONT_IMPORTS=0 可关
-  1. transitions inject guard
+  1. transitions inject (idempotent)
   2. verify-report（lint 已见注入后文件）
   3. gate pass → snapshot + pixels
 ```
@@ -83,7 +83,7 @@ verify_frame → verify-all.mjs
 |---|---|
 | `html_utility/frame_html.py` | assemble **前** `scope=frames` |
 | `html_utility/audio.py` | caption 成功后 `scope=captions` |
-| `scripts/verify-all.mjs` | **第 0 步** `scope=all` |
+| `scripts/verify-all.mjs` | **prepare 阶段** 第 0 步(每会话一次) `scope=all` |
 | `html_utility/verify.py` | `_FIX_PLAYBOOK` 残留语义；docstring 注明 step 0 |
 | `scripts/captions.mjs` | 无本地字体时预写同一标记 `@import` |
 | `scripts/frame-selfcheck.mjs` | `font_out_of_ramp` / `font_dead_fallback` 默认 WARN |
@@ -115,7 +115,7 @@ node /app/scripts/font-imports.mjs --videodir <dir> \
 
 | 变量 | 作用 |
 |---|---|
-| `HTMLVIDEO_FONT_IMPORTS=0\|false\|off\|no` | 跳过 Python 挂点与 verify-all step 0 |
+| `HTMLVIDEO_FONT_IMPORTS=0\|false\|off\|no` | 跳过 Python 挂点与 verify-all prepare 阶段 |
 | `AIFLOW_FONT_PRUNE=0` / `--no-prune` | 不删死回退 |
 | `AIFLOW_HF_CLI_DIST` | 覆盖 CLI dist 路径（读别名用；优先 `FONT_ALIAS_MAP2`） |
 | `FRAME_SELFCHECK_STRICT_FONTS=1` | 字体 WARN 升为 FAIL（默认不升） |

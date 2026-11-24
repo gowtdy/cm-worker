@@ -10,7 +10,9 @@
 // + the blueprint body + every cited rule recipe, inlined — so a worker never opens
 // the shared STORYBOARD.md or any skill document. Cited motions are found
 // mechanically: the explicit `- rules:` field when present, plus every valid rule id
-// (a filename under the animation skill's rules/) mentioned in the block.
+// (a filename under the animation skill's rules/) mentioned in the block, topped up
+// by inferCitedRules (blueprint rule mapping + motion-phrase table). Large
+// blueprints are narrowed per frame (narrowBlueprint) before inlining.
 //
 // _role.md = frame-worker-core.md + the workflow's sub-agents/frame-worker.md,
 // concatenated verbatim — the complete worker role, assembled from the two source
@@ -91,7 +93,359 @@ function frameNumber(heading) {
   return m ? Number(m[1]) : null;
 }
 
-function blueprintSectionFor(block, animationDir, heading, warnLabel, assigned = null) {
+// ---- packet-time blueprint narrowing ----------------------------------------
+//
+// Big blueprints fold many roles and sub-shapes into one file (`_Variant — Role_`
+// lists, OR-chains of alternative entrances, a long rule mapping). A worker given
+// all of it re-enumerates every branch. Narrowing is structural, not per-file:
+// sections are the `**label**` paragraphs, variants are bullets labelled
+// `_Variant — X_` / `**Variant — X**`, alternatives are ` OR `-joined clauses.
+
+const ROLE_KEYS = {
+  hook: "Hook",
+  problem: "Problem", pain: "Problem",
+  product_intro: "Product_Intro", productintro: "Product_Intro", intro: "Product_Intro",
+  key_feature: "Key_Feature", keyfeature: "Key_Feature", feature: "Key_Feature",
+  feature_showcase: "Key_Feature", demo: "Key_Feature",
+  benefits: "Benefits", benefit: "Benefits", benefit_highlight: "Benefits",
+  cta: "CTA", call_to_action: "CTA",
+  brand_outro: "Brand_Outro", outro: "Brand_Outro",
+  social_proof: "Social_Proof", socialproof: "Social_Proof", proof: "Social_Proof",
+};
+const roleKey = (raw) => ROLE_KEYS[String(raw ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_")] ?? null;
+
+// Narrative role of a frame: `- type:` / `- role:` field first, then the
+// `## Frame N — <Role>` heading words.
+export function frameRole(block) {
+  for (const name of ["role", "type", "beat_role", "shot_role"]) {
+    const r = roleKey((field(block, name) ?? "").split(/[\s(—,;]/)[0]);
+    if (r) return r;
+  }
+  const heading = /^## Frame\s+[^\n]*?[—:-]\s*(.+)$/m.exec(block)?.[1] ?? "";
+  for (const word of heading.split(/[^A-Za-z_]+/)) {
+    const r = roleKey(word);
+    if (r) return r;
+  }
+  return null;
+}
+
+const RELEVANCE_STOP = new Set(("a an the and or of to in on at by for with from into onto over under then than "
+  + "that this these those its it is are be as via per each every one two three any all some only just more most "
+  + "less very also plus their our your no not never without while when where who which what out up down off").split(" "));
+const stemWord = (w) => {
+  let s = w.toLowerCase();
+  if (s.length > 3) s = s.replace(/(?:ing|ed|es|s)$/, "");
+  if (s.length > 3) s = s.replace(/e$/, "");
+  return s;
+};
+// Stems too common in blueprint/storyboard prose to signal a specific motion.
+const GENERIC_STEMS = new Set(["word", "text", "typ", "lin", "fram", "beat", "scen", "shot", "phras",
+  "element", "final", "small", "larg", "big", "full", "accent", "color", "colour", "bg", "background",
+  "center", "centr", "left", "right", "top", "bottom", "card", "item", "stat", "mov", "motion", "effect",
+  "brief", "short", "long", "slow", "fast", "quick", "singl", "distinct", "behind", "besid", "below",
+  "abov", "hold", "settl", "entranc", "exit", "reveal", "field", "label", "headlin", "optional", "key",
+  "new", "next", "prior", "first", "last", "whol", "rul", "pattern", "look", "form", "plain", "fill"]);
+
+function relevanceTerms(phrase) {
+  const clean = String(phrase ?? "").toLowerCase().replace(/`[^`]*`|\[[^\]]*\]/g, " ");
+  const terms = new Map();
+  for (const tok of clean.match(/[a-z0-9]+(?:-[a-z0-9]+)+|[a-z0-9]+/g) ?? []) {
+    if (tok.includes("-")) {
+      const parts = tok.split("-").filter((p) => !RELEVANCE_STOP.has(p) || p === "on" || p === "in").map(stemWord);
+      if (parts.length > 1) terms.set(parts.join(" "), 2);
+      else if (parts.length === 1 && !GENERIC_STEMS.has(parts[0])) terms.set(parts[0], 1);
+    } else if (tok.length >= 3 && !RELEVANCE_STOP.has(tok)) {
+      const s = stemWord(tok);
+      if (!GENERIC_STEMS.has(s)) terms.set(s, 1);
+    }
+  }
+  return terms;
+}
+
+// Negated spans ("no roll", "never orbiting", "its push-in is dropped") must
+// not count as asked-for motion.
+export function relevanceIndex(text) {
+  const kept = String(text ?? "").toLowerCase()
+    .replace(/\b(?:no|never|without|not|zero)\s+(?:[\w-]+\s+)?[\w-]+/g, " ")
+    .replace(/(?:[\w'/-]+\s+){0,2}[\w'/-]+\s+(?:is|are|gets?)\s+(?:dropped|removed|replaced|cut|skipped)\b/g, " ");
+  const stems = (kept.match(/[a-z0-9]+/g) ?? []).map(stemWord);
+  return { joined: ` ${stems.join(" ")} `, set: new Set(stems) };
+}
+
+export function relevanceMatch(phrase, index) {
+  let score = 0;
+  let total = 0;
+  let compound = false;
+  for (const [term, weight] of relevanceTerms(phrase)) {
+    total += weight;
+    if (weight === 2 ? index.joined.includes(` ${term} `) : index.set.has(term)) {
+      score += weight;
+      if (weight === 2) compound = true;
+    }
+  }
+  // A hyphenated motion term ("type-on", "hard-cut") is specific enough on its
+  // own; loose single words must cover at least half of the phrase.
+  return { score, strong: score >= 2 && (compound || score / total >= 0.5) };
+}
+
+export const relevanceScore = (phrase, index) => relevanceMatch(phrase, index).score;
+
+// Split a blueprint into its `**label**` paragraphs; a bare `---` starts an appendix.
+function blueprintSections(md) {
+  const sections = [{ kind: "head", label: "", lines: [] }];
+  for (const line of String(md).split("\n")) {
+    const label = /^\*\*([^*\n]+)\*\*/.exec(line)?.[1];
+    if (label != null) {
+      const l = label.toLowerCase();
+      const kind = l.startsWith("roles served") ? "roles"
+        : l.startsWith("shot structure") ? "shot"
+        : l.startsWith("motion vocabulary") ? "vocab"
+        : l.startsWith("rule mapping") ? "mapping" : "keep";
+      sections.push({ kind, label, lines: [line] });
+    } else if (/^---\s*$/.test(line)) {
+      sections.push({ kind: "appendix", label: "---", lines: [line] });
+    } else {
+      sections.at(-1).lines.push(line);
+    }
+  }
+  return sections;
+}
+
+// Bullet items with their continuation lines; non-bullet lines are text items.
+function bulletItems(lines) {
+  const items = [];
+  for (const line of lines) {
+    const bullet = /^(\s*)[-*]\s+/.exec(line);
+    const indent = (/^\s*/.exec(line)?.[0] ?? "").length;
+    const last = items.at(-1);
+    if (bullet) items.push({ indent, bullet: true, text: line });
+    else if (line.trim() && last?.bullet && indent > last.indent) last.text += `\n${line}`;
+    else items.push({ indent, bullet: false, text: line });
+  }
+  return items;
+}
+
+const VARIANT_RE = /^\s*[-*]\s+(?:_|\*\*)Variant\s+[—–-]\s+([^*:\n]+?)\s*(?:_(?=[\s:(]|$)|\*\*)/;
+const variantRole = (text) => roleKey((VARIANT_RE.exec(text)?.[1] ?? "").split(/[\s(]/)[0]);
+
+// Keep the clause's lead + its most relevant alternative from each ` OR `-chain.
+function capAlternatives(text, index) {
+  return text.split(/(?<=[.;])\s+(?=\S)/).map((sentence) => {
+    const segs = sentence.split(/,?\s+OR\s+/);
+    if (segs.length <= 2) return sentence;
+    let best = 1;
+    for (let i = 2; i < segs.length; i++) {
+      if (relevanceScore(segs[i], index) > relevanceScore(segs[best], index)) best = i;
+    }
+    const tail = /[.;]$/.test(sentence) && !/[.;]$/.test(segs[best]) ? sentence.slice(-1) : "";
+    return `${segs[0]} OR ${segs[best]}${tail} _(+${segs.length - 2} alternatives omitted)_`;
+  }).join(" ");
+}
+
+// Variant label qualifier words: `_Variant — Hook (flash)_` → {flash};
+// `**Variant — Key_Feature grid**` → {grid}.
+function variantQualifiers(text) {
+  const label = VARIANT_RE.exec(text)?.[1] ?? "";
+  const rest = label.replace(/^[A-Za-z_]+/, "");
+  return [...relevanceTerms(rest).keys()].flatMap((t) => t.split(" "));
+}
+
+// The `roles served` bullet (for this role) the block reads most like; its
+// words — including the `(from \`slug\`)` source id — name the preferred variant.
+function preferredRoleTerms(rolesLines, role, index) {
+  if (!rolesLines) return new Set();
+  const bullets = bulletItems(rolesLines).filter((it) => it.bullet)
+    .filter((it) => !role || roleKey(/^\s*[-*]\s+([A-Za-z_]+)/.exec(it.text)?.[1]) === role)
+    .map((it) => ({ it, s: relevanceScore(it.text, index) }))
+    .sort((a, b) => b.s - a.s);
+  if (!bullets.length || bullets[0].s === 0 || bullets[0].s === bullets[1]?.s) return new Set();
+  const words = bullets[0].it.text.toLowerCase().replace(/`/g, " ").match(/[a-z0-9]+/g) ?? [];
+  return new Set(words.map(stemWord));
+}
+
+function narrowShot(lines, { role, index, preferred = new Set() }) {
+  const items = bulletItems(lines);
+  const out = [];
+  for (let i = 0; i < items.length; i++) {
+    if (!VARIANT_RE.test(items[i].text)) {
+      out.push(items[i].bullet ? capAlternatives(items[i].text, index) : items[i].text);
+      continue;
+    }
+    const group = [];
+    let j = i;
+    while (j < items.length) {
+      if (VARIANT_RE.test(items[j].text)) { group.push({ ...items[j], pos: group.length }); j++; continue; }
+      let k = j;
+      while (k < items.length && !items[k].bullet && !items[k].text.trim()) k++;
+      if (k > j && k < items.length && VARIANT_RE.test(items[k].text)) { j = k; continue; }
+      break;
+    }
+    i = j - 1;
+    const matched = role ? group.filter((g) => variantRole(g.text) === role) : [];
+    const pool = matched.length ? matched : group;
+    const keep = new Set(pool
+      .map((g) => ({
+        g,
+        s: relevanceScore(g.text, index) + (variantQualifiers(g.text).some((q) => preferred.has(q)) ? 4 : 0),
+      }))
+      .sort((a, b) => b.s - a.s || a.g.pos - b.g.pos)
+      .slice(0, 2)
+      .map((x) => x.g.pos));
+    for (const g of group) if (keep.has(g.pos)) out.push(capAlternatives(g.text, index));
+    const dropped = group.length - keep.size;
+    if (dropped > 0) {
+      out.push(`${" ".repeat(group[0].indent)}- _(${dropped} more variant${dropped > 1 ? "s" : ""} omitted at packet time${role && matched.length ? ` — kept ${role} options` : ""}; pick one option and build, do not enumerate.)_`);
+    }
+  }
+  return out;
+}
+
+function narrowRoles(lines, role) {
+  const items = bulletItems(lines);
+  const bullets = items.filter((it) => it.bullet);
+  const matched = role ? bullets.filter((it) => roleKey(/^\s*[-*]\s+([A-Za-z_]+)/.exec(it.text)?.[1]) === role) : [];
+  if (matched.length) {
+    const dropped = bullets.length - matched.length;
+    return [lines[0], "", ...matched.map((it) => it.text),
+      ...(dropped ? [`- _(${dropped} other role${dropped > 1 ? "s" : ""} omitted.)_`] : []), ""];
+  }
+  return items.map((it) => (it.bullet ? cutBytes(it.text.replace(/\s+/g, " "), 160) : it.text));
+}
+
+// Mapping bullets the block asks for first, then those backing the kept shot
+// options; parentheticals on the rule side are dropped.
+function narrowMapping(lines, blockIndex, shotIndex, budget = 2000) {
+  const items = bulletItems(lines.slice(1));
+  const bullets = items.filter((it) => it.bullet).map((it, pos) => {
+    const flat = it.text.replace(/\s+/g, " ").trim();
+    const arrow = flat.indexOf("→");
+    const left = arrow < 0 ? flat : flat.slice(0, arrow);
+    let right = arrow < 0 ? "" : flat.slice(arrow + 1);
+    for (let k = 0; k < 3; k++) right = right.replace(/\s*\([^()]*\)/g, "");
+    const compact = arrow < 0 ? flat : `${left.trim()} → ${right.trim()}`;
+    const b = relevanceMatch(left, blockIndex);
+    const tier = b.strong ? 2 : relevanceMatch(left, shotIndex).strong ? 1 : 0;
+    return { pos, compact, tier, score: b.score };
+  });
+  const ranked = [...bullets].sort((a, b) => b.tier - a.tier || b.score - a.score || a.pos - b.pos);
+  const keep = new Set();
+  let used = 0;
+  for (const b of ranked) {
+    if (!b.tier && !(keep.size < 3 && b.score >= 1)) break;
+    const limit = b.tier === 2 ? budget : budget / 2;
+    if (used + Buffer.byteLength(b.compact) > limit) continue;
+    keep.add(b.pos);
+    used += Buffer.byteLength(b.compact) + 1;
+  }
+  const kept = bullets.filter((b) => keep.has(b.pos)).map((b) => b.compact);
+  const dropped = bullets.length - kept.length;
+  return [lines[0], "", ...kept,
+    ...(dropped ? [`- _(${dropped} mapping${dropped > 1 ? "s" : ""} for motions this frame does not ask for omitted.)_`] : []), ""];
+}
+
+export const NARROWED_BLUEPRINT_NOTE = "> Packet-time narrowed blueprint — do not re-expand OR branches; pick one option and build.";
+
+// Deterministic, structure-based trim of a blueprint body for one frame. Small
+// blueprints (≤ minBytes) and bodies without the standard sections pass through.
+export function narrowBlueprint(md, { block = "", role = frameRole(block), minBytes = 8000 } = {}) {
+  const text = String(md ?? "").trim();
+  if (Buffer.byteLength(text) <= minBytes) return { text, narrowed: false };
+  const sections = blueprintSections(text);
+  if (!sections.some((s) => s.kind === "shot" || s.kind === "mapping")) return { text, narrowed: false };
+  const blockIndex = relevanceIndex(block);
+  const shot = sections.find((s) => s.kind === "shot");
+  const preferred = preferredRoleTerms(sections.find((s) => s.kind === "roles")?.lines, role, blockIndex);
+  const shotLines = shot ? narrowShot(shot.lines, { role, index: blockIndex, preferred }) : [];
+  const shotIndex = relevanceIndex(shotLines.join("\n"));
+  const out = [];
+  for (const s of sections) {
+    if (s.kind === "appendix") continue;
+    if (s.kind === "shot") out.push(...shotLines);
+    else if (s.kind === "roles") out.push(...narrowRoles(s.lines, role));
+    else if (s.kind === "vocab") out.push(cutBytes(s.lines.join("\n").trim(), 700), "");
+    else if (s.kind === "mapping") out.push(...narrowMapping(s.lines, blockIndex, shotIndex));
+    else out.push(...s.lines);
+  }
+  const body = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return { text: `${NARROWED_BLUEPRINT_NOTE}\n\n${body}`, narrowed: true, role };
+}
+
+// ---- rule inference (when the block cites few/no rules) ----------------------
+
+function blueprintRuleMapping(blueprintText) {
+  const sec = blueprintSections(blueprintText ?? "").find((s) => s.kind === "mapping");
+  if (!sec) return [];
+  return bulletItems(sec.lines.slice(1)).filter((it) => it.bullet).map((it) => {
+    const flat = it.text.replace(/\s+/g, " ");
+    const arrow = flat.indexOf("→");
+    if (arrow < 0) return null;
+    let right = flat.slice(arrow + 1);
+    const nextArrow = right.indexOf("→");
+    if (nextArrow >= 0) right = right.slice(0, nextArrow).replace(/;[^;]*$/, "");
+    for (let k = 0; k < 3; k++) right = right.replace(/\s*\([^()]*\)/g, "");
+    const primary = right.split(/\s+(?:OR|or)\s+/)[0];
+    return { left: flat.slice(0, arrow), ids: [...primary.matchAll(/`([\w.-]+)`/g)].map((m) => m[1]) };
+  }).filter(Boolean);
+}
+
+// Common storyboard motion phrases → rule ids (only ids present under rules/ are used).
+export const PHRASE_RULES = [
+  { re: /\btyp(?:es?|ed|ing)[- ]on\b|\btypewriter\b|\bcharacter[- ]by[- ]character\b|\bchar[- ]by[- ]char\b|\bbackspac\w*|\bretyp\w*/gi, ids: ["discrete-text-sequence"] },
+  { re: /\b(?:blinking\s+)?caret\b|\bblinking cursor\b/gi, ids: ["discrete-text-sequence", "context-sensitive-cursor"] },
+  { re: /\b(?:hard[- ]cut|instant)\s+(?:token\s+|word\s+)?swap\w*|\btoken swap\w*|\bhard[- ]cuts? in place\b|\bswaps? in place\b/gi, ids: ["discrete-text-sequence"] },
+  { re: /\bcount(?:s|ing)?[- ]up\b|\bcounting\b|\btally\b|\bsnap-counts?\b|\bticks? up\b|\bodometer\b/gi, ids: ["counting-dynamic-scale"] },
+  { re: /\bpop[- ]stagger\w*|\bspring[- ]pop\w*|\bspring[- ]overshoot\w*|\bpops? in\b|\bscale-pop\w*/gi, ids: ["spring-pop-entrance"] },
+  { re: /\bslam\w*|\bkinetic beats?\b/gi, ids: ["kinetic-beat-slam"] },
+  { re: /\bwaterfall\b|\bcascad\w+/gi, ids: ["waterfall-entry"] },
+  { re: /\bmask[- ]?wip\w*|\bmasked slide\b|\bclip-path reveal\b|\bmarquee\b|\bbottom ticker\b|\bticker drifts?\b/gi, ids: ["gsap-effects"] },
+  { re: /\bslot[- ]machine\b|\bvertical ticker\b|\brolls? through\b/gi, ids: ["vertical-spring-ticker"] },
+  { re: /\bdraws?[- ](?:on|in)\b|\bdraw-on\b|\btrim[- ]path\b|\bline draws\b|\bconnector lines? draw\w*/gi, ids: ["svg-path-draw"] },
+  { re: /\b(?:earnings|growth|progress)\s+bar\b|\bbars? (?:grow|draw)s?\b|\bprogress fill\b/gi, ids: ["stat-bars-and-fills"] },
+  { re: /\bripple\w*|\bcursor (?:click|lands)\w*/gi, ids: ["cursor-click-ripple"] },
+  { re: /\bcompress together\b|\blockstep press\b/gi, ids: ["physics-press-reaction"] },
+  { re: /\bglow (?:bloom|sweep|travels)\w*|\btraveling glow\b|\bglow settle\b/gi, ids: ["ambient-glow-bloom"] },
+  { re: /\bsame[- ]center morph\b|\bcondenses? at the same\b|\bscale[- ]swap\b/gi, ids: ["scale-swap-transition"] },
+  { re: /\bconfetti\b|\bparticle burst\b|\bdot burst\b/gi, ids: ["particle-burst"] },
+  { re: /\bchromatic\b|\brgb[- ]split\b|\bglitch\w*/gi, ids: ["chromatic-glitch"] },
+  { re: /\bgradient sweep\w*|\bhue[- ]sweep\w*/gi, ids: ["gradient-text-sweep"] },
+  { re: /\bmotion[- ]blur\b|\bstreak\w*/gi, ids: ["motion-blur-streak"] },
+  { re: /\bunderline draws?\b|\bstrike[- ]through\b|\bhighlight sweep\b/gi, ids: ["css-marker-patterns"] },
+];
+
+// Rule ids implied by the frame block: first the selected blueprint's
+// `**rule mapping**` bullets whose motion phrase the block asks for, then the
+// PHRASE_RULES table. Excludes ids in `exclude`; at most `max` results.
+export function inferCitedRules(block, ruleIds, { blueprintText = "", exclude = [], max = 5 } = {}) {
+  const known = new Set(ruleIds);
+  const out = [];
+  const add = (id) => {
+    if (out.length < max && known.has(id) && !exclude.includes(id) && !out.includes(id)) out.push(id);
+  };
+  const index = relevanceIndex(block);
+  blueprintRuleMapping(blueprintText)
+    .map((m, pos) => ({ ...m, pos, ...relevanceMatch(m.left, index) }))
+    .filter((m) => m.strong)
+    .sort((a, b) => b.score - a.score || a.pos - b.pos)
+    .forEach((m) => m.ids.forEach(add));
+  for (const { re, ids } of PHRASE_RULES) {
+    if (positiveMentions(block, re).length) ids.forEach(add);
+  }
+  return out;
+}
+
+const MAX_RULES = 5;
+
+// citedRules + (HTMLVIDEO_FRAME_PACKETS_INFER_RULES, default ON) inferred ids
+// topping the list up to MAX_RULES.
+export function frameRules(block, ruleIds, { blueprintText = "", infer = envSwitch("HTMLVIDEO_FRAME_PACKETS_INFER_RULES", true) } = {}) {
+  const cited = citedRules(block, ruleIds);
+  const inferred = infer && cited.length < MAX_RULES
+    ? inferCitedRules(block, ruleIds, { blueprintText, exclude: cited, max: MAX_RULES - cited.length })
+    : [];
+  return { rules: [...cited, ...inferred], cited, inferred };
+}
+
+function blueprintSectionFor(block, animationDir, heading, warnLabel, assigned = null, narrow = envSwitch("HTMLVIDEO_FRAME_PACKETS_NARROW_BLUEPRINT", true)) {
   const sel = withAssignment(selectBlueprint(block), assigned, warnLabel);
   if (!sel || !sel.id || sel.id.toLowerCase() === "compose") return { sel, section: "" };
   if (sel.conflict && warnLabel) {
@@ -105,14 +459,16 @@ function blueprintSectionFor(block, animationDir, heading, warnLabel, assigned =
     return { sel, section: "" };
   }
   const title = `${heading}: ${sel.id}${sel.mode ? ` (mode: ${sel.mode})` : ""}`;
-  let section = selectedFile(path, title);
+  const blueprintText = readFileSync(path, "utf8");
+  const body = narrow ? narrowBlueprint(blueprintText, { block }).text : blueprintText.trim();
+  let section = `\n## ${title}\n\n${body}\n`;
   if (sel.conflict) {
     section = section.replace(
       `## ${title}\n`,
       `## ${title}\n\n> Authoritative blueprint for this frame. Other \`- blueprint:\` lines in the block (${sel.all.filter((p) => p.id && p.raw !== sel.raw).map((p) => `\`${p.raw}\``).join(", ")}) are superseded.\n`,
     );
   }
-  return { sel, section };
+  return { sel, section, blueprintText };
 }
 
 const SCENE_WINDOW_RE = /Scene\s+\d+\s*\(\s*~?(\d+(?:\.\d+)?)\s*s?\s*[–—-]\s*~?(\d+(?:\.\d+)?)\s*s?\s*\)/gi;
@@ -196,8 +552,9 @@ export function citedRules(block, ruleIds) {
 }
 
 export function resourceSections(block, { animationDir, ruleIds, assigned = null }) {
-  let sections = blueprintSectionFor(block, animationDir, "Selected blueprint", null, assigned).section;
-  for (const rule of citedRules(block, ruleIds)) {
+  const { section, blueprintText = "" } = blueprintSectionFor(block, animationDir, "Selected blueprint", null, assigned);
+  let sections = section;
+  for (const rule of frameRules(block, ruleIds, { blueprintText }).rules) {
     sections += selectedFile(
       join(animationDir, "rules", `${rule}.md`),
       `Selected motion rule: ${rule}`,
@@ -394,6 +751,10 @@ const MOTION_BANS = [
 const TYPE_ROTATION_BAN_RE = /\b(?:no|never|avoid|without)\b[^.\n;]{0,40}?\b(?:rotat\w*|3d|tilt\w*|skew\w*|perspective)\b[^.\n;]{0,40}?\b(?:on|of|for|to)\s+(?:the\s+|any\s+)?(?:type|text|typography|letters?|glyphs?|words?|headlines?|copy)\b/i;
 const CARD_3D_RE = /\b3d\b|\brotat(?:e|ion)Y\b|\bperspective\b|\btilt(?:s|ed|ing)?\b/gi;
 
+// "No idle looping" / "no perpetual looping" vs a ticker or continuous drift.
+const IDLE_LOOP_BAN_RE = /\b(?:no|never|without|avoid)\b[^.\n;]{0,40}?\b(?:idle[- ]loop\w*|perpetual(?:ly)?[- ]loop\w*|infinite[- ]loop\w*|endless[- ]loop\w*|loop(?:s|ing)?)\b/i;
+const LOOP_ASK_RE = /\bticker\b|\bmarquee\b|\blooping\s+drift\w*|\bcontinuous(?:ly)?\s+(?:scroll|drift|loop)\w*|\bdrifts?\s+(?:continuously|forever|endlessly)\b|\bever-present\b|\bperpetual(?:ly)?\s+(?:drift|scroll|motion)\w*|\binfinite\s+(?:scroll|drift)\w*|\b(?:css|gsap)(?:\/gsap)?\s+loop\b|\bslow-drifting\b|\bidle\s+drift\w*/gi;
+
 function negativeListText(direction) {
   const i = String(direction ?? "").search(/negative list/i);
   if (i < 0) return "";
@@ -531,6 +892,24 @@ export function detectConflicts({ block, sel, assigned, blueprintText = "", dire
       });
     }
   }
+  const loopBan = [direction, frameMd].map((t) => IDLE_LOOP_BAN_RE.exec(t ?? "")?.[0]).find(Boolean);
+  if (loopBan) {
+    const fromDir = positiveMentions(direction, LOOP_ASK_RE);
+    const fromBlock = positiveMentions(block, LOOP_ASK_RE);
+    if (fromDir.length || fromBlock.length) {
+      const where = [
+        fromDir.length ? `direction: "…${fromDir[0]}…"` : "",
+        fromBlock.length ? `block: "…${fromBlock[0]}…"` : "",
+      ].filter(Boolean).join("; ");
+      const tickerAsked = /\bticker|\bmarquee/i.test([...fromDir, ...fromBlock].join(" "));
+      const blockTicker = positiveMentions(block, /\bticker\b|\bmarquee\b/gi).length > 0;
+      out.push({
+        kind: "idle-loop-vs-continuous-motion",
+        detail: `the constraints say "${loopBan.replace(/\s+/g, " ").trim()}" while continuous/looping motion is asked for (${where})`,
+        ruling: `continuous motion is allowed only as ONE finite, one-way tween bounded by this clip — e.g. \`tl.fromTo(el, { x: A }, { x: B, duration: <clip duration>, ease: "none" }, 0)\` — never \`repeat: -1\`, yoyo, CSS @keyframes/infinite animation, or a wrap-around reset. Ambient drift (blobs, gradients, floats) runs once after its entrance and settles or slows to a stop before the frame ends; every other element resolves to stillness before the transition.${tickerAsked ? ` The ticker/marquee is that one sanctioned linear drift${blockTicker ? " — this block lists it, so build it" : " — build it only on frames whose block lists it; this block does not, so omit it"}.` : ""}`,
+      });
+    }
+  }
   const bgRule = /background\s+(?:is\s+|stays\s+)?always\s+([A-Za-z]+)/i.exec(direction ?? "");
   if (bgRule) {
     const required = bgRule[1].toLowerCase();
@@ -574,23 +953,20 @@ export function buildDispatchDocs({ projectDir, frames, outDir, animationDir, ca
   mkdirSync(outDir, { recursive: true });
   return frames.map((frame) => {
     const assigned = assignment.get(frameNumber(frame.heading));
-    const { sel, section: blueprintSection } = blueprintSectionFor(
+    const { sel, section: blueprintSection, blueprintText = "" } = blueprintSectionFor(
       frame.block, animationDir, "Selected blueprint", frame.frameId, assigned);
     if (assigned && sel?.id && assigned.id.toLowerCase() !== sel.id.toLowerCase()) {
       console.warn(
         `frame-packets: ${frame.frameId}: selected blueprint "${sel.id}" ≠ Blueprint assignment "${assigned.id}"`,
       );
     }
-    const bpPath = sel?.id ? join(animationDir, "blueprints", `${sel.id}.md`) : "";
-    const blueprintText = bpPath && sel.id.toLowerCase() !== "compose" && existsSync(bpPath)
-      ? readFileSync(bpPath, "utf8") : "";
     const conflicts = detectConflicts({
       block: frame.block, sel, assigned, blueprintText, direction, frameMd,
     });
     for (const c of conflicts) console.warn(`frame-packets: ${frame.frameId}: conflict ${c.kind}: ${c.detail}`);
-    const rules = citedRules(frame.block, ruleIds);
+    const { rules, inferred } = frameRules(frame.block, ruleIds, { blueprintText });
     const ruleIndex = rules.length
-      ? rules.map((r) => `- \`${r}\` → ${join(animationDir, "rules", `${r}.md`)}`).join("\n")
+      ? rules.map((r) => `- \`${r}\` → ${join(animationDir, "rules", `${r}.md`)}${inferred.includes(r) ? " (inferred from the block's motion phrases)" : ""}`).join("\n")
       : "- (no motion rules cited)";
     const indexHeading = inlineRecipes === "off"
       ? "## Rule index (open a recipe file only while authoring its phase)"

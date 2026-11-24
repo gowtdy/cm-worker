@@ -8,7 +8,9 @@ A good explainer feels like one continuous film — one camera, one motion feel,
 
 # Part 1 — the move vocabulary
 
-Reach into this palette when naming a scene's motion. Pick the move that matches the beat, name it in the shot sequence, and cite the rule id after `→`. The blueprints (`../hyperframes-animation/blueprints/`) name these same moves in their `rule mapping`; you're drawing from one shared palette. Compose 2–4 across a shot's scenes (entrance → sequential reveal → settle), not all at once.
+Reach into this palette when naming a scene's motion. Pick the move that matches the beat, name it in the shot sequence, and cite the rule id after `→`.
+
+**Citing is a hard requirement, not style:** every Scene that names a move puts its rule id in backticks beside it (`` `discrete-text-sequence` ``), and the frame's **`- rules: id1, id2`** line lists those same ids (exact `../hyperframes-animation/rules/*.md` stems). A move named only in plain words ("types on", "pop-stagger", "hard-cut") resolves to nothing downstream; `storyboard-gate.mjs` fails a frame without a valid `- rules:`. Seam cuts below are catalog entries, not rule ids — Scene text only. The blueprints (`../hyperframes-animation/blueprints/`) name these same moves in their `rule mapping`; you're drawing from one shared palette. Compose 2–4 across a shot's scenes (entrance → sequential reveal → settle), not all at once.
 
 ## Kinetic type
 
@@ -154,4 +156,6 @@ The frame is a **paused GSAP timeline seeked frame-by-frame**, so some "continuo
 > Scene 2 (1.0–3.0s): as the VO names each step, five mechanism nodes reveal **sequentially** via **cluster→outward expansion** (`center-outward-expansion`), then a **value-scaled counter** (`counting-dynamic-scale`) ticks up beneath them — the back-half reveal, timed to the script, not dumped at t=0.
 > Scene 3 (3.0–4.2s): hold on the result; **keyword glow** (`asr-keyword-glow`) lands on the payoff word as the VO says it; settles and holds still — at most **subtle jitter** (`sine-wave-loop`, low amplitude) keeps it alive; no breathing, no drift.
 
-Name the move + its rule id (or `../aiflow-build-frame-html/references/cut-catalog.md` for a seam cut) per scene; let the worker pick curves, ms, and stagger — defaulting to `power3`.
+That frame's field line: `- rules: dynamic-content-sequencing, multi-phase-camera, center-outward-expansion, counting-dynamic-scale, asr-keyword-glow, sine-wave-loop`.
+
+Name the move + its rule id (or `../aiflow-build-frame-html/references/cut-catalog.md` for a seam cut) per scene, and collect the rule ids into `- rules:`; let the worker pick curves, ms, and stagger — defaulting to `power3`.

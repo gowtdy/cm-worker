@@ -1,9 +1,17 @@
 # -*- coding: utf-8 -*-
 """Verify assembled video helpers for htmlvideo worker.
 
-``verify-all.mjs`` step 0 runs ``font-imports.mjs`` (scope=all) before the
-transitions inject guard. That step is non-fatal and is skipped when
-``HTMLVIDEO_FONT_IMPORTS`` is ``0`` / ``false`` / ``off`` / ``no``.
+``verify-all.mjs --phase prepare`` runs once per ``verify_frame`` session
+(known-failure autofix → ``font-imports.mjs --scope all`` (non-fatal;
+``HTMLVIDEO_FONT_IMPORTS=0/false/off/no`` skips) → idempotent transitions
+inject); the fix loop only reruns ``--phase verify``.
+
+``--phase verify`` is two gates, in order, not separate model rounds.
+The mechanical gate is ``verify-report`` (lint + check + structural +
+transitions). Only after it passes does the visual gate run (snapshot +
+verify-pixels). A mechanical FAIL returns before snapshot and does not print
+``VISUAL_GATE:``. A pixels FAIL prints ``VISUAL_GATE: FAIL`` and takes the
+visual fix prompt, not the mechanical actionable-summary playbook.
 """
 
 from __future__ import annotations
@@ -15,7 +23,17 @@ import os
 import re
 import subprocess
 
-from html_utility.claude_cli import _env_positive_int, run_claude
+from html_utility.claude_cli import (
+    TRUNCATED_RC,
+    _env_positive_int,
+    run_claude_result,
+)
+from html_utility.verify_overlap_autofix import (
+    auto_overlap_enabled,
+    autofix_caption_keepout,
+    autofix_designed_overlays,
+    strip_findings_payload,
+)
 
 HYPERFRAMES_JSON = "hyperframes.json"
 INDEX_FILENAME = "index.html"
@@ -29,63 +47,75 @@ CONTACT_SHEET_GLOB = os.path.join(SNAPSHOTS_DIR, "contact-sheet*.jpg")
 
 VERIFY_ALL_SCRIPT = "/app/scripts/verify-all.mjs"
 _MAX_FIX_ROUNDS = 3  # default; HTMLVIDEO_VERIFY_FIX_ROUNDS overrides
+_PREPARE_TIMEOUT_S = 300
+_VERIFY_TIMEOUT_S = 900
 
 
-def _run_verify_all(project_dir: str, logger: logging.Logger) -> tuple[int, str]:
-    """Deterministic mechanical scan (no model). Returns ``(rc, output)``.
-
-    ``rc`` mirrors ``verify-all.mjs`` / ``verify-report.mjs``:
-      0 = gate pass + snapshot written (+ pixels clean)
-      1 = findings to fix
-      2 = infrastructure / project blocker
-
-    The model never runs the scan itself — running it here removes the model's
-    per-turn orchestration tax (TTFB + turn latency) and the redundant
-    find/cat/ls exploration turns it spent re-discovering the playbook.
-    """
-    cmd = ["node", VERIFY_ALL_SCRIPT, "--videodir", project_dir]
-    logger.info("verify-all scan: %s", " ".join(cmd))
+def _run_verify_phase(project_dir: str, phase: str, timeout: int, logger: logging.Logger) -> tuple[int, str]:
+    cmd = ["node", VERIFY_ALL_SCRIPT, "--videodir", project_dir, "--phase", phase]
+    logger.info("verify-all %s: %s", phase, " ".join(cmd))
     try:
         proc = subprocess.run(
-            cmd, cwd=project_dir, capture_output=True, text=True, timeout=900
+            cmd, cwd=project_dir, capture_output=True, text=True, timeout=timeout
         )
     except subprocess.TimeoutExpired:
-        logger.error("verify-all scan timed out")
-        return 2, "verify-all.mjs timed out"
+        logger.error("verify-all %s timed out", phase)
+        return 2, f"verify-all.mjs --phase {phase} timed out"
     out = proc.stdout or ""
     if out and not out.endswith("\n"):
         out += "\n"
     if proc.stderr:
         out += "\n[stderr]\n" + proc.stderr
-    logger.info("verify-all scan done rc=%d (out %d bytes)", proc.returncode, len(out))
+    logger.info("verify-all %s done rc=%d (out %d bytes)", phase, proc.returncode, len(out))
     return proc.returncode, out
 
 
-# The mechanical fix rules are inlined instead of loading the whole
-# /aiflow-verify-frame skill — the skill's "Verify" section tells the model to
-# run verify-all/lint/check, which is dead weight for the fix role (the harness
-# already did the scan). A ~10KB skill load blew the fix session to ~93K input
-# tokens; this cheatsheet is ~500 tokens and keeps the fix self-contained.
-_FIX_PLAYBOOK = """Mechanical fix rules — apply the matching one, then stop:
-- digit-led selectors (`#07-…`, `.01-…`, `"#06-…"` inside CSS/JS selector strings)
-  → attribute form `[id="…"]` / `[class~="…"]`; leave `getElementById` untouched.
-- `font_family_without_font_face` → residual only (verify-all step 0 already
-  ran font-imports). Drop dead fallback names (e.g. Didot) that are not the
-  primary family; if a ramp family is still missing, paste the marked block
-  (both `aiflow:font-imports` marker lines) printed in the scan's actionable
-  summary. Do not add `@font-face` or hunt font files.
-- root/clip `data-duration="Ns"` (unit suffix) → strip to plain number
-  `data-duration="N"`; do NOT diagnose transitions by reading scripts.
-- `content_overlap` → follow the scan's triage line: `designed_overlay` (badge /
-  stamp / overlay / watermark …) → `data-layout-allow-overlap` on the text or an
-  inner container (not the scene root); `real_collision` (text vs text) →
-  reposition / shrink, do NOT allow-overlap; `ambiguous` → read the frame's
-  layout intent first, then pick one. Never blanket-allow every overlap.
-- caption `text_box_overflow` (~1–4px on `#caption-word-*` / `.caption-line`) → false positive, ignore.
-- `id_requires_css_escape` / `google_fonts_import` warnings → non-blockers, ignore.
-- transitions verify / inject mismatches → only strip duration unit suffixes if
-  present; harness re-injects on the next scan. Do NOT re-run inject yourself.
-- any finding not listed above → cheapest safe edit, one line of note."""
+def _run_prepare(project_dir: str, logger: logging.Logger) -> tuple[int, str]:
+    return _run_verify_phase(project_dir, "prepare", _PREPARE_TIMEOUT_S, logger)
+
+
+def _run_verify(project_dir: str, logger: logging.Logger) -> tuple[int, str]:
+    """Deterministic two-gate scan (no model). Returns ``(rc, output)``.
+
+    Order inside ``verify-all.mjs --phase verify``:
+      1. mechanical gate — ``verify-report`` (lint + check + structural +
+         transitions). Non-zero returns immediately: no snapshot, no
+         ``VISUAL_GATE:`` line.
+      2. visual gate — only after mechanical exit 0: midpoints, snapshot,
+         verify-pixels. Prints ``VISUAL_GATE: PASS`` or ``VISUAL_GATE: FAIL``.
+
+    ``rc`` mirrors ``verify-all.mjs``:
+      0 = both gates pass (snapshot written, pixels clean)
+      1 = findings to fix (mechanical report, or pixels FAIL)
+      2 = infrastructure / project blocker
+
+    The model never runs the scan itself — running it here removes the model's
+    per-turn orchestration tax (TTFB + turn latency) and the redundant
+    find/cat/ls exploration turns it spent re-discovering the playbook.
+
+    prepare already ran once in this session. This phase does not modify files
+    except the snapshot, and only after the mechanical gate passes.
+    """
+    return _run_verify_phase(project_dir, "verify", _VERIFY_TIMEOUT_S, logger)
+
+
+# Per-failure fix rules live in ONE place — /app/scripts/known-failures.mjs —
+# shared with verify-report.mjs (which renders each matched rule into its
+# "actionable summary") and verify-all.mjs (whose prepare phase runs the
+# deterministic autofixes once per session). `_trim_scan_for_fix` already
+# forwards that summary into this prompt, so the fix role carries only the
+# generic discipline below, never a
+# second copy of the per-failure knowledge that used to drift out of sync.
+_FIX_PLAYBOOK = """The scan's «actionable summary» below already lists the matched known-failure
+rule(s) — every named finding is paired with the exact fix. All per-failure
+knowledge lives in /app/scripts/known-failures.mjs; nothing here overrides it.
+- Apply the rule that names your finding, then stop. Do not invent a different fix.
+- A finding with no matching rule → cheapest safe edit, one line of note.
+- `id_requires_css_escape` / `google_fonts_import` warnings and the caption
+  `text_box_overflow` finding are non-blockers — do not act on them.
+- Decide each finding in ≤2 sentences and emit every Edit in ONE batched pass on
+  your FIRST turn. Do NOT re-derive cqw/cqh geometry or re-trace the GSAP
+  timeline — the scan already measured the boxes, so trust its classification."""
 
 _FIX_HARD_CONSTRAINTS = """Hard constraints for this fix role (override project CLAUDE.md / plugins):
 - Do NOT Read `/app/scripts/*`, `/app/hyperframes/**`, or any CLI/gate source.
@@ -93,34 +123,208 @@ _FIX_HARD_CONSTRAINTS = """Hard constraints for this fix role (override project 
 - Do NOT run verify-all / lint / check / snapshot / `npm run check`.
 - Project CLAUDE.md "Always invoke skill" / "ALWAYS RUN check" do NOT apply here.
 - Edit `compositions/**/*.html` only, in ONE batched pass (parallel Edits), then stop.
+- Read each target file (absolute path) at most ONCE, then Edit it. Do NOT
+  Grep / Glob / list directories or open files the findings do not name.
 """
 
+_FIX_REPLY = (
+    "After the Edits, reply with exactly `fixed <n>` (n = number of edits), or "
+    "`fixed 0` if nothing to do — no summary."
+)
 
-def _build_fix_prompt(scan_output: str) -> str:
-    """Prompt for the one model turn that is still genuinely needed: apply the
-    mechanical fixes the scan already enumerated. The scan output is inlined so
-    the model edits directly instead of re-running the scan / re-investigating,
-    and the playbook cheatsheet replaces the full skill load.
+_ACTIONABLE_HEADER = "── actionable summary ──"
+_ERROR_LINE_RE = re.compile(r"^\s+✗ ")
+# The one stable anchor in every finding line, regardless of whether it was a
+# lint error (code then file) or a check finding (`in <file>`).
+_FRAME_FILE_RE = re.compile(r"compositions/frames/[A-Za-z0-9._-]+\.html")
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "on", "yes")
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _error_blocks(head: str) -> list[str]:
+    """``✗`` lines plus the deeper-indented detail lines right under them
+    (e.g. transitions verify failure lines), up to a blank or shallower line.
     """
+    out: list[str] = []
+    depth = -1
+    for line in head.splitlines():
+        if _ERROR_LINE_RE.match(line):
+            out.append(line)
+            depth = _indent(line)
+        elif depth >= 0 and line.strip() and _indent(line) > depth:
+            out.append(line)
+        else:
+            depth = -1
+    return out
+
+
+def _trim_scan_for_fix(scan_output: str) -> str:
+    """Error lines (with their detail lines) + actionable summary through the
+    end of the scan.
+
+    Drops the ✓ waterfall (font-imports, transitions inject,
+    prerequisites, warnings/infos, midpoints) the fix role never acts on.
+    Falls back to the full scan when the summary header is missing.
+    """
+    text = strip_findings_payload(scan_output)
+    idx = text.find(_ACTIONABLE_HEADER)
+    if idx < 0:
+        return text
+    head, tail = text[:idx], text[idx:]
+    errors = _error_blocks(head)
+    parts = []
+    if errors:
+        parts.append("── error findings ──\n" + "\n".join(errors) + "\n\n")
+    parts.append(tail.strip("\n") + "\n")
+    return "".join(parts)
+
+
+def _fix_prompt_prefix(root_line: str, label: str) -> str:
+    """Fixed header/hard-constraints/playbook shared by every fix prompt."""
     return (
         "Fix the verification findings below in this HyperFrames project root. "
-        "The deterministic scan (`node /app/scripts/verify-all.mjs`) has ALREADY "
-        "run and returned gate findings (exit 1); its output — findings plus a "
-        "ready-to-use «actionable summary» — is appended.\n\n"
+        "The deterministic scan (`node /app/scripts/verify-all.mjs --phase verify`, after a one-time prepare pass) has ALREADY "
+        "run and returned gate findings (exit 1); its error findings and "
+        "«actionable summary» are appended.\n\n"
+        + root_line
         + _FIX_HARD_CONSTRAINTS
         + "\nApply the cheapest safe fix to compositions/frames/NN-*.html in ONE "
         "batched pass, using absolute paths. Do NOT re-run verify-all / lint / "
         "check / snapshot (the harness re-runs the scan itself); do NOT re-init, "
         "build, assemble, preview or render.\n\n"
         + _FIX_PLAYBOOK
-        + "\n\nStop after the fixes are applied, then list — one line each — what you changed.\n\n"
-        "── scan output (already run — do not re-run) ──\n"
-        + scan_output
-        + "\n── end scan output ──\n"
+        + "\n\n" + _FIX_REPLY + "\n\n"
+        + f"── {label} (already run — do not re-run) ──\n"
+    )
+
+
+def _build_fix_prompt_from_fragment(fragment: str, project_dir: str, label: str) -> str:
+    root_line = f"Project root (absolute): {project_dir}\n\n" if project_dir else ""
+    return (
+        _fix_prompt_prefix(root_line, label)
+        + fragment
+        + f"\n── end {label} ──\n"
+    )
+
+
+def _build_fix_prompt(scan_output: str, project_dir: str = "") -> str:
+    """Prompt for the one model turn that is still genuinely needed: apply the
+    mechanical fixes the scan already enumerated. Only the actionable part of
+    the scan is inlined (``HTMLVIDEO_VERIFY_FIX_FULL_SCAN=1`` restores the full
+    output) so the model edits directly instead of re-investigating.
+    """
+    if _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN"):
+        scan_text, label = strip_findings_payload(scan_output), "scan output"
+    else:
+        scan_text, label = _trim_scan_for_fix(scan_output), "scan findings"
+    return _build_fix_prompt_from_fragment(scan_text, project_dir, label)
+
+
+def _split_scan_by_file(scan_text: str) -> tuple[dict[str, str], str]:
+    """Split the trimmed scan findings into one error block per frame file.
+
+    Returns ``(files: dict[rel_path -> fragment], shared_tail)``. The ``shared_tail``
+    is the actionable summary onward (file-agnostic rules + GATE line). When the
+    scan carries findings in only one file the dict has that single key; when the
+    findings cannot be attributed to distinct frame files the dict is empty and
+    the caller must fall back to the whole scan.
+    """
+    idx = scan_text.find(_ACTIONABLE_HEADER)
+    if idx < 0:
+        return {}, scan_text
+    head, tail = scan_text[:idx], scan_text[idx:]
+    groups: dict[str, list[str]] = {}
+    order: list[str] = []
+    current: str | None = None
+    for line in _error_blocks(head):
+        if _ERROR_LINE_RE.match(line):
+            m = _FRAME_FILE_RE.search(line)
+            current = m.group(0) if m else "__other__"
+            if current not in groups:
+                groups[current] = []
+                order.append(current)
+        if current is not None:
+            groups[current].append(line)
+    # A single (or zero) group is not worth splitting.
+    if len(order) <= 1:
+        return {}, scan_text
+    fragments = {
+        f: "── error findings ──\n" + "\n".join(groups[f]) + "\n\n" + tail
+        for f in order
+    }
+    return fragments, tail
+
+
+_VISUAL_SECTION = "── visual gate (snapshot + pixels) ──"
+
+
+def _trim_scan_for_visual(scan_output: str) -> str:
+    """Keep the visual-gate / verify-pixels report, not the mechanical waterfall.
+
+    Prefers the ``── visual gate`` section. Otherwise keeps stable pixels
+    markers (``VISUAL_GATE:``, ``frame-*.png``, ``SUMMARY:``). Falls back to
+    the full scan only when none of those are present.
+    """
+    text = scan_output or ""
+    idx = text.find(_VISUAL_SECTION)
+    if idx >= 0:
+        return text[idx:].strip("\n") + "\n"
+    kept: list[str] = []
+    for line in text.splitlines():
+        if (
+            "VISUAL_GATE:" in line
+            or "frame-" in line
+            or "verify-pixels" in line
+            or line.startswith("SUMMARY:")
+            or "MECHANICAL PASS" in line
+        ):
+            kept.append(line)
+    if kept:
+        return "\n".join(kept) + "\n"
+    return text
+
+
+def _build_visual_fix_prompt(scan_output: str, project_dir: str = "") -> str:
+    """Prompt for a pixels FAIL after the mechanical gate already passed.
+
+    Based only on the verify-pixels report and the ``snapshots/frame-*.png``
+    lines it names. One batched Edit of those frames. The harness reruns the
+    verify phase; this role must not rerun verify-all / lint / check / snapshot.
+    """
+    scan_text = _trim_scan_for_visual(scan_output)
+    root_line = f"Project root (absolute): {project_dir}\n\n" if project_dir else ""
+    return (
+        "Fix the visual-gate pixels findings below in this HyperFrames project root. "
+        "The mechanical gate (verify-report: lint, check, structural, transitions) "
+        "already PASSED. verify-pixels then failed (VISUAL_GATE: FAIL).\n\n"
+        "collapse means layout collapse; empty means missing content. "
+        "Only edit frames a pixels FAIL line names. "
+        "Map `snapshots/frame-NN.png` (or a `frame-NN.png` line) to "
+        "`compositions/frames/NN-*.html`. Leave every other frame untouched.\n\n"
+        + root_line
+        + _FIX_HARD_CONSTRAINTS
+        + "\nApply that fix to the FAIL-named `compositions/frames/*.html` files in ONE "
+        "batched pass (parallel Edits), using absolute paths. Do NOT re-run verify-all / "
+        "lint / check / snapshot (the harness re-runs the verify phase itself); do NOT "
+        "re-init, build, assemble, preview or render.\n\n"
+        + _FIX_REPLY + "\n\n"
+        "── verify-pixels report (already run — do not re-run) ──\n"
+        + scan_text
+        + "── end verify-pixels report ──\n"
     )
 
 
 _GATE_FAIL_RE = re.compile(r"^GATE:\s*FAIL\b", re.M)
+_VISUAL_GATE_FAIL_RE = re.compile(r"^VISUAL_GATE:\s*FAIL\b", re.M)
+_VISUAL_GATE_ANY_RE = re.compile(r"^VISUAL_GATE:", re.M)
+_REPORT_EXIT_1_RE = re.compile(r"\breport exit 1\b")
+_MECH_GATE_FAIL_RE = re.compile(r"mechanical gate FAIL")
 _ZERO_ERROR_FINDINGS_RE = re.compile(r"\b0\s+error finding\(s\)", re.I)
 _NUMBERED_ACTION_RE = re.compile(r"^ {2}\d+\) ", re.M)
 _PARSER_INFRA_RE = re.compile(r"PARSER/INFRA:", re.I)
@@ -143,6 +347,32 @@ def scan_looks_unactionable(output: str) -> bool:
     if _NUMBERED_ACTION_RE.search(text):
         return False
     return True
+
+
+def classify_scan_failure(output: str) -> str | None:
+    """Classify an exit-1 scan as ``mechanical`` or ``visual``.
+
+    Stable markers only (not a full-text match of the verdict sentence):
+
+    - ``visual`` — a ``VISUAL_GATE: FAIL`` line. The mechanical gate already
+      passed and verify-pixels failed.
+    - ``mechanical`` — ``GATE: FAIL``, ``report exit 1``, or
+      ``mechanical gate FAIL``, and no ``VISUAL_GATE:`` line at all (the visual
+      gate was not opened).
+    - ``None`` — anything else; callers keep the existing rc branch.
+    """
+    text = output or ""
+    if _VISUAL_GATE_FAIL_RE.search(text):
+        return "visual"
+    if _VISUAL_GATE_ANY_RE.search(text):
+        return None
+    if (
+        _GATE_FAIL_RE.search(text)
+        or _REPORT_EXIT_1_RE.search(text)
+        or _MECH_GATE_FAIL_RE.search(text)
+    ):
+        return "mechanical"
+    return None
 
 
 def _composition_html_digest(project_dir: str) -> str:
@@ -215,6 +445,137 @@ def _validate_verify_outputs(project_dir: str) -> str:
     return ", ".join(non_empty)
 
 
+def _auto_fix_overlaps(
+    project_dir: str,
+    rc: int,
+    output: str,
+    round_no: int,
+    logger: logging.Logger,
+) -> tuple[int, str]:
+    """Deterministically mark safe ``designed_overlay`` rows and delete
+    redundant in-frame caption strips, then rescan if any file was written.
+    Returns the (possibly unchanged) ``(rc, output)``; an auto-fix crash is
+    logged and never fails verify.
+    """
+    changed = False
+    for autofix, name in (
+        (autofix_designed_overlays, "auto-overlap"),
+        (autofix_caption_keepout, "auto-caption"),
+    ):
+        try:
+            result = autofix(project_dir, output, logger)
+        except Exception:
+            logger.exception(
+                "%s (round %d) crashed — continuing without it", name, round_no
+            )
+            continue
+        if not result.changed:
+            continue
+        changed = True
+        logger.info(
+            "%s (round %d): wrote %d node(s) across %d file(s) [%s]; %d unresolved",
+            name, round_no, result.nodes_marked, len(result.files_changed),
+            ", ".join(result.files_changed), len(result.unresolved),
+        )
+    if not changed:
+        return rc, output
+    return _run_verify(project_dir, logger)
+
+
+def _run_fix_worker(
+    project_dir: str,
+    prompt: str,
+    logger: logging.Logger,
+    label: str | None,
+) -> int:
+    """Dispatch one fix turn with the truncation watcher armed (P0 fail-fast).
+
+    ``trunc_kill`` kills a thinking-only turn that hit the output cap in seconds
+    (rc 125) instead of letting the model re-think into the cap for minutes and
+    return with zero edits — the 2026-11-23 runaway (2× 16000-token thinking-only
+    turns, no Edit). Kept as a thin, easily-mocked seam for the unit tests.
+    """
+    fix_rc, _result = run_claude_result(
+        project_dir, prompt, logger, skill="verify", label=label, trunc_kill=True
+    )
+    return fix_rc
+
+
+def _dispatch_fix(
+    project_dir: str,
+    prompt: str,
+    round_no: int,
+    logger: logging.Logger,
+    label: str | None,
+) -> None:
+    """One batched model turn, raising on a truncation or non-zero exit."""
+    fix_rc = _run_fix_worker(project_dir, prompt, logger, label)
+    if fix_rc == TRUNCATED_RC:
+        raise RuntimeError(
+            f"verify fix round {round_no} [{label or '-'}] truncated: the model "
+            "burned its output budget on thinking without emitting an Edit"
+        )
+    if fix_rc != 0:
+        raise RuntimeError(f"claude verify fix failed rc:{fix_rc} [{label or '-'}]")
+
+
+def _apply_model_fix(
+    project_dir: str,
+    scan_output: str,
+    round_no: int,
+    logger: logging.Logger,
+) -> tuple[int, str]:
+    """Batched model fixes, then rescan. Raises on a zero-edit digest.
+
+    When the mechanical findings span more than one frame file they are split
+    into one small self-contained worker per file (P2): a single worker facing
+    10 findings across 4 files runs its adaptive thinking into the output cap;
+    a per-file worker of 1–2 findings edits on turn 1. Falls back to the whole
+    scan for a single-file failure or ``HTMLVIDEO_VERIFY_FIX_FULL_SCAN=1``.
+    """
+    before_digest = _composition_html_digest(project_dir)
+    fragments: dict[str, str] = {}
+    if not _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN"):
+        fragments, _tail = _split_scan_by_file(_trim_scan_for_fix(scan_output))
+    if fragments:
+        for rel, fragment in fragments.items():
+            prompt = _build_fix_prompt_from_fragment(fragment, project_dir, "scan findings")
+            _dispatch_fix(project_dir, prompt, round_no, logger, rel)
+    else:
+        prompt = _build_fix_prompt(scan_output, project_dir)
+        _dispatch_fix(project_dir, prompt, round_no, logger, None)
+    return _require_changed_and_rescan(project_dir, before_digest, round_no, logger)
+
+
+def _require_changed_and_rescan(
+    project_dir: str,
+    before_digest: str,
+    round_no: int,
+    logger: logging.Logger,
+) -> tuple[int, str]:
+    """Zero-edit guard + rescan. Raises when the model turn changed nothing."""
+    after_digest = _composition_html_digest(project_dir)
+    if after_digest == before_digest:
+        raise RuntimeError(
+            f"verify fix round {round_no} made no changes to "
+            "compositions/**/*.html — refusing to re-dispatch the same scan "
+            "(model produced no Edit, or scan findings were non-actionable)"
+        )
+    return _run_verify(project_dir, logger)
+
+
+def _apply_visual_fix(
+    project_dir: str,
+    prompt: str,
+    round_no: int,
+    logger: logging.Logger,
+) -> tuple[int, str]:
+    """One pixels-fix model turn (no file split), zero-edit guard, then rescan."""
+    before_digest = _composition_html_digest(project_dir)
+    _dispatch_fix(project_dir, prompt, round_no, logger, None)
+    return _require_changed_and_rescan(project_dir, before_digest, round_no, logger)
+
+
 def verify_frame(
     project_dir: str,
     logger: logging.Logger,
@@ -228,20 +589,40 @@ def verify_frame(
     or a missing contact sheet. Returns the path to
     ``snapshots/contact-sheet.jpg`` (or a comma-joined list when paginated).
 
-    Control flow is Python-driven, not model-driven: ``verify-all.mjs`` runs as
-    a plain subprocess (no claude), so a clean project never invokes the model
-    at all. Only when the scan reports findings (exit 1) does the model get a
-    single batched-fix turn, after which the scan re-runs; this repeats up to
-    ``_MAX_FIX_ROUNDS``.
+    Control flow is Python-driven, not model-driven: ``verify-all.mjs --phase verify`` runs as
+    a plain subprocess (no claude), so a clean project (both gates pass) never
+    invokes the model at all. Exit 1 is one of two gates, and each gets at most
+    one batched model turn before the scan re-runs, up to ``_MAX_FIX_ROUNDS``:
 
-    Step 0 of that scan is ``font-imports.mjs --scope all`` (non-fatal;
-    ``HTMLVIDEO_FONT_IMPORTS=0/false/off/no`` skips it). Residuals are what
-    the fix prompt is allowed to hand-edit.
+    - mechanical (``GATE: FAIL`` / ``report exit 1``, no ``VISUAL_GATE:``) —
+      ``designed_overlay`` auto-overlap, then the actionable-summary prompt.
+    - visual (``VISUAL_GATE: FAIL``) — pixels fix prompt only. No auto-overlap
+      and no mechanical playbook. Same round cap and zero-edit digest guard.
+
+    On a mechanical FAIL, ``designed_overlay`` rows from the scan's
+    ``VERIFY_FINDINGS_JSON`` line with ``autofix_ok`` + ``mark_side`` are
+    fixed deterministically on that side only (attribute
+    insert + rescan); a scan that then passes never reaches the model. The
+    rescan after the last model round is checked too, with one more auto-fix
+    pass if it still fails and the failure is not visual.
+    ``HTMLVIDEO_VERIFY_AUTO_OVERLAP=0`` disables this.
+
+    ``verify-all.mjs --phase prepare`` runs once per session (known-failure
+    autofix, then ``font-imports.mjs --scope all`` — non-fatal;
+    ``HTMLVIDEO_FONT_IMPORTS=0/false/off/no`` skips it — then idempotent
+    transitions inject). A non-zero prepare result raises immediately and does
+    not call the model. Residuals are what the fix prompt is allowed to hand-edit.
     """
     _validate_prerequisites(project_dir)
     max_fix = _env_positive_int("HTMLVIDEO_VERIFY_FIX_ROUNDS", _MAX_FIX_ROUNDS, logger)
 
-    rc, output = _run_verify_all(project_dir, logger)
+    prep_rc, prep_out = _run_prepare(project_dir, logger)
+    if prep_rc != 0:
+        raise RuntimeError(
+            f"verify-all prepare failure rc:{prep_rc} (not a model fix): " + prep_out[-2000:]
+        )
+
+    rc, output = _run_verify(project_dir, logger)
     for round_no in range(1, max_fix + 1):
         if rc == 0:
             logger.info(
@@ -253,33 +634,55 @@ def verify_frame(
             raise RuntimeError(
                 "verify-all infrastructure failure: " + output[-2000:]
             )
-        # rc == 1 but nothing actionable → do not burn a model turn
-        # (parser miss / empty playbook). Treat as infrastructure.
-        if scan_looks_unactionable(output):
-            raise RuntimeError(
-                "verify-all gate FAIL with 0 actionable findings — refusing to "
-                "invoke the model on an empty fix list (upstream scan/parser "
-                "bug). Tail:\n" + output[-2000:]
-            )
-        # rc == 1: findings. One model turn applies the mechanical fixes.
+        # Visual FAIL: pixels only. Do not run designed_overlay auto-overlap
+        # and do not use the mechanical actionable-summary prompt.
+        if classify_scan_failure(output) != "visual":
+            if auto_overlap_enabled():
+                rc, output = _auto_fix_overlaps(project_dir, rc, output, round_no, logger)
+                if rc == 0:
+                    logger.info(
+                        "verify-all gate PASS after designed_overlay auto-fix "
+                        "(round %d) — no model needed",
+                        round_no,
+                    )
+                    return _validate_verify_outputs(project_dir)
+                if rc == 2:
+                    raise RuntimeError(
+                        "verify-all infrastructure failure: " + output[-2000:]
+                    )
+            if classify_scan_failure(output) != "visual":
+                # rc == 1 but nothing actionable → do not burn a model turn
+                # (parser miss / empty playbook). Treat as infrastructure.
+                if scan_looks_unactionable(output):
+                    raise RuntimeError(
+                        "verify-all gate FAIL with 0 actionable findings — refusing to "
+                        "invoke the model on an empty fix list (upstream scan/parser "
+                        "bug). Tail:\n" + output[-2000:]
+                    )
+                logger.info(
+                    "verify-all mechanical findings (round %d) — invoking claude for batched fixes",
+                    round_no,
+                )
+                rc, output = _apply_model_fix(project_dir, output, round_no, logger)
+                continue
         logger.info(
-            "verify-all findings (round %d) — invoking claude for batched fixes",
+            "verify-all visual findings (round %d) — invoking claude for pixels fix",
             round_no,
         )
-        before_digest = _composition_html_digest(project_dir)
-        prompt = _build_fix_prompt(output)
-        fix_rc = run_claude(project_dir, prompt, logger, skill="verify")
-        if fix_rc != 0:
-            raise RuntimeError(f"claude verify fix failed rc:{fix_rc}")
-        after_digest = _composition_html_digest(project_dir)
-        if after_digest == before_digest:
-            raise RuntimeError(
-                f"verify fix round {round_no} made no changes to "
-                "compositions/**/*.html — refusing to re-dispatch the same scan "
-                "(model produced no Edit, or scan findings were non-actionable)"
-            )
-        rc, output = _run_verify_all(project_dir, logger)
+        prompt = _build_visual_fix_prompt(output, project_dir)
+        rc, output = _apply_visual_fix(project_dir, prompt, round_no, logger)
 
+    if (
+        rc == 1
+        and auto_overlap_enabled()
+        and classify_scan_failure(output) != "visual"
+    ):
+        rc, output = _auto_fix_overlaps(project_dir, rc, output, max_fix + 1, logger)
+    if rc == 0:
+        logger.info("verify-all gate PASS after final rescan — snapshots written")
+        return _validate_verify_outputs(project_dir)
+    if rc == 2:
+        raise RuntimeError("verify-all infrastructure failure: " + output[-2000:])
     raise RuntimeError(
-        f"verify-frame gate still failing after {_MAX_FIX_ROUNDS} fix rounds"
+        f"verify-frame gate still failing after {max_fix} fix rounds"
     )

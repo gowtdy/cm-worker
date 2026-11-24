@@ -11,10 +11,13 @@
  *   F3 post-write — run after the single Write: verifies every frame has time-coded
  *                   Scenes (count, window monotonicity, coverage ≥90% of duration =
  *                   no front-loading), invented focal/roles, valid transition_in and
- *                   src line, `## Video direction` present, status still outline;
- *                   src file NOT on disk is a WARNING here — the .html is the product
- *                   of the NEXT stage (build-frame-html) — as are unknown backtick
- *                   motion names (review, not gate).
+ *                   src line, `## Video direction` present, status still outline, and
+ *                   a non-empty `- rules:` line whose ids are all real
+ *                   hyperframes-animation/rules stems (✗ — frame-packets `citedRules`
+ *                   reads it; checked only once a frame has Scenes, never on a
+ *                   pre-design outline). src file NOT on disk is a WARNING here — the
+ *                   .html is the product of the NEXT stage (build-frame-html) — as
+ *                   are unknown backtick motion names in Scene text (review only).
  *
  * Usage:
  *   node /app/scripts/storyboard-gate.mjs --videodir /abs/project
@@ -78,7 +81,8 @@ const bpDir = "/app/skills/hyperframes-animation/blueprints";
 const namesOf = (d) => {
   try { return readdirSync(d).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3)); } catch { return []; }
 };
-const vocab = new Set([...namesOf(rulesDir), ...namesOf(bpDir)]);
+const ruleIds = new Set(namesOf(rulesDir));
+const vocab = new Set([...ruleIds, ...namesOf(bpDir)]);
 try {
   const reg = JSON.parse(readFileSync("/app/scripts/lib/transitions.json", "utf8"));
   for (const r of reg.transitions || []) if (r?.name) vocab.add(r.name.toLowerCase());
@@ -130,6 +134,19 @@ for (const f of frameBlocks) {
     if (prevEnd > dur + 0.2) say("✗", `${head}: last Scene ends ${prevEnd}s beyond duration ${dur}s`);
     if (prevEnd < 0.9 * dur) say("✗", `${head}: coverage ${(100 * prevEnd / dur).toFixed(0)}% of duration — front-loading`);
   }
+  if (scenesRe.test(f.text)) {
+    // Same field shape as frame-packets-core `field(block, "rules")`, but an
+    // empty value must not spill onto the next line.
+    const rulesM = /^-[ \t]+rules:[ \t]*(.*)$/im.exec(f.text);
+    const listed = (rulesM?.[1] ?? "").replace(/`/g, " ").split(/[,\s]+/).filter(Boolean);
+    const unknownRules = listed.filter((r) => !ruleIds.has(r));
+    if (listed.length === 0) {
+      const ticked = [...new Set([...f.text.matchAll(tickRe)].map((t) => t[1].trim()).filter((t) => ruleIds.has(t)))];
+      say("✗", `${head}: missing non-empty \`- rules:\` line — add \`- rules: id1, id2\` (stems of ${rulesDir}/*.md for the motions its Scenes use)${ticked.length ? `; Scene text already cites: ${ticked.join(", ")}` : ""}`);
+    } else if (unknownRules.length) {
+      say("✗", `${head}: \`- rules:\` has unknown rule id(s): ${unknownRules.join(", ")} — must be stems of ${rulesDir}/*.md (cut-catalog seams belong in Scene text, not here)`);
+    }
+  }
   const unknowns = new Set();
   for (const t of f.text.matchAll(tickRe)) {
     const tok = t[1].trim();
@@ -147,5 +164,5 @@ if (fail > 0) {
   console.log(`GATE: FAIL ✗ — ${fail} finding(s) to fix (${warn} warning(s)); fix with targeted Edits, rerun this script`);
   process.exit(1);
 }
-console.log(`GATE: PASS ✓ — ${frameBlocks.length} frame(s), no front-loading, status/transition lines valid, src line valid${warn ? ` (${warn} warning(s) — see ⚠ lines; src-not-on-disk is expected at this stage, do not create HTML to "fix" it)` : ""}`);
+console.log(`GATE: PASS ✓ — ${frameBlocks.length} frame(s), no front-loading, status/transition/rules lines valid, src line valid${warn ? ` (${warn} warning(s) — see ⚠ lines; src-not-on-disk is expected at this stage, do not create HTML to "fix" it)` : ""}`);
 process.exit(0);

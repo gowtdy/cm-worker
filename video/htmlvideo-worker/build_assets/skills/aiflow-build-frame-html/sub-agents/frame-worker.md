@@ -44,9 +44,11 @@ A re-dispatch in this workflow may also carry `frame-selfcheck` output — the p
 
 **Override** of the shared contract's "do not report back": once your eyeball re-read is clean (legacy path: and your self-check script gate passes), **reply `done OK <frame_id>`** — that reply is your terminal action (the driver trusts the reply — the artifact on disk is not proof — and does **not** re-verify or edit your frame). If you cannot reach PASS after fixing, reply `fail <frame_id>: <what is still broken>` instead of leaving a silent half-state.  **The frame file already exists.** In this workflow the packet builder
 pre-writes a valid skeleton (`<!-- skeleton-v1 -->`, passes frame-selfcheck)
-to `compositions/frames/<frame_id>.html` before you start — fill it with
-chunked Edits (style → body → script); you may add/remove nodes or rewrite
-the file wholly (last write wins). A file on disk is therefore your working
+to `compositions/frames/<frame_id>.html` before you start — fill it: for a
+final file under ~15 KB (the norm), Read the skeleton then write the whole
+file in one Write (or one large Edit); you may add/remove nodes or rewrite
+the file wholly (last write wins). The terminal reply is **only** the
+`done OK <frame_id>` / `fail …` line — no summary, checklist, or explanation. A file on disk is therefore your working
 document, never proof of completion — your `done OK` reply is. The artifact itself follows the shared contract exactly (one bare `<template>…</template>` at `compositions/frames/<frame_id>.html`). (Sketches do not occur in this pipeline — the visual skill skips the sketch pass — so the shared contract's sketch section never applies; a file already on disk at dispatch is the skeleton — plus your own edits if this is a retry.)
 
 ## You do NOT decide — addition
@@ -63,8 +65,8 @@ Pre-ruled to stop deliberation stalls (observed: a worker burned two full 32k-to
 - **Units.** Primary unit `cqw` / `cqh` — `frame.md`'s entire type ramp is cqw-based (at 1920-wide containers, 1cqw = 19.2px). Fixed-size décor (4/6/8/12px shadows, dots, strokes) uses px. Both pass lint; pick per element and move on — never build conversion tables. Lay out on the cqw/cqh grid and tokens the card / `frame.md` already give; no per-pixel arithmetic and no re-verifying positions.
 - **Turn discipline.** Every turn ends with a tool call or visible text; never end a turn with thinking only (a silent turn is discarded and re-run from scratch). If something is not decided upstream, pick the sibling-consistent choice and proceed **within this turn**; do not deliberate for more than ~a minute.
 - **Thinking holds layout/beat notes only.** Never write full CSS/HTML/JS drafts in thinking — code appears only inside Edit/Write tool arguments.
-- **Skeleton fill (Override).** The skeleton already exists on disk — never write a new minimal skeleton; your FIRST edit must land by your second turn (right after the recipe batch read), flesh it out with chunked Edits after that. Never burn a turn planning a whole frame before the first edit; the file is your heartbeat, keep it valid at every step.
-- **Chunk large writes.** A Write input over ~20 KB gets truncated into an InputValidationError (observed). Author a full frame as: first write style + structure, then append the body, then the script block.
+- **Skeleton fill (Override).** The skeleton already exists on disk — never write a new minimal skeleton; your FIRST edit must land by your second turn (right after the recipe batch read, if any). Never burn a turn planning a whole frame before the first edit; the file is your heartbeat, keep it valid at every step.
+- **One Write under ~15 KB; hard cap ~20 KB.** Expected final file < ~15 KB (typical 7–12 KB): write the complete file in ONE Write (or one large Edit) — do not split it into style → body → script edits. A single Write input over ~20 KB gets truncated into an InputValidationError (observed); only a file that large is chunked.
 
 ## Frame constraints (aiflow deltas)
 

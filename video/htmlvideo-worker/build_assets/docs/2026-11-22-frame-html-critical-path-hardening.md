@@ -3,7 +3,8 @@
 > 日期:2026-11-22  
 > 触发样本:`6b01e0245007d730`（CST 02:27–03:21，driver cost **3265.4s / 54.4m**）  
 > 依据:凌晨流水线转录 + `htmlvideo_worker.log` + Opus 复核（纠正原分析根因排序）  
-> 状态:**P0 已落地**；**P1 全部落地**；**P2 以开关落地**（rich skeleton / 两阶段 / 对冲 / cap·effort / deadline 降级，均已单测，未跑真实 A/B）——见 §3/§4/§7
+> 状态:**P0 已落地**；**P1 全部落地**；**P2 以开关落地**（rich skeleton / 两阶段 / 对冲 / cap·effort / deadline 降级，均已单测，未跑真实 A/B）——见 §3/§4/§7  
+> 续篇（同日下午，样本 `6b02…`）：思考减负 + visual `- rules:` 强制 → `docs/2026-11-22-thinking-reduction-and-visual-rules.md`
 
 ## 0. 一句话
 

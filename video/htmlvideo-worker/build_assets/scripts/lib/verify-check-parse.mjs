@@ -238,10 +238,34 @@ export function checkParseMismatch(declared, parsed) {
 const DECOR_TOKENS = new Set([
   "badge", "stamp", "overlay", "watermark", "seal", "sticker", "pill", "corner",
   "ribbon", "chip", "tag", "decor", "decoration", "ornament", "logo", "icon",
+  "ticker", "dot",
 ]);
+// Subset of DECOR_TOKENS strong enough to write data-layout-allow-overlap
+// without a model. Generic UI words (tag / pill / chip / dot / badge / icon …)
+// name real copy too often (`price-tag`, `span.tag`), so they only decide kind.
+const AUTOFIX_DECOR_TOKENS = new Set([
+  "watermark", "stamp", "seal", "sticker", "ribbon", "ornament", "decor",
+  "decoration", "ticker",
+]);
+// Runtime caption words (scripts/captions.mjs); frame text overlapping them
+// sits inside the caption keep-out band and must move, never be exempted.
+const CAPTION_WORD_RE = /^(?:[a-z][\w-]*)?#caption-word-\d+-\d+$/i;
 const TEXT_TOKENS = new Set([
   "headline", "heading", "title", "subtitle", "body", "line", "copy", "caption",
   "paragraph", "lede", "quote", "text", "h1", "h2", "h3", "h4", "p",
+]);
+// A number + checkmark that sit on top of each other in the SAME badge circle
+// (`.f04-num` / `.f04-ck`) is a status overlay, not a collision: the check
+// fades in over the number. "ck"/"num" as standalone tokens (split on non-alnum)
+// are distinctive enough to autofix — a real two-number collision is num×num and
+// never hits the check token. `tick`/`check`/`number` cover the spelled-out forms.
+const CHECK_TOKENS = new Set(["ck", "check", "checkmark", "tick", "checked"]);
+const NUM_TOKENS = new Set(["num", "number"]);
+// Occlusion-only. Not consulted by triageContentOverlap. A card / CTA / label
+// sitting on text is usually intentional layering (allow-occlusion), unlike
+// two solid text blocks.
+const OCCLUSION_SOFT_TOKENS = new Set([
+  "card", "notecard", "anchor", "cta", "buy", "label",
 ]);
 
 function tokens(s) {
@@ -265,29 +289,62 @@ function overlapSides(item) {
  *  designed_overlay → data-layout-allow-overlap is appropriate
  *  real_collision   → reposition / resize; do not blanket-allow
  *  ambiguous        → inspect the midpoint snapshot first
- * The CLI fixHint always mentions allow-overlap, so it only counts when it
- * explicitly says the overlap is intentional.
- * @returns {{ kind: "designed_overlay"|"real_collision"|"ambiguous", reason: string }}
+ * fixHint is ignored: the CLI emits the same "…or mark intentional layering
+ * with data-layout-allow-overlap." for every content_overlap, so it carries
+ * no per-finding signal.
+ * Both sides of a content_overlap are solid text blocks (the CLI only pairs
+ * visible elements with own text and colour alpha >= 0.35).
+ * ``autofix`` is true only for designed_overlay verdicts the harness may fix
+ * without a model: dataAttributes, or a strong (AUTOFIX_DECOR_TOKENS) token on
+ * exactly one side. ``mark_side`` then names the side to mark; it is null
+ * whenever ``autofix`` is false.
+ * @returns {{ kind: "designed_overlay"|"real_collision"|"ambiguous", reason: string,
+ *   autofix: boolean, mark_side: "selector"|"container"|null }}
  */
 export function triageContentOverlap(item) {
   const { selector, container } = overlapSides(item || {});
+  const verdict = (kind, reason, markSide = null) =>
+    ({ kind, reason, autofix: markSide !== null, mark_side: markSide });
   const attrs = Object.keys(item?.dataAttributes || {}).join(" ");
   if (/allow-overlap|layout-ignore|decor|overlay/i.test(attrs)) {
-    return { kind: "designed_overlay", reason: "dataAttributes mark it intentional" };
+    return verdict("designed_overlay", "dataAttributes mark it intentional", "selector");
   }
-  if (/\bintentional\b/i.test(item?.fixHint || "")) {
-    return { kind: "designed_overlay", reason: "fixHint says intentional" };
+  if (CAPTION_WORD_RE.test(selector.trim()) || CAPTION_WORD_RE.test(container.trim())) {
+    return verdict("real_collision", "frame text inside caption keep-out band");
   }
   const selT = tokens(selector);
   const conT = tokens(container);
-  const decor = [...selT, ...conT].find((t) => DECOR_TOKENS.has(t));
-  if (decor) return { kind: "designed_overlay", reason: `decorative token "${decor}"` };
   const selText = selT.some((t) => TEXT_TOKENS.has(t));
   const conText = conT.some((t) => TEXT_TOKENS.has(t));
   if (container && selText && conText) {
-    return { kind: "real_collision", reason: "both sides are text blocks" };
+    return verdict("real_collision", "both sides are text blocks");
   }
-  return { kind: "ambiguous", reason: "no decorative or text-block signal" };
+  const selDecor = selT.filter((t) => DECOR_TOKENS.has(t));
+  const conDecor = conT.filter((t) => DECOR_TOKENS.has(t));
+  if (selDecor.length && conDecor.length) {
+    return verdict(
+      "designed_overlay",
+      `decorative tokens on both sides ("${selDecor[0]}" / "${conDecor[0]}")`,
+    );
+  }
+  if (selDecor.length || conDecor.length) {
+    const side = selDecor.length ? "selector" : "container";
+    const found = selDecor.length ? selDecor : conDecor;
+    const strong = found.find((t) => AUTOFIX_DECOR_TOKENS.has(t));
+    if (strong) return verdict("designed_overlay", `decorative token "${strong}"`, side);
+    return verdict("designed_overlay", `weak decorative token "${found[0]}"`);
+  }
+  // Number + checkmark in the SAME badge = status overlay (check fades in over
+  // the number). Mark the check side so the overlay is allowed, deterministically.
+  const selCheck = selT.some((t) => CHECK_TOKENS.has(t));
+  const conCheck = conT.some((t) => CHECK_TOKENS.has(t));
+  const selNum = selT.some((t) => NUM_TOKENS.has(t));
+  const conNum = conT.some((t) => NUM_TOKENS.has(t));
+  if ((selCheck && conNum) || (conCheck && selNum)) {
+    const side = selCheck ? "selector" : "container";
+    return verdict("designed_overlay", "number + check status overlay", side);
+  }
+  return verdict("ambiguous", "no decorative or text-block signal");
 }
 
 /** Group content_overlap errors by triage kind. */
@@ -299,4 +356,94 @@ export function triageOverlaps(errors) {
     groups[t.kind].push({ ...e, triage: t });
   }
   return groups;
+}
+
+function sideIsCaptionWord(side) {
+  const s = String(side || "").trim();
+  if (!s) return false;
+  return CAPTION_WORD_RE.test(s) || /caption-word/i.test(s);
+}
+
+/**
+ * Heuristic split of a text_occluded finding. Does not change overlap triage.
+ *  designed_layering → data-layout-allow-occlusion is appropriate
+ *  buried            → raise z-index / move; do not blanket-allow (caption
+ *                      keep-out included — never paper over a caption-word)
+ *  ambiguous         → inspect layering intent first
+ * Order matches the overlap helper: dataAttributes, then caption, then
+ * text-vs-text, then decorative / soft-layer tokens.
+ * @returns {{ kind: "designed_layering"|"buried"|"ambiguous", reason: string }}
+ */
+export function triageOcclusion(item) {
+  const { selector, container } = overlapSides(item || {});
+  const attrs = [
+    ...Object.keys(item?.dataAttributes || {}),
+    ...Object.values(item?.dataAttributes || {}).map((v) => String(v ?? "")),
+  ].join(" ");
+  if (/allow-occlusion|allow-overlap|layout-ignore|decor|overlay/i.test(attrs)) {
+    return { kind: "designed_layering", reason: "dataAttributes mark the layering intentional" };
+  }
+  if (sideIsCaptionWord(selector) || sideIsCaptionWord(container)) {
+    return {
+      kind: "buried",
+      reason: "caption keep-out: move the frame text; do not allow-occlusion",
+    };
+  }
+  const selT = tokens(selector);
+  const conT = tokens(container);
+  const hasText = (ts) => ts.some((t) => TEXT_TOKENS.has(t));
+  if (selector && container && hasText(selT) && hasText(conT)) {
+    return { kind: "buried", reason: "both sides are text blocks" };
+  }
+  const soft = (ts) => ts.some((t) => DECOR_TOKENS.has(t) || OCCLUSION_SOFT_TOKENS.has(t));
+  if (soft(selT) || soft(conT)) {
+    const found = [...selT, ...conT].find((t) => DECOR_TOKENS.has(t) || OCCLUSION_SOFT_TOKENS.has(t));
+    return { kind: "designed_layering", reason: `decorative or soft-layer token "${found}"` };
+  }
+  return { kind: "ambiguous", reason: "no decorative, soft-layer, or text-block signal" };
+}
+
+/** Group text_occluded errors by triage kind. Other codes are ignored. */
+export function triageOcclusions(errors) {
+  const groups = { designed_layering: [], buried: [], ambiguous: [] };
+  for (const e of errors || []) {
+    if (e?.code !== "text_occluded") continue;
+    const t = triageOcclusion(e);
+    groups[t.kind].push({ ...e, triage: t });
+  }
+  return groups;
+}
+
+/** Line prefix the Python harness greps for (``html_utility/verify_overlap_autofix.py``). */
+export const FINDINGS_JSON_PREFIX = "VERIFY_FINDINGS_JSON ";
+
+/**
+ * Machine-readable triage of check errors for deterministic auto-fixes.
+ * Each overlap row carries both sides plus ``mark_side``: the harness marks
+ * only that side and never falls back to the other one.
+ * @param {Array<object>} errors  parseCheckJson/parseCheckText ``errors``
+ */
+export function findingsPayload(errors) {
+  const tri = triageOverlaps(errors);
+  const row = (e) => {
+    const { selector, container } = overlapSides(e);
+    return {
+      file: e.file || "",
+      code: String(e.code || ""),
+      selector,
+      container,
+      reason: e.triage?.reason || "",
+      autofix_ok: e.triage?.autofix === true,
+      mark_side: e.triage?.mark_side ?? null,
+    };
+  };
+  const overlapCount =
+    tri.designed_overlay.length + tri.real_collision.length + tri.ambiguous.length;
+  return {
+    version: 1,
+    designed_overlay: tri.designed_overlay.map(row),
+    real_collision: tri.real_collision.map(row),
+    ambiguous: tri.ambiguous.map(row),
+    other_check_errors: Math.max(0, (errors || []).length - overlapCount),
+  };
 }

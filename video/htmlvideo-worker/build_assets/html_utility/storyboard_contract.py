@@ -24,8 +24,14 @@ _CONTRACT_CARD_CANDIDATES = (
 
 
 def _prompt_header() -> str:
+    # Deliberately does NOT lead with the `/aiflow-build-storyboard` slash
+    # command. Passing it makes Claude Code resolve the skill and re-inject
+    # SKILL.md AND duplicate the whole command-args body into the prompt — the
+    # 6b044297059bf6d4 trace showed the 17 KB contract+inputs inlined twice
+    # plus 6.3 KB SKILL.md (~25k input tokens for a 6 KB deliverable). The
+    # prompt below is self-contained; the profile denies the Skill tool so a
+    # SessionStart "invoke a skill" hook can't re-inject SKILL.md later.
     return (
-        "/aiflow-build-storyboard\n\n"
         "Work in this HyperFrames project root. The brief is settled — do not "
         "re-init, re-interrogate, invent a brief, or run build-frame / audio / render.\n"
         "flow is automation → autonomous mode: no board, no approval questions, "
@@ -51,9 +57,14 @@ def _prompt_footer() -> str:
         "`music` and any `<FILL>` value, then write the frame blocks "
         "(status: outline, required narrative fields filled, quality voiceover "
         "lines — those lines become SCRIPT.md).\n\n"
-        "After the Write succeeds, end with the heads-up summary: "
-        "'This video tells [audience] that [message]' + a frame table "
-        "(frame · beat (type, duration) · on screen · why).\n\n"
+        "After reasoning, Write STORYBOARD.md in the SAME response — do not "
+        "emit a draft or summary text BEFORE the Write, and do not add any "
+        "content-bearing turn AFTER it. Once the Write succeeds, reply with "
+        "exactly one confirmation line (e.g. `STORYBOARD.md written — 7 "
+        "frames, arc how-to-process`) and stop. Do NOT echo a frame table or "
+        "re-summarize scene/voiceover/on screen/why — the file is the "
+        "deliverable, and the harness derives SCRIPT.md and the plan summary "
+        "itself.\n\n"
         "Do not write ## Video direction or time-coded Scene shot blocks — those "
         "belong to /aiflow-build-frame-visual. Stop when the gate passes: "
         "STORYBOARD.md exists with every frame carrying the required narrative "

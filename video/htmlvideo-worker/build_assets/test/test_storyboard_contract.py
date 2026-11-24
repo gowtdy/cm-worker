@@ -236,7 +236,7 @@ class ProfileDenyTest(unittest.TestCase):
         from html_utility.claude_cli import _PROFILES
 
         deny = set(_PROFILES["storyboard"].get("deny_tools") or [])
-        for name in ("Bash", "Read", "Glob", "Grep", "Edit"):
+        for name in ("Bash", "Read", "Glob", "Grep", "Edit", "Skill"):
             self.assertIn(name, deny)
         self.assertNotIn("Write", deny)
         self.assertEqual(_PROFILES["storyboard"]["max_turns"], 8)
