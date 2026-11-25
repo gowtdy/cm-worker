@@ -504,6 +504,9 @@ not redesigning it. Hard no-ops in thinking (each wastes the whole turn):
   cqw·cqh grid; write cqw/cqh values, not pixel math;
 - do NOT re-decide colors, type sizes, or layout — frame.md tokens and the
   `## Video direction` block already fix them; name elements after their roles.
+- when the dispatch carries a `## Layout ledger` / `## Motion ledger`,
+  transcribe their concrete values verbatim (place/size/color/ease/dur) — they
+  ARE the layout decisions; do not re-derive them.
 Keep thinking to a few lines of transcription notes. Draft CSS/HTML/JS only
 inside Write/Edit arguments, never in thinking. Every turn ends with a tool
 call or visible text.

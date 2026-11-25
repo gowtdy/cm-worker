@@ -194,6 +194,16 @@ class DriverTest(unittest.TestCase):
         self.assertIn("do NOT recompute cqw/cqh", p)
         self.assertIn("do NOT re-decide colors, type sizes, or layout", p)
 
+    def test_worker_prompt_transcribes_ledger_when_present(self):
+        # scheme-1 (2026-11-24): when the dispatch carries the sunk layout/motion
+        # ledgers, they are the authoritative concrete values — transcribe, don't
+        # re-derive. The line is unconditional (harmless when no ledger is present).
+        p = fh._worker_prompt(
+            "01-hook", skeleton_mode=True, dispatch_text="# Dispatch stub\n")
+        self.assertIn("`## Layout ledger`", p)
+        self.assertIn("`## Motion ledger`", p)
+        self.assertIn("transcribe their concrete values verbatim", p)
+
     def test_worker_done_ok_accepts_hyphen_suffix_ids(self):
         # 2026-11-21: empty-slug frames were ``01-``; trailing ``\b`` rejected
         # a correct ``done OK 01-`` and forced a false retry round.

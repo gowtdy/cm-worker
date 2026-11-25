@@ -17,8 +17,10 @@ You are the orchestrator. Work in the HyperFrames project root. Do not put desig
 > read the reference files, do NOT search the filesystem, do NOT write `STORYBOARD.md`,
 > do NOT run `storyboard-gate.mjs` / `caption-pacing.mjs`. Output exactly the requested
 > text (the contract's creative body, or your frame's `blueprint`/`focal`/`roles`/`sfx`/
-> `rules`/`Scene` lines) as your final reply — the driver merges and gates. A worker
-> reply without a non-empty `- rules:` of real rule ids is rejected and re-dispatched.
+> `rules`/`Scene` lines, plus — when `HTMLVIDEO_FRAME_VISUAL_LEDGER=1` — the two concrete
+> `## Layout ledger` / `## Motion ledger` tables) as your final reply — the driver merges
+> and gates. A worker reply without a non-empty `- rules:` of real rule ids is rejected
+> and re-dispatched.
 > A worker's `- blueprint:` is copied from its `## Blueprint assignment` line — that
 > assignment is final; any other blueprint id in the frame block is a superseded
 > outline candidate to ignore, not to weigh.

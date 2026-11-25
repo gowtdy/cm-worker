@@ -27,6 +27,7 @@ HYPERFRAMES_JSON = "hyperframes.json"
 VIDEO_DIRECTION_HEADING = "## Video direction"
 
 VISUAL_DRIVER_ENV = "HTMLVIDEO_FRAME_VISUAL_DRIVER"
+VISUAL_LEDGER_ENV = "HTMLVIDEO_FRAME_VISUAL_LEDGER"
 VISUAL_CONCURRENCY_ENV = "HTMLVIDEO_FRAME_VISUAL_MAX_CONCURRENCY"
 VISUAL_REPAIR_ROUNDS_ENV = "HTMLVIDEO_FRAME_VISUAL_REPAIR_ROUNDS"
 VISUAL_DESIGN_THINKING_ENV = "HTMLVIDEO_FRAME_VISUAL_DESIGN_THINKING_TOKENS"
@@ -232,6 +233,34 @@ def _type_token_names(tokens: str) -> list[str]:
             if m:
                 names.append(m.group(1))
     # stable unique, keep order
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _color_token_names(tokens: str) -> list[str]:
+    """Color slot names ONLY (not typography) from inlined frame.md tokens — the
+    palette a `## Layout ledger` color cell must name (not a hex or made-up hue)."""
+    if not tokens:
+        return []
+    names: list[str] = []
+    section = None
+    for raw in tokens.split("\n"):
+        s = raw.strip()
+        if s == "colors:":
+            section = "colors"
+            continue
+        if s == "typography:":
+            section = "typography"
+            continue
+        if section == "colors":
+            m = re.match(r"^([\w-]+)\s*:", s)
+            if m:
+                names.append(m.group(1))
     seen: set[str] = set()
     out: list[str] = []
     for n in names:
@@ -694,6 +723,8 @@ def _build_worker_prompt(
     candidate_rules: list[str] | None = None,
     rule_catalog: frozenset[str] | None = None,
     assigned_blueprint: str = "",
+    require_ledger: bool = False,
+    color_catalog: frozenset[str] | None = None,
 ) -> str:
     bp_section = (
         "\n[SELECTED BLUEPRINT — instantiate this shape, keep its signature move]\n"
@@ -706,6 +737,28 @@ def _build_worker_prompt(
             "your Scenes actually use): " + ", ".join(candidate_rules))
     rules_dir = RULES_DIR
     rule_ids = sorted(rule_catalog if rule_catalog is not None else _rule_catalog())
+    ledger_block = ""
+    if require_ledger:
+        color_list = ", ".join(sorted(color_catalog)) if color_catalog else ""
+        ledger_block = (
+            "\n\nLAYOUT+MOTION LEDGER (REQUIRED): after your Scene lines, append TWO "
+            "concrete tables so the HTML worker transcribes exact values instead of "
+            "re-deriving them. Empty tables are rejected.\n\n"
+            "## Layout ledger\n\n"
+            "| element | role | place | size | color | order |\n"
+            "|---------|------|-------|------|-------|-------|\n"
+            "| <element> | <role> | <place zone, or x%/y%> | <cqw, or —> | <palette role> | <int> |\n\n"
+            "## Motion ledger\n\n"
+            "| scene | element | from → to | ease | dur |\n"
+            "|-------|---------|-----------|------|-----|\n"
+            "| scene<N> | <element> | <prop 0 → 1 …> | <ease> | <Xs> |\n\n"
+            "Constraints: `color` MUST be a palette role from the design contract — never a "
+            "hex or a made-up hue; `ease` ONLY `power1-4`/`sine`/`quad`/`cubic`/`quart`/"
+            "`quint`/`expo`/`circ`/`back`/`elastic`/`bounce` `.in`/`.out`/`.inOut`; `place`/"
+            "`size` are values or named zones — NEVER CSS selectors or GSAP calls (the HTML "
+            "worker writes those). One data row per element / per scene motion."
+            + (f"\n\nValid color roles: {color_list}." if color_list else "")
+        )
     # Order = shared prefix first (prompt cache): fixed frame-agnostic
     # instructions → design contract → blueprint → this frame's block.
     return (
@@ -752,8 +805,9 @@ def _build_worker_prompt(
         "only in plain words (\"types on\", \"pop-stagger\", \"hard-cut\") is not a "
         "citation. Within-frame seam cuts (zoom-through / cut-the-curve / waterfall) are "
         "NOT rule ids: name them in the Scene text only, never in `- rules:`.\n"
-        "Valid rule ids: " + ", ".join(rule_ids) + "\n\n"
-        "Do NOT emit the `- scene`, `- voiceover`, `- duration`, `- transition_in`, "
+        "Valid rule ids: " + ", ".join(rule_ids) + "\n"
+        + ledger_block
+        + "\n\nDo NOT emit the `- scene`, `- voiceover`, `- duration`, `- transition_in`, "
         "`- status`, `- src`, `- type`, `- persuasion`, or `- beat` lines — the harness "
         "keeps those byte-exact. Do NOT Write or edit any file, do NOT redesign other "
         "frames. Use valid motion/blueprint vocabulary only.\n"
@@ -834,8 +888,13 @@ def _validate_design_contract(design_text: str) -> str:
 
 def _diagnose_worker_reply(
     frame_num: str, text: str, rule_catalog: frozenset[str] | None = None,
+    require_ledger: bool = False, color_catalog: frozenset[str] | None = None,
 ) -> str | None:
-    """Why a worker reply fails its completion gate; None when it passes."""
+    """Why a worker reply fails its completion gate; None when it passes.
+
+    With ``require_ledger`` (schema-sinking scheme-1), the reply must also carry
+    a non-empty ``## Layout ledger`` + ``## Motion ledger`` whose color/ease
+    cells name known palette roles / motion-grammar easings."""
     if not text or not text.strip():
         return "empty reply"
     if not _SCENES_RE.search(text):
@@ -851,11 +910,85 @@ def _diagnose_worker_reply(
     if not any(r in cat for r in rules):
         return ("`- rules:` names no known rule id (got: " + ", ".join(rules)
                 + ") — use exact hyperframes-animation/rules stems")
+    if require_ledger:
+        err = _diagnose_ledger(text, color_catalog)
+        if err:
+            return err
     done = _DONE_RE.search(text)
     if not done:
         return f"missing `done OK {frame_num}` marker"
     if done.group(1) != frame_num:
         return f"`done OK {done.group(1)}` does not match frame {frame_num}"
+    return None
+
+
+# Motion-grammar ease whitelist — same shape storyboard-gate.mjs EASE_RE accepts,
+# so a ledger `ease` cell stays parseable end-to-end.
+_EASE_RE = re.compile(
+    r"^(power[1-4]|sine|quad|cubic|quart|quint|expo|circ|back|elastic|bounce)"
+    r"\.(in|out|inOut)$"
+)
+_LAYOUT_LEDGER_RE = re.compile(r"^##[ \t]+Layout ledger\b", re.M)
+_MOTION_LEDGER_RE = re.compile(r"^##[ \t]+Motion ledger\b", re.M)
+
+
+def _ledger_section(text: str, name: str) -> str:
+    """Body between `## {name}` and the next `## ` heading (or end of text)."""
+    m = re.search(rf"^##[ \t]+{re.escape(name)}\b[^\n]*\n([\s\S]*?)(?=^##[ \t]+|\Z)",
+                  text, re.M)
+    return m.group(1) if m else ""
+
+
+def _cell_primary_token(cell: str) -> str:
+    """First slug token of a table cell (``cream (#F5F5F0)`` → ``cream``)."""
+    m = re.search(r"[A-Za-z][\w-]*", cell or "")
+    return m.group(0) if m else ""
+
+
+def _ledger_data_rows(text: str) -> list[list[str]]:
+    """Data rows (cells) of a markdown table block; [] when none. Skips the
+    header row (first cell `element`/`scene`) and the `|---|` separator row."""
+    rows: list[list[str]] = []
+    for raw in (text or "").split("\n"):
+        line = raw.strip()
+        if not (line.startswith("|") and line.endswith("|")):
+            continue
+        cells = [c.strip() for c in line[1:-1].split("|")]
+        if not cells or all(not c for c in cells):
+            continue
+        if all(re.fullmatch(r":?-{2,}:?", c) for c in cells):  # separator row
+            continue
+        if cells[0].lower() in ("element", "scene"):  # header row
+            continue
+        rows.append(cells)
+    return rows
+
+
+def _diagnose_ledger(text: str, color_catalog: frozenset[str] | None = None) -> str | None:
+    """Why the `## Layout ledger` / `## Motion ledger` is missing/bad; None OK."""
+    if not _LAYOUT_LEDGER_RE.search(text):
+        return "missing `## Layout ledger` table"
+    if not _MOTION_LEDGER_RE.search(text):
+        return "missing `## Motion ledger` table"
+    layout_rows = _ledger_data_rows(_ledger_section(text, "Layout ledger"))
+    motion_rows = _ledger_data_rows(_ledger_section(text, "Motion ledger"))
+    if not layout_rows:
+        return "`## Layout ledger` has no data row"
+    if not motion_rows:
+        return "`## Motion ledger` has no data row"
+    if color_catalog is not None:
+        for r in layout_rows:
+            if len(r) < 5:
+                continue
+            color = _cell_primary_token(r[4])  # element/role/place/size/color/order
+            if color and color not in color_catalog:
+                return f"`## Layout ledger` color not a palette role: {color}"
+    for r in motion_rows:
+        if len(r) < 4:
+            continue
+        ease = r[3]  # scene/element/from→to/ease/dur
+        if ease and ease not in ("—", "-") and not _EASE_RE.match(ease):
+            return f"`## Motion ledger` ease not a motion-grammar ease: {ease}"
     return None
 
 
@@ -873,13 +1006,14 @@ def _normalize_scene_lines(text: str) -> str:
 
 def _parse_worker_additions(
     frame_num: str, text: str, rule_catalog: frozenset[str] | None = None,
+    require_ledger: bool = False, color_catalog: frozenset[str] | None = None,
 ) -> str | None:
     """Validate a worker reply and return the normalized additions block
     (without the `done OK` marker). None when the reply failed its completion
     gate — `_diagnose_worker_reply` says why. Unknown ids on `- rules:` are
     dropped (at least one known id survives, or the reply was rejected)."""
     cat = rule_catalog if rule_catalog is not None else _rule_catalog()
-    if _diagnose_worker_reply(frame_num, text, cat) is not None:
+    if _diagnose_worker_reply(frame_num, text, cat, require_ledger, color_catalog) is not None:
         return None
     # Strip the `done OK <num>` marker line; the rest is the additions.
     body = _DONE_RE.sub("", text, count=1).strip()
@@ -965,12 +1099,17 @@ def _normalize_scene_windows(
     return "".join(out), fixes
 
 
-def _dispatch_note(rc: int, text: str, frame_num: str = "") -> str:
+def _dispatch_note(
+    rc: int, text: str, frame_num: str = "",
+    require_ledger: bool = False, color_catalog: frozenset[str] | None = None,
+) -> str:
     if rc == 124:
         return "prior attempt hit its wall-clock timeout"
     if rc != 0:
         return f"prior attempt exited non-zero (rc={rc})"
-    reason = _diagnose_worker_reply(frame_num, text) if frame_num else None
+    reason = _diagnose_worker_reply(
+        frame_num, text, require_ledger=require_ledger,
+        color_catalog=color_catalog) if frame_num else None
     tail = (text or "").strip()[-200:]
     return (
         "(prior attempt produced no valid additions"
@@ -1044,6 +1183,8 @@ def _run_frame_workers(
     visual_dir: str,
     max_workers: int,
     logger: logging.Logger,
+    require_ledger: bool = False,
+    color_catalog: frozenset[str] | None = None,
 ) -> dict[str, str]:
     """Fan out one worker per frame; a failed frame is re-dispatched the moment
     it fails (no whole-round barrier), up to MAX_RETRY_ROUNDS extra attempts.
@@ -1077,14 +1218,16 @@ def _run_frame_workers(
         prompt = _build_worker_prompt(
             fn, contexts[fn], trimmed, bp_body,
             _blueprint_rule_ids(bp, rule_catalog), rule_catalog,
-            _assigned_blueprint_field(bp, _frame_blueprint_mode(assignment, fn)))
+            _assigned_blueprint_field(bp, _frame_blueprint_mode(assignment, fn)),
+            require_ledger=require_ledger, color_catalog=color_catalog)
         if note:
             prompt += f"\n[RE-DISPATCH] {note} — output the additions now."
         t0 = time.monotonic()
         rc, reply = run_claude_result(
             project_dir, prompt, logger, skill="visual", label=f"F{fn}")
         wall = time.monotonic() - t0
-        addition = _parse_worker_additions(fn, reply, rule_catalog)
+        addition = _parse_worker_additions(
+            fn, reply, rule_catalog, require_ledger, color_catalog)
         log("visual worker F%s attempt=%s wall=%.1fs rc=%s out=%d chars ok=%s",
             fn, attempt, wall, rc, len(reply or ""), addition is not None)
         return rc, reply, addition
@@ -1107,7 +1250,7 @@ def _run_frame_workers(
                     _write_fragment(visual_dir, fn, addition)
                     log("worker ok F%s (attempt %s)", fn, attempt)
                     continue
-                note = _dispatch_note(rc, reply, fn)
+                note = _dispatch_note(rc, reply, fn, require_ledger, color_catalog)
                 log("worker fail F%s rc=%s (attempt %s): %s", fn, rc, attempt, note)
                 if attempt < MAX_RETRY_ROUNDS:
                     running[pool.submit(run_one, fn, attempt + 1, note)] = (fn, attempt + 1)
@@ -1214,8 +1357,11 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
             os.remove(stale)
         except OSError:
             pass
+    ledger_on = _env_on(VISUAL_LEDGER_ENV, default=False)
+    color_catalog = frozenset(_color_token_names(tokens)) if ledger_on else None
     additions = _run_frame_workers(
-        project_dir, blocks, order, design, visual_dir, max_workers, logger)
+        project_dir, blocks, order, design, visual_dir, max_workers, logger,
+        require_ledger=ledger_on, color_catalog=color_catalog)
 
     # ── Merge (deterministic; narrative fields never re-typed) ────────────
     parts = [preamble, "", design, ""]
