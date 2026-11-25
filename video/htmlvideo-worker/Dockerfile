@@ -27,6 +27,9 @@ RUN mkdir -p /app/.claude/skills \
          cp -a "$skill" "/app/.claude/skills/"; \
        done
 
+RUN mkdir -p /root/.gemini/antigravity-cli \
+    && cp conf/agy_settings.json /root/.gemini/antigravity-cli/settings.json
+
 # 设置Python用户安装路径到PATH
 ENV PATH="/home/aigc/.local/bin:$PATH"
 
