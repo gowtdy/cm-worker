@@ -295,6 +295,13 @@ def build_index_html(
 SKELETON_MARK = "skeleton-v1"
 DRIVER_ENV = "HTMLVIDEO_FRAME_HTML_DRIVER"
 SKELETON_ENV = "HTMLVIDEO_FRAME_HTML_SKELETON"
+# P0-3 (2026-11-25): 1-turn text-out mode (default ON; =0 rolls back to Read+Write tools).
+# Inlines the skeleton into the prompt, runs with --tools "" (when recipes are
+# inlined), extracts <template>…</template> from the reply, writes disk, and runs
+# frame-selfcheck — eliminating T1 Read(skeleton) and T3 done OK (~60% uncached input).
+TEXT_OUT_ENV = "HTMLVIDEO_FRAME_HTML_TEXT_OUT"
+TEXT_OUT_MAX_TURNS = 2
+_TEMPLATE_RE = re.compile(r"<template\b[^>]*>[\s\S]*?</template>", re.I)
 DISPATCH_SUFFIX = ".dispatch.md"
 # Bounded model→selfcheck loop per frame (default 3 attempts). Driver runs
 # frame-selfcheck after each worker return; FAIL findings go into the next
@@ -403,12 +410,53 @@ def _recipes_mode(dispatch_text: str) -> str | None:
     return "snippets" if "snippets" in modes else None
 
 
-def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None):
+def _read_skeleton_text(workdir: str | None, frame_id: str) -> str:
+    if not workdir:
+        return ""
+    try:
+        with open(_frame_path(workdir, frame_id), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _extract_template_html(text: str | None) -> str | None:
+    """Extract the complete `<template>…</template>` fragment from a text-out reply."""
+    if not text:
+        return None
+    m = _TEMPLATE_RE.search(text)
+    if not m:
+        return None
+    return m.group(0).strip()
+
+
+def _extract_and_write_frame_html(frame_path: str, text: str | None) -> bool:
+    """Write extracted `<template>…</template>` to ``frame_path``; True on success."""
+    html = _extract_template_html(text)
+    if not html:
+        return False
+    os.makedirs(os.path.dirname(frame_path), exist_ok=True)
+    with open(frame_path, "w", encoding="utf-8") as f:
+        f.write(html + "\n")
+    return True
+
+
+def _worker_prompt(
+    frame_id,
+    skeleton_mode,
+    project_dir=None,
+    dispatch_text=None,
+    text_out=False,
+    workdir=None,
+):
     """Build the per-frame worker prompt with dispatch inlined.
 
-    ``dispatch_text`` overrides the on-disk ``.dispatch.md`` (tests). Production
-    callers pass ``project_dir`` so the driver reads and embeds the file — the
-    model must not Read the dispatch path again.
+    P0-2 (2026-11-25): all frame-agnostic instructions come FIRST, followed by
+    `## Dispatch` (whose shared prefix — Project inputs / Role card / frame.md
+    excerpt / video-wide Design contract — is identical across all frames), and
+    ONLY THEN the frame-specific target path, reply protocol, and (in text-out
+    mode) inlined skeleton. This lets concurrent frame workers hit prompt prefix
+    cache across frames.
     """
     if dispatch_text is None:
         if not project_dir:
@@ -416,27 +464,42 @@ def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None
                 "_worker_prompt requires project_dir or dispatch_text")
         dispatch_text = _load_dispatch_text(project_dir, frame_id)
     frame_file = f"compositions/frames/{frame_id}.html"
-    fill_line = (
-        f"A pre-built skeleton already exists at {frame_file} (a `{SKELETON_MARK}` "
-        "comment marks it). Your job is to FILL it, not design from scratch: after "
-        "reading the skeleton, write the complete file in ONE Write (or one large "
-        "Edit) when it will be under ~15 KB — do not split style → body → script "
-        "into separate edits. Only a larger file is chunked; any single Write input "
-        "must stay under ~20 KB (InputValidationError). You may add/remove any node "
-        "or rewrite the file wholly (last write wins). Do NOT write a new minimal "
-        "skeleton first — it is already there."
-        if skeleton_mode else
-        f"You must create {frame_file}: write it in ONE Write when it will be under "
-        "~15 KB; only a larger file is chunked, and any single Write input must stay "
-        "under ~20 KB (InputValidationError)."
-    )
-    if skeleton_mode and project_dir and _is_rich_skeleton(project_dir, frame_id):
-        fill_line += (
-            " The skeleton already carries a full-duration ground clip "
-            "(`data-skeleton=\"bg\"`, track 0) and Scene labels (`scene1`, "
-            "`scene2`, …) on the registered `tl` — style and reuse them, and drop "
-            "`data-skeleton` from the ground clip once it is styled.")
+    sk_dir = workdir or project_dir
+    is_rich = bool(skeleton_mode and sk_dir and _is_rich_skeleton(sk_dir, frame_id))
     recipes_mode = _recipes_mode(dispatch_text)
+    if text_out:
+        fill_line = (
+            "Your job is to FILL the pre-built skeleton inlined at the end of "
+            "this prompt, not design from scratch: output the COMPLETE filled "
+            "`<template>…</template>` directly as your FINAL message text in ONE "
+            "turn (no Write/Edit/Bash tools, no prose summary, checklist, or "
+            "explanation before/after the `<template>`). The driver extracts "
+            "`<template>…</template>`, writes your target frame file, runs "
+            f"`node {FRAME_SELFCHECK_SCRIPT}`, and re-dispatches (bounded) with "
+            "FAIL findings if needed. On an unrecoverable failure instead reply "
+            "only: `fail <frame_id>: <reason>`."
+            if skeleton_mode else
+            "Output the COMPLETE `<template>…</template>` directly as your FINAL "
+            "message text in ONE turn (no Write/Edit/Bash tools, no prose "
+            "summary, checklist, or explanation). The driver extracts it, writes "
+            "your target frame file, and runs frame-selfcheck."
+        )
+    else:
+        fill_line = (
+            f"A pre-built skeleton already exists at your target frame file (a "
+            f"`{SKELETON_MARK}` comment marks it). Your job is to FILL it, not "
+            "design from scratch: after reading the skeleton, write the complete "
+            "file in ONE Write (or one large Edit) when it will be under ~15 KB "
+            "— do not split style → body → script into separate edits. Only a "
+            "larger file is chunked; any single Write input must stay under "
+            "~20 KB (InputValidationError). You may add/remove any node or "
+            "rewrite the file wholly (last write wins). Do NOT write a new "
+            "minimal skeleton first — it is already there."
+            if skeleton_mode else
+            "You must create your target frame file: write it in ONE Write when "
+            "it will be under ~15 KB; only a larger file is chunked, and any "
+            "single Write input must stay under ~20 KB (InputValidationError)."
+        )
     if recipes_mode == "full":
         recipe_line = (
             "What the dispatch inlines: the frame.md design-token excerpt, the rule "
@@ -446,15 +509,23 @@ def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None
             "NOT Read any recipe; never open frame.md or _role.md — they cannot "
             "add what the dispatch already carries.")
     elif recipes_mode == "snippets":
-        recipe_line = (
-            "What the dispatch inlines: the frame.md design-token excerpt, the rule "
-            "card, your storyboard block, the selected blueprint body, and a "
-            "mechanism + core-code SNIPPET of every cited recipe under "
-            "`## Rule recipes (snippets)`. The `## Rule index` still lists the "
-            "`RULES_DIR/<id>.md` paths: do NOT batch-read them — Read a full "
-            "recipe only when a detail you need is missing from its snippet (at "
-            "most once per recipe); never open frame.md or _role.md — they cannot "
-            "add what the dispatch already carries.")
+        if text_out:
+            recipe_line = (
+                "What the dispatch inlines: the frame.md design-token excerpt, the rule "
+                "card, your storyboard block, the selected blueprint body, and a "
+                "mechanism + core-code SNIPPET of every cited recipe under "
+                "`## Rule recipes (snippets)`. Everything you need is inlined — do "
+                "NOT Read any recipe, frame.md, or _role.md.")
+        else:
+            recipe_line = (
+                "What the dispatch inlines: the frame.md design-token excerpt, the rule "
+                "card, your storyboard block, the selected blueprint body, and a "
+                "mechanism + core-code SNIPPET of every cited recipe under "
+                "`## Rule recipes (snippets)`. The `## Rule index` still lists the "
+                "`RULES_DIR/<id>.md` paths: do NOT batch-read them — Read a full "
+                "recipe only when a detail you need is missing from its snippet (at "
+                "most once per recipe); never open frame.md or _role.md — they cannot "
+                "add what the dispatch already carries.")
     else:
         recipe_line = (
             "What the dispatch inlines: the frame.md design-token excerpt, the rule "
@@ -464,26 +535,89 @@ def _worker_prompt(frame_id, skeleton_mode, project_dir=None, dispatch_text=None
             "recipe listed in the Rule index in one parallel batch (all Read calls "
             "in that same turn), then do not re-read them; never open frame.md or "
             "_role.md — they cannot add what the dispatch already carries.")
+    mode_gate_line = (
+        "Do NOT run frame-selfcheck and do NOT use Bash, Write, or Edit — the "
+        "driver writes the file from your `<template>…</template>` output and "
+        "runs frame-selfcheck."
+        if text_out else
+        f"Do NOT run frame-selfcheck and do NOT use Bash — the driver runs "
+        f"`node {FRAME_SELFCHECK_SCRIPT}` on your target frame file after you "
+        "finish and will re-dispatch you (bounded) with FAIL findings if needed. "
+        "No summary, checklist, or explanation — any extra text is wasted wall time."
+    )
+    turn_line = (
+        "Never edit STORYBOARD.md. Turn discipline: emit the complete "
+        "`<template>…</template>` immediately in your FIRST turn — there is "
+        "nothing to deliberate or re-read because the dispatch and skeleton "
+        "BELOW already carry your complete spec. You are TRANSCRIBING that spec "
+        "into HTML, not redesigning it."
+        if text_out else
+        "Never edit STORYBOARD.md. Turn discipline: your Write (or first Edit) "
+        "is your FIRST action after reading the skeleton and any recipe batch "
+        "read — there is nothing to reason about between Read and Write, because "
+        "the dispatch BELOW already carries your complete spec. You are "
+        "TRANSCRIBING that spec into HTML, not redesigning it."
+    )
+    draft_line = (
+        "Keep thinking to a few lines of transcription notes. Never draft full "
+        "CSS/HTML/JS inside thinking — write the code once directly in your "
+        "visible `<template>…</template>` output."
+        if text_out else
+        "Keep thinking to a few lines of transcription notes. Draft CSS/HTML/JS "
+        "only inside Write/Edit arguments, never in thinking. Every turn ends "
+        "with a tool call or visible text."
+    )
+    cut_line = (
+        "" if text_out else
+        f" Optional, at most once: {CUT_CATALOG_PATH} (only for within-scene cut seams)."
+    )
+    rich_note = (
+        "\n- Rich skeleton: the skeleton already carries a full-duration ground "
+        "clip (`data-skeleton=\"bg\"`, track 0) and Scene labels (`scene1`, "
+        "`scene2`, …) on the registered `tl` — style and reuse them, and drop "
+        "`data-skeleton` from the ground clip once it is styled."
+        if is_rich else ""
+    )
+    if text_out:
+        skeleton_html = _read_skeleton_text(sk_dir, frame_id) if skeleton_mode else ""
+        skeleton_sec = (
+            f"\n\n## Pre-built skeleton (fill and output the complete `<template>…</template>`)\n\n"
+            f"```html\n{skeleton_html}\n```"
+            if skeleton_html else ""
+        )
+        target_block = (
+            f"## Target frame & output protocol\n\n"
+            f"- Frame id: `{frame_id}`\n"
+            f"- Scope is exactly one file: {frame_file} (driver writes it from "
+            f"your `<template>…</template>` output; do NOT Read "
+            f"`.hyperframes/frame-packets/{frame_id}.dispatch.md`).{rich_note}\n"
+            f"- Reply ONLY with the complete `<template>…</template>` fragment "
+            f"(no markdown commentary; on unrecoverable failure reply only: "
+            f"`fail {frame_id}: <reason>`).{skeleton_sec}"
+        )
+    else:
+        target_block = (
+            f"## Target frame & output protocol\n\n"
+            f"- Frame id: `{frame_id}`\n"
+            f"- Scope is exactly one file: {frame_file} (do NOT Read "
+            f"`.hyperframes/frame-packets/{frame_id}.dispatch.md`).{rich_note}\n"
+            f"- When you have written the fill, your final reply is ONLY this "
+            f"one line: done OK {frame_id}\n"
+            f"- On an unrecoverable failure instead reply only: fail {frame_id}: <reason>"
+        )
     return f"""You are one per-frame HTML worker for a HyperFrames video.
 
 The complete merged dispatch for your frame is INLINED below — treat it as the
-authoritative contract. Do NOT Read `.hyperframes/frame-packets/{frame_id}.dispatch.md`
-or any other packet/dispatch file; re-reading only wastes turns. {fill_line}
+authoritative contract. Do NOT Read `.dispatch.md` or any other packet/dispatch
+file; re-reading only wastes turns. {fill_line}
 
-Scope is exactly one file: {frame_file}. Never read, open, or write any other
-file under compositions/frames/ (sibling workers own those frames), any other
-frame's .dispatch.md / packet, or STORYBOARD.md — exploring sibling frames
-burns turns and cannot help this frame.
+Never read, open, or write any other file under compositions/frames/ (sibling
+workers own those frames), any other frame's .dispatch.md / packet, or
+STORYBOARD.md — exploring sibling frames burns turns and cannot help this frame.
 
-Do NOT run frame-selfcheck and do NOT use Bash — the driver runs
-`node {FRAME_SELFCHECK_SCRIPT} {frame_file}` after you finish and will
-re-dispatch you (bounded) with FAIL findings if needed. When you have written
-the fill, your final reply is ONLY this one line: done OK {frame_id}
-On an unrecoverable failure instead reply only: fail {frame_id}: <reason>
-No summary, checklist, or explanation — any extra text is wasted wall time.
+{mode_gate_line}
 
-{recipe_line} Optional, at most once: {CUT_CATALOG_PATH}
-(only for within-scene cut seams).
+{recipe_line}{cut_line}
 
 Conflict priority (higher wins): the `## Resolved conflicts` rulings at the end
 of the dispatch (when present — they already settle the contradictions, do not
@@ -493,11 +627,7 @@ narrative prose. frame.md token VALUES (hex, font families) are always exact.
 If the block lists several `- blueprint:` lines, the one under
 `## Selected blueprint` is authoritative.
 
-Never edit STORYBOARD.md. Turn discipline: your Write (or first Edit) is your
-FIRST action after reading the skeleton and any recipe batch read — there is
-nothing to reason about between Read and Write, because the dispatch BELOW
-already carries your complete spec. You are TRANSCRIBING that spec into HTML,
-not redesigning it. Hard no-ops in thinking (each wastes the whole turn):
+{turn_line} Hard no-ops in thinking (each wastes the whole turn):
 - do NOT re-list the Scene beats — they are in your storyboard block below;
 - do NOT recompute cqw/cqh pixel equivalents or re-verify positions — place
   elements straight off the roles/`focal`/Scene text on the composition's
@@ -507,13 +637,13 @@ not redesigning it. Hard no-ops in thinking (each wastes the whole turn):
 - when the dispatch carries a `## Layout ledger` / `## Motion ledger`,
   transcribe their concrete values verbatim (place/size/color/ease/dur) — they
   ARE the layout decisions; do not re-derive them.
-Keep thinking to a few lines of transcription notes. Draft CSS/HTML/JS only
-inside Write/Edit arguments, never in thinking. Every turn ends with a tool
-call or visible text.
+{draft_line}
 
 ## Dispatch (authoritative — already complete)
 
 {dispatch_text.rstrip()}
+
+{target_block}
 """
 
 
@@ -555,6 +685,7 @@ def _failure_note(
     text: str | None,
     sc_ok: bool,
     selfcheck_out: str = "",
+    text_out: bool = False,
 ) -> str:
     parts: list[str] = []
     if rc == 124:
@@ -566,7 +697,13 @@ def _failure_note(
             "output cap — still write early and keep each turn's thinking short")
     elif rc != 0:
         parts.append(f"prior attempt exited non-zero (rc={rc})")
-    elif not _worker_done_ok(frame_id, text):
+    elif text_out and _extract_template_html(text) is None:
+        tail = (text or "").strip()[-300:]
+        parts.append(
+            "prior attempt finished without a complete <template>…</template> block "
+            f"(possibly truncated); last words: {tail or '∅'}"
+        )
+    elif not text_out and not _worker_done_ok(frame_id, text):
         tail = (text or "").strip()[-300:]
         parts.append(
             "prior attempt finished without done OK "
@@ -667,7 +804,15 @@ def _file_hash(path):
         return None
 
 
-def _redispatch_suffix(note):
+def _redispatch_suffix(note, text_out=False):
+    if text_out:
+        return (
+            f"\n[RE-DISPATCH] {note}\n"
+            "Fix every finding above and output the COMPLETE corrected "
+            "`<template>…</template>` directly in ONE turn (no tools, no "
+            "single-turn thinking marathon). Do NOT run selfcheck yourself — "
+            "the driver writes the file and re-checks."
+        )
     return (
         f"\n[RE-DISPATCH] {note}\n"
         "The frame file may already hold a skeleton or your own "
@@ -754,7 +899,14 @@ def _phase_b_suffix(frame_id, project_dir):
     )
 
 
-def _degrade_suffix(note, remaining_s):
+def _degrade_suffix(note, remaining_s, text_out=False):
+    end = (
+        "Output the complete `<template>…</template>` directly in your FIRST "
+        "turn — no tools, no summary."
+        if text_out else
+        "First edit in your FIRST turn; a few large Writes/Edits, then reply "
+        "done OK."
+    )
     return (
         f"\n[DEGRADED — stage deadline in ~{int(max(remaining_s, 0))}s] "
         f"Prior attempts failed ({(note or 'gate failed')[-600:]}). Build the "
@@ -763,12 +915,11 @@ def _degrade_suffix(note, remaining_s):
         "static layout per Scene, no 3D, no particles, no counters beyond a "
         "plain number swap. Do NOT Read anything — no recipe, no cut catalog. "
         "Priority: a valid file with every Scene present > visual richness. "
-        "First edit in your FIRST turn; a few large Writes/Edits, then reply "
-        "done OK.\n"
+        f"{end}\n"
     )
 
 
-def _hedge_suffix():
+def _hedge_suffix(text_out=False):
     """A hedge is a FAST fallback, not a repeat of the primary's full build.
 
     The primary is (by definition) slow/stuck — usually marathoning its thinking
@@ -778,6 +929,12 @@ def _hedge_suffix():
     died with no Write). The hedge instead races a minimal-but-valid version at a
     low cap so it actually returns before the primary.
     """
+    end = (
+        "Output the complete `<template>…</template>` directly in your FIRST "
+        "turn — no tools, no summary."
+        if text_out else
+        "Write in your FIRST turn, then reply done OK — no summary."
+    )
     return (
         "\n[HEDGE — fast fallback] The primary attempt for this frame is running "
         "slow (long thinking). Do NOT re-run its full build — that just races the "
@@ -785,8 +942,7 @@ def _hedge_suffix():
         "possible: every Scene as one timeline phase, at most 1–2 simple tweens "
         "per element (rise/fade/scale-pop), static per-Scene layout, no 3D, no "
         "particles, no counters. Priority: a valid file with every Scene present "
-        "> visual richness. Write in your FIRST turn, then reply done OK — no "
-        "summary.\n"
+        f"> visual richness. {end}\n"
     )
 
 
@@ -868,7 +1024,8 @@ def _prepare_hedge_dir(project_dir, fid, attempt_no):
     work = tempfile.mkdtemp(prefix=f"{fid}-{attempt_no}-", dir=root)
     os.makedirs(os.path.join(work, "compositions", "frames"), exist_ok=True)
     shutil.copyfile(_frame_path(project_dir, fid), _frame_path(work, fid))
-    for name in (FRAME_FILENAME, "CLAUDE.md", "AGENTS.md"):
+    # P0-4: never copy interactive CLAUDE.md into hedge workdirs.
+    for name in (FRAME_FILENAME, "AGENTS.md"):
         src = os.path.join(project_dir, name)
         if os.path.isfile(src):
             shutil.copyfile(src, os.path.join(work, name))
@@ -898,8 +1055,10 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
         STAGE_DEADLINE_ENV, DEFAULT_STAGE_DEADLINE, env_logger)
     trunc_kill = _env_on(TRUNC_KILL_ENV)
     salvage_on = _env_on(SALVAGE_ENV)
-    # TWO_PHASE default OFF (=1 enables); HEDGE default ON (=0 disables).
+    # TWO_PHASE default OFF (=1 enables); HEDGE default ON (=0 disables);
+    # TEXT_OUT default ON (=0 rolls back to Read+Write tools; disabled when TWO_PHASE=1).
     two_phase = _env_on(TWO_PHASE_ENV, default=False) and skeleton_mode
+    text_out_on = _env_on(TEXT_OUT_ENV, default=True) and not two_phase
     hedge_on = _env_on(HEDGE_ENV, default=True)
     hedge_after = _env_positive_int(HEDGE_AFTER_ENV, DEFAULT_HEDGE_AFTER, env_logger)
     degrade_on = _env_on(DEGRADE_ENV)
@@ -912,9 +1071,10 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
     started = stats.started
     log(
         "frame-html driver start mode=pipeline frames=%s skeleton=%s "
-        "max_attempts=%s deadline=%ss trunc_kill=%s salvage=%s two_phase=%s "
-        "worker_cap=%s hedge=%s(after=%ss) degrade=%s(window=%ss) env_override=%s",
-        len(frame_ids), skeleton_mode, max_attempts, deadline_s,
+        "text_out=%s max_attempts=%s deadline=%ss trunc_kill=%s salvage=%s "
+        "two_phase=%s worker_cap=%s hedge=%s(after=%ss) degrade=%s(window=%ss) "
+        "env_override=%s",
+        len(frame_ids), skeleton_mode, text_out_on, max_attempts, deadline_s,
         trunc_kill, salvage_on, two_phase, worker_cap, hedge_on, hedge_after,
         degrade_on, degrade_window,
         {k: v for k, v in base_env.items() if k != "CLAUDE_CODE_SUBAGENT_EFFORT"} or "-",
@@ -939,28 +1099,44 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
         extra_env = dict(base_env)
         kw = {}
         label = f"{fid}#{attempt_no}" + ("" if mode == "normal" else f"-{mode}")
+        phased = two_phase and mode == "normal" and attempt_no == 1
+        use_text_out = text_out_on and not phased and mode != "salvage"
         if mode == "salvage":
             prompt = _salvage_prompt(fid, project_dir, note or "cut off")
             extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = SALVAGE_MAX_OUTPUT
             kw["max_turns"] = SALVAGE_MAX_TURNS
             kw["timeout"] = SALVAGE_TIMEOUT
         else:
-            prompt = _worker_prompt(fid, skeleton_mode, project_dir=project_dir)
+            dispatch_text = _load_dispatch_text(project_dir, fid)
+            recipes_mode = _recipes_mode(dispatch_text)
+            prompt = _worker_prompt(
+                fid, skeleton_mode, project_dir=project_dir,
+                dispatch_text=dispatch_text, text_out=use_text_out, workdir=wd,
+            )
+            if use_text_out:
+                if mode in ("degraded", "hedge") or recipes_mode in ("full", "snippets"):
+                    kw["tools"] = ""
+                    kw["max_turns"] = TEXT_OUT_MAX_TURNS
+                else:
+                    # index-only (recipes off): allow Read for first-turn recipe batch
+                    kw["tools"] = "Read"
+                    kw["max_turns"] = 6
             if mode == "degraded":
-                prompt += _degrade_suffix(note, remaining or 0)
+                prompt += _degrade_suffix(note, remaining or 0, text_out=use_text_out)
                 extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = DEGRADE_MAX_OUTPUT
-                kw["max_turns"] = DEGRADE_MAX_TURNS
+                if not use_text_out:
+                    kw["max_turns"] = DEGRADE_MAX_TURNS
                 kw["timeout"] = max(DEGRADE_MIN_TIMEOUT, int(remaining or 0))
             elif mode == "hedge":
-                prompt += _hedge_suffix()
+                prompt += _hedge_suffix(text_out=use_text_out)
                 extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = HEDGE_MAX_OUTPUT
-                kw["max_turns"] = HEDGE_MAX_TURNS
+                if not use_text_out:
+                    kw["max_turns"] = HEDGE_MAX_TURNS
                 kw["timeout"] = HEDGE_TIMEOUT
             elif note:
-                prompt += _redispatch_suffix(note)
+                prompt += _redispatch_suffix(note, text_out=use_text_out)
             if mode not in ("degraded", "hedge") and prev_rc == TRUNCATED_RC:
                 extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = _trunc_retry_cap(base_env)
-        phased = two_phase and mode == "normal" and attempt_no == 1
         if phased:
             env_a = dict(extra_env, CLAUDE_CODE_MAX_OUTPUT_TOKENS=TWO_PHASE_A_MAX_OUTPUT)
             rc, text = call(wd, prompt + _phase_a_suffix(fid), env_a,
@@ -971,8 +1147,11 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
                                 f"{label}-B", cancel_event)
         else:
             rc, text = call(wd, prompt, extra_env, label, cancel_event, **kw)
+        if use_text_out:
+            done = (rc == 0) and _extract_and_write_frame_html(frame_path, text)
+        else:
+            done = _worker_done_ok(fid, text)
         sc_ok, sc_out = _run_frame_selfcheck(wd, fid)
-        done = _worker_done_ok(fid, text)
         ok = rc == 0 and done and sc_ok and os.path.isfile(frame_path)
         if ok and mode != "hedge":
             _mark_animated_storyboard(project_dir, fid)
@@ -981,6 +1160,7 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
             "fid": fid, "rc": rc, "text": text, "sc_ok": sc_ok, "sc_out": sc_out,
             "done": done, "ok": ok, "changed": changed,
             "salvage": mode == "salvage", "mode": mode, "phased": phased,
+            "text_out": use_text_out,
         }
 
     attempts = {fid: 0 for fid in frame_ids}
@@ -1135,7 +1315,8 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
                     kind, n, max_attempts,
                 )
                 note = _failure_note(
-                    fid, res["rc"], res["text"], res["sc_ok"], res["sc_out"])
+                    fid, res["rc"], res["text"], res["sc_ok"], res["sc_out"],
+                    text_out=res.get("text_out", False))
                 notes[fid] = note
                 if n >= max_attempts:
                     failed[fid] = note
