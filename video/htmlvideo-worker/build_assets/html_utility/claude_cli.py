@@ -117,6 +117,7 @@ _PROFILES: dict[str, dict[str, object]] = {
         "max_output": "16000", "max_turns": 40, "timeout": 600, "deny_agent": True,
     },
     "verify": {
+        # Default stays medium; A/B lower effort via HTMLVIDEO_CLAUDE_VERIFY_EFFORT=low.
         "effort": "medium", "thinking": "32000",
         # 2026-11-19: 32000 太宽 — 单回合可烧 ~27k thinking token(≈100s)才触顶,
         # verify 实测被深思考尖峰拖到 22.7m(76%=思考)。verify 不生成大内容(读报告 +
@@ -128,18 +129,26 @@ _PROFILES: dict[str, dict[str, object]] = {
         # Findings + playbook are inlined; Bash/Glob/Grep only re-explore.
         # Keep Read/Edit/Write so the model can open and patch frame HTML.
         # Deny Skill: SessionStart hooks may say "always invoke a skill", which
-        # contradicts the fix prompt — tool denial wins without needing --bare
-        # (bare would also break ANTHROPIC_AUTH_TOKEN-only auth).
+        # contradicts the fix prompt — tool denial + disableAllHooks wins
+        # without needing --bare (bare would break ANTHROPIC_AUTH_TOKEN auth).
         "deny_tools": ["Bash", "Glob", "Grep", "Skill"],
     },
 }
 # TodoWrite is the legacy name; task-tracking now lives in TaskCreate/Update/
 # List/Get. All of them are pure turn churn for these short deterministic skill
 # flows — a verify run spent 7 turns (≈34s) just creating/ticking a todo list.
-# Deny the whole family so the model does the work instead of bookkeeping it.
+# 2026-11-24 (6b05 api-bodies): Workflow (22.9KB), ScheduleWakeup (5.0KB),
+# SendMessage (4.9KB), Cron* (4.9KB), Enter/ExitWorktree (6.6KB),
+# ReportFindings (2.3KB), TaskOutput/Stop (2.4KB), ListAgents (1.2KB) added
+# ~50KB (~93.7%) of unused tool schemas on every non-interactive call.
+# Deny the whole set so the model only sees the tools the pipeline uses.
 _BASE_DENY = [
     "WebFetch", "WebSearch", "NotebookEdit", "TodoWrite",
     "TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
+    "Workflow", "ScheduleWakeup", "SendMessage",
+    "CronCreate", "CronDelete", "CronList",
+    "EnterWorktree", "ExitWorktree", "ReportFindings",
+    "ListAgents", "TaskOutput", "TaskStop",
 ]
 _AGENT_DENY = ["Agent", "Task"]
 _ALLOWED_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
@@ -184,6 +193,7 @@ TRUNCATED_RC = 125
 _TRUNC_META_PREFIX = "[Your previous response had no visible output"
 _THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
 _TRUNC_POLL_SECONDS = 2.0
+_DEFAULT_TRUNC_KILL_STREAK = 2  # allow 1 Claude Code max_tokens auto-resume before killing
 
 
 # Exit code for a session killed because the caller set its cancel_event
@@ -211,21 +221,36 @@ def _session_jsonl_candidates(config_dir: str, project_dir: str, session_id: str
 
 
 class _TruncationWatcher:
-    """Tail one session jsonl and flag a hard-truncated (thinking-only) turn.
+    """Tail one session jsonl and flag repeated hard-truncated (thinking-only) turns.
 
-    Signatures: the CLI's isMeta nudge ``[Your previous response had no
-    visible output…``, or an assistant message whose output_tokens reached the
-    cap (or stop_reason max_tokens) with no text / tool_use block. Any I/O or
-    parse problem disables the watcher silently — never fails the session.
+    2026-11-24 (6b05ba2b5d081581): newer Claude Code auto-resumes after a
+    ``stop_reason="max_tokens"`` thinking-only turn without writing a ``user``
+    isMeta nudge to the JSONL. The old watcher waited for the next ``mid`` to
+    close the prior group, so it fired 24s *after* the model had already
+    recovered, written its Edit, and finished with ``end_turn``.
+
+    Fixed semantics:
+    - Detect ``stop_reason="max_tokens"`` thinking-only turns immediately on
+      the assistant entry itself (don't wait for the next message).
+    - Consume the entire newly flushed chunk before deciding to kill — any
+      visible block (``tool_use`` / ``text``) resets the streak to 0 so an
+      already-recovered session is never retroactively killed.
+    - ``max_streak`` (default 2, override ``HTMLVIDEO_CLAUDE_TRUNC_KILL_STREAK``)
+      allows 1 built-in Claude Code auto-resume and kills immediately on the
+      2nd consecutive thinking-only cap hit (true runaway).
+    Any I/O or parse problem disables the watcher silently — never fails the
+    session.
     """
 
     def __init__(self, session_id: str, project_dir: str, config_dir: str,
-                 cap: int, logger: logging.Logger) -> None:
+                 cap: int, logger: logging.Logger,
+                 max_streak: int = _DEFAULT_TRUNC_KILL_STREAK) -> None:
         self.session_id = session_id
         self.project_dir = project_dir
         self.config_dir = config_dir
         self.cap = cap
         self.logger = logger
+        self._max_streak = max(1, int(max_streak))
         self.disabled = False
         self._path: str | None = None
         self._pos = 0
@@ -234,28 +259,50 @@ class _TruncationWatcher:
         self._group_types: set[str] = set()
         self._group_max_out = 0
         self._group_stop = None
+        self._group_counted = False
+        self._streak = 0
+        self._last_reason: str | None = None
 
-    def _close_group(self) -> str | None:
+    def _record_truncation(self, reason: str) -> None:
+        self._streak += 1
+        self._last_reason = reason
+        if self._streak < self._max_streak:
+            self.logger.info(
+                "claude skill thinking-only truncation %d/%d session=%s (%s) "
+                "— allowing auto-resume",
+                self._streak,
+                self._max_streak,
+                self.session_id,
+                reason,
+            )
+
+    def _close_group(self) -> None:
         if self._group_id is None:
-            return None
+            return
         visible = bool(self._group_types - _THINKING_TYPES)
         hit_cap = self._group_max_out >= self.cap or self._group_stop == "max_tokens"
+        counted = self._group_counted
+        out = self._group_max_out
         self._group_id = None
         self._group_types = set()
-        out, self._group_max_out = self._group_max_out, 0
+        self._group_max_out = 0
         self._group_stop = None
-        if not visible and hit_cap:
-            return f"thinking-only turn hit output cap (output_tokens={out} cap={self.cap})"
-        return None
+        self._group_counted = False
+        if visible:
+            self._streak = 0
+            self._last_reason = None
+        elif hit_cap and not counted:
+            self._record_truncation(
+                f"thinking-only turn hit output cap (output_tokens={out} cap={self.cap})"
+            )
 
-    def _feed(self, entry: dict) -> str | None:
+    def _feed(self, entry: dict) -> None:
         kind = entry.get("type")
         msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
         if kind == "assistant":
             mid = msg.get("id")
-            reason = None
             if mid != self._group_id:
-                reason = self._close_group()
+                self._close_group()
                 self._group_id = mid if mid is not None else object()
             for block in msg.get("content") or []:
                 if isinstance(block, dict) and block.get("type"):
@@ -267,7 +314,20 @@ class _TruncationWatcher:
                 pass
             if msg.get("stop_reason"):
                 self._group_stop = msg.get("stop_reason")
-            return reason
+            visible = bool(self._group_types - _THINKING_TYPES)
+            if visible:
+                # Recovery succeeded: visible output or tool_use emitted.
+                self._streak = 0
+                self._last_reason = None
+            elif self._group_stop == "max_tokens" and not self._group_counted:
+                # Terminal max_tokens with thinking only — count immediately
+                # instead of waiting for the next message.
+                self._group_counted = True
+                self._record_truncation(
+                    f"thinking-only turn hit output cap "
+                    f"(output_tokens={self._group_max_out} cap={self.cap})"
+                )
+            return
         if kind == "user":
             content = msg.get("content")
             text = ""
@@ -277,10 +337,17 @@ class _TruncationWatcher:
                 text = " ".join(
                     str(b.get("text", "")) for b in content
                     if isinstance(b, dict) and b.get("type") == "text")
+            had_visible = bool(self._group_types - _THINKING_TYPES)
+            streak_before = self._streak
+            self._close_group()
             if entry.get("isMeta") and text.lstrip().startswith(_TRUNC_META_PREFIX):
-                return "no-visible-output nudge (thinking-only turn)"
-            return self._close_group()
-        return None
+                # Do not double-count if _close_group (or stop=max_tokens) already
+                # counted the immediately preceding assistant turn.
+                if self._streak == streak_before and not had_visible:
+                    self._record_truncation("no-visible-output nudge (thinking-only turn)")
+                else:
+                    self._last_reason = "no-visible-output nudge (thinking-only turn)"
+            return
 
     def poll(self) -> str | None:
         if self.disabled:
@@ -310,9 +377,9 @@ class _TruncationWatcher:
                 except json.JSONDecodeError:
                     continue
                 if isinstance(entry, dict):
-                    reason = self._feed(entry)
-                    if reason:
-                        return reason
+                    self._feed(entry)
+            if self._streak >= self._max_streak and self._last_reason:
+                return self._last_reason
         except Exception as exc:  # never break the session on watcher trouble
             self.disabled = True
             self.logger.debug("truncation watcher disabled session=%s: %s",
@@ -477,9 +544,20 @@ def _profile_cmd(
         "--max-turns",
         str(max_turns),
         "--exclude-dynamic-system-prompt-sections",
+    ]
+    # Non-interactive self-contained skills deny Skill and should not load
+    # SessionStart plugin hooks (e.g. superpowers:using-superpowers, ~3.7KB of
+    # contradictory "MUST invoke skill" instructions) or slash commands.
+    if extra_deny and "Skill" in extra_deny:
+        cmd.extend([
+            "--disable-slash-commands",
+            "--settings",
+            '{"disableAllHooks":true}',
+        ])
+    cmd.extend([
         "--disallowedTools",
         *deny,
-    ]
+    ])
     if model:
         cmd.extend(["--model", model])
     if session_id:
@@ -884,9 +962,14 @@ def _run_profile(
         try:
             config_dir = env.get("CLAUDE_CONFIG_DIR") or os.path.join(
                 os.path.expanduser("~"), ".claude")
+            trunc_streak = _env_positive_int(
+                "HTMLVIDEO_CLAUDE_TRUNC_KILL_STREAK",
+                _DEFAULT_TRUNC_KILL_STREAK,
+                logger,
+            )
             watcher = _TruncationWatcher(
                 session_id, project_dir, config_dir,
-                _output_token_limit(env), logger)
+                _output_token_limit(env), logger, max_streak=trunc_streak)
         except Exception as exc:
             logger.debug("truncation watcher unavailable: %s", exc)
             watcher = None
