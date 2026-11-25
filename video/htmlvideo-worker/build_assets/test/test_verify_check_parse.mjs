@@ -96,6 +96,24 @@ function testParseCheckJsonLayoutOverlap() {
   assert.ok(!ov.msg.includes(" inside "), ov.msg);
   assert.ok(ov.msg.includes("[t=2.1-4.3s box(100,200,300x80)]"), ov.msg);
   assert.ok(!b.errors.some((e) => e.code === "should_be_ignored"), "lint skipped");
+  const cJson = parseCheckJson({
+    contrast: {
+      findings: [{
+        code: "contrast_aa_failure",
+        severity: "warning",
+        ratio: 1.44,
+        requiredRatio: 4.5,
+        fg: "rgb(242, 209, 96)",
+        bg: "rgb(255, 255, 255)",
+        suggestedColor: "rgb(26, 26, 26)",
+        selector: ".f5-slot-live",
+        sourceFile: "/app/proj/compositions/frames/05.html",
+      }],
+    },
+  }, { root: "/app/proj" });
+  assert.equal(cJson.warns[0].ratio, 1.44);
+  assert.equal(cJson.warns[0].fg, "rgb(242, 209, 96)");
+  assert.equal(cJson.warns[0].suggestedColor, "rgb(26, 26, 26)");
   console.log("parseCheckJson OK");
 }
 

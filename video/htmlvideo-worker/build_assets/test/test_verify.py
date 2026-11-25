@@ -1080,6 +1080,29 @@ class FixPromptTest(unittest.TestCase):
         self.assertIn("verify-all verify findings:", joined)
         self.assertIn("div.word overlaps div.sub", joined)
 
+    def test_verify_pixels_catches_empty_main_stage_masked_by_caption_band(self):
+        import importlib.util
+        from PIL import Image, ImageDraw
+        spec = importlib.util.spec_from_file_location("verify_pixels", "/app/scripts/verify-pixels.py")
+        vp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(vp)
+
+        d = tempfile.mkdtemp(prefix="vp-stage-")
+        self.addCleanup(shutil.rmtree, d, True)
+        img_path = os.path.join(d, "frame-01.png")
+        # Cream 1920x1080 canvas with ZERO pixels in top 83%, dark caption pill in bottom 17%
+        img = Image.new("RGB", (1920, 1080), (245, 245, 240))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([560, 930, 1360, 1010], fill=(26, 26, 26))
+        img.save(img_path)
+        res = vp.analyze(img_path)
+        self.assertGreaterEqual(res["content_pct"], 0.2)
+        self.assertEqual(res["stage_content_pct"], 0.0)
+        self.assertTrue(
+            any(sev == "FAIL" and "empty main stage" in msg for sev, msg in res["findings"]),
+            res["findings"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

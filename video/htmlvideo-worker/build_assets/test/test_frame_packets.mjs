@@ -714,6 +714,12 @@ export function testBareModeBlueprint() {
     sel: null, assigned: null, direction: "**Negative list.** No 3D anywhere.",
   });
   assert.deepStrictEqual(g.map((x) => x.kind), ["negative-list-3d"]);
+  // "no 3D extrude" is a material/bevel ban and MUST NOT falsely ban CSS rotateY flips
+  const extrudeOnly = core.detectConflicts({
+    block: "Scene 1 (0.0–4.0s): card flips 180deg on rotateY with perspective.\n",
+    sel: null, assigned: null, direction: "**Negative list.** No 3D extrude, no drop-shadow blur.",
+  });
+  assert.deepStrictEqual(extrudeOnly.map((x) => x.kind), []);
   console.log("bare-mode blueprint + type rotation scope OK");
 }
 

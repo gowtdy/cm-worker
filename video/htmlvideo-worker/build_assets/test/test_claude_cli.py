@@ -19,12 +19,12 @@ CWD = "/tmp/htmlvideo-proj"
 # Mirrors html_utility.claude_cli._PROFILES (post-clamp thinking where needed).
 # Tuple: effort, thinking, max_turns, timeout, deny_agent, max_output, tools
 _PROFILES = {
-    "intent": ("high", "32000", "100", 1800, True, "32000", ""),
-    "storyboard": ("high", "64000", "8", 1800, True, "16000", "Write"),
+    "intent": ("medium", "12000", "4", 1800, True, "12000", ""),
+    "storyboard": ("high", "16000", "8", 1800, True, "16000", "Write"),
     "visual_design": ("medium", "12000", "4", 1800, True, "12000", ""),
-    "visual": ("high", "24000", "100", 1800, True, "32000", "Read"),
+    "visual": ("medium", "16000", "12", 1800, True, "16000", "Read"),
     "visual_legacy": ("high", "64000", "100", 1800, True, "32000", None),
-    "frame_html": ("medium", "64000", "60", 1500, True, "64000", "Read,Write,Edit"),
+    "frame_html": ("medium", "28000", "30", 1500, True, "28000", "Read,Write,Edit"),
     "repair": ("high", "40000", "40", 600, True, "16000", None),
     "verify": ("medium", "32000", "40", 1800, True, "16000", "Read,Write,Edit"),
 }
@@ -147,7 +147,7 @@ class RunClaudeTests(unittest.TestCase):
         code, _, cmd, kwargs = self._invoke(skill="intent")
         self.assertEqual(code, 0)
         self.assertEqual(cmd[cmd.index("--output-format") + 1], "json")
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "high")
+        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "medium")
         self.run_mock.assert_not_called()
 
     def test_each_skill_profile(self) -> None:
@@ -225,24 +225,23 @@ class RunClaudeTests(unittest.TestCase):
         logger = logging.getLogger("t")
         # frame_html default cap reaches the child env
         prof = _resolve_profile("frame_html", logger)
-        self.assertEqual(prof["max_output"], "64000")
+        self.assertEqual(prof["max_output"], "28000")
         # per-stage override beats the default
         with mock.patch.dict(os.environ, {"HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS": "128000"}):
             prof = _resolve_profile("frame_html", logger)
             self.assertEqual(prof["max_output"], "128000")
-        # serial stages: intent/visual at 32000; storyboard/verify tightened to 16000
-        for skill in ("intent", "visual"):
-            self.assertEqual(_resolve_profile(skill, logger)["max_output"], "32000")
-        for skill in ("storyboard", "verify"):
+        self.assertEqual(_resolve_profile("intent", logger)["max_output"], "12000")
+        for skill in ("storyboard", "visual", "verify"):
             self.assertEqual(_resolve_profile(skill, logger)["max_output"], "16000")
 
     def test_visual_thinking_default_per_call_and_env_rollback(self):
         from html_utility.claude_cli import _PROFILES as REAL, _resolve_profile
         logger = logging.getLogger("t")
-        self.assertEqual(_resolve_profile("visual", logger)["thinking"], "24000")
+        self.assertEqual(_resolve_profile("visual", logger)["thinking"], "16000")
         self.assertEqual(
             _resolve_profile("visual", logger, "32000")["thinking"], "32000")
         self.assertIn("Skill", REAL["visual"]["deny_tools"])
+        self.assertIn("Skill", REAL["intent"]["deny_tools"])
         self.assertEqual(
             REAL["frame_html"]["deny_tools"], ["Bash", "Glob", "Grep", "Skill"])
         self.assertNotIn("deny_tools", REAL["visual_legacy"])  # legacy edits STORYBOARD
@@ -296,10 +295,22 @@ class RunClaudeTests(unittest.TestCase):
         )
 
     def test_debug_request_off_by_default(self) -> None:
+        os.environ["ANTHROPIC_LOG"] = "debug"
+        os.environ["BUN_OPTIONS"] = f"--smol --preload={_INSPECT_PRELOAD}"
         _, _, _, kwargs = self._invoke(skill="intent")
         env = kwargs["env"]
-        self.assertNotEqual(env.get("ANTHROPIC_LOG"), "debug")
-        self.assertNotIn("--preload=", env.get("BUN_OPTIONS", ""))
+        self.assertNotIn("ANTHROPIC_LOG", env)
+        self.assertEqual(env.get("BUN_OPTIONS"), "--smol")
+
+    def test_intent_self_contained_prompt_disables_slash_and_hooks(self) -> None:
+        from html_utility import intent as intent_mod
+        p = intent_mod._build_identify_intent_prompt("Buy quality companies.")
+        self.assertFalse(p.lstrip().startswith("/"))
+        self.assertNotIn("/aiflow-identify-intent", p)
+        _, _, cmd, _ = self._invoke(skill="intent")
+        self.assertIn("--disable-slash-commands", cmd)
+        self.assertIn("--settings", cmd)
+        self.assertEqual(cmd[cmd.index("--settings") + 1], '{"disableAllHooks":true}')
 
     def test_env_overrides_and_model_flag(self) -> None:
         os.environ["HTMLVIDEO_CLAUDE_VISUAL_EFFORT"] = "low"
@@ -328,7 +339,7 @@ class RunClaudeTests(unittest.TestCase):
         _, logs, cmd, kwargs = self._invoke(skill="storyboard")
         self.assertEqual(cmd[cmd.index("--max-turns") + 1], "8")
         self.assertIn("timeout=1800", "\n".join(logs.output))
-        self.assertEqual(kwargs["env"]["MAX_THINKING_TOKENS"], "64000")
+        self.assertEqual(kwargs["env"]["MAX_THINKING_TOKENS"], "16000")
         joined = "\n".join(logs.output)
         self.assertIn("invalid HTMLVIDEO_CLAUDE_STORYBOARD_MAX_TURNS", joined)
         self.assertIn("invalid HTMLVIDEO_CLAUDE_STORYBOARD_TIMEOUT", joined)
@@ -348,7 +359,7 @@ class RunClaudeTests(unittest.TestCase):
     def test_invalid_effort_falls_back(self) -> None:
         os.environ["HTMLVIDEO_CLAUDE_INTENT_EFFORT"] = "hgih"
         _, logs, _, kwargs = self._invoke(skill="intent")
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "high")
+        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "medium")
         self.assertIn(
             "invalid HTMLVIDEO_CLAUDE_INTENT_EFFORT='hgih'",
             "\n".join(logs.output),
@@ -433,10 +444,10 @@ class RunClaudeTests(unittest.TestCase):
         self.assertNotIn("clamped", "\n".join(logs.output))
 
     def test_smaller_output_limit_clamps_thinking_below_it(self) -> None:
-        os.environ["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "16000"
+        os.environ["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "8000"
         _, logs, _, kwargs = self._invoke(skill="visual")
-        self.assertEqual(kwargs["env"]["MAX_THINKING_TOKENS"], "15999")
-        self.assertIn("clamped to 15999", "\n".join(logs.output))
+        self.assertEqual(kwargs["env"]["MAX_THINKING_TOKENS"], "7999")
+        self.assertIn("clamped to 7999", "\n".join(logs.output))
 
     def test_extra_env_thinking_over_cap_is_clamped(self) -> None:
         _, logs, _, kwargs = self._invoke(

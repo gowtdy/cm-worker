@@ -600,6 +600,9 @@ class PromptShapeTest(unittest.TestCase):
         self.assertNotIn("Neither ends well", p)        # only the first sentence
         self.assertIn("**Locked transitions**", p)
         self.assertIn("**Shared stage**", p)
+        self.assertIn("COMPLETE numbered list of short slot labels", p)
+        self.assertIn("NEVER design, mention, or place an in-frame caption band", p)
+        self.assertIn("light/warm candies", p)
         self.assertIn("F2→F3", p)
         self.assertIn("parser-anchor", p)
 
@@ -951,25 +954,42 @@ class DriverFanOutTest(unittest.TestCase):
             vis.build_frame_visual(self.tmp, log)
         self.assertIn(("design-bp-fix", "visual_design"), calls2)
 
-    def test_ledger_is_default_on_in_driver(self):
+    def test_ledger_is_default_off_and_opt_in_in_driver(self):
         import os
         os.environ.pop(vis.VISUAL_LEDGER_ENV, None)
-        prompts = []
-        def fake(project_dir, prompt, logger, **kw):
+        prompts_off = []
+        def fake_off(project_dir, prompt, logger, **kw):
             label = kw.get("label")
             if label == "design":
                 return 0, ("## Blueprint assignment\nF1 = compose\nF2 = compose\n")
-            prompts.append(prompt)
+            prompts_off.append(prompt)
             return 0, (f"done OK {label[1:]}\n- focal: f\n- roles: r\n"
-                       "- rules: gsap-effects\nScene 1 (0–3): a\nScene 2 (3–6.2): b\n"
-                       + _GATE_LEDGER)
+                       "- rules: gsap-effects\nScene 1 (0–3): a\nScene 2 (3–6.2): b\n")
         gate = mock.Mock(returncode=0, stdout="", stderr="")
         log = logging.getLogger("test.visual.driver")
-        with mock.patch.object(vis, "run_claude_result", side_effect=fake), \
+        with mock.patch.object(vis, "run_claude_result", side_effect=fake_off), \
                 mock.patch.object(vis.subprocess, "run", return_value=gate), \
                 mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}):
             vis.build_frame_visual(self.tmp, log)
-        self.assertTrue(all("## Layout ledger" in p for p in prompts))
+        self.assertTrue(all("## Layout ledger" not in p for p in prompts_off))
+
+        # Reset STORYBOARD and verify =1 opt-in still enables ledger tables
+        with open(os.path.join(self.tmp, "STORYBOARD.md"), "w", encoding="utf-8") as f:
+            f.write(self.board)
+        prompts_on = []
+        def fake_on(project_dir, prompt, logger, **kw):
+            label = kw.get("label")
+            if label == "design":
+                return 0, ("## Blueprint assignment\nF1 = compose\nF2 = compose\n")
+            prompts_on.append(prompt)
+            return 0, (f"done OK {label[1:]}\n- focal: f\n- roles: r\n"
+                       "- rules: gsap-effects\nScene 1 (0–3): a\nScene 2 (3–6.2): b\n"
+                       + _GATE_LEDGER)
+        with mock.patch.object(vis, "run_claude_result", side_effect=fake_on), \
+                mock.patch.object(vis.subprocess, "run", return_value=gate), \
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1", vis.VISUAL_LEDGER_ENV: "1"}):
+            vis.build_frame_visual(self.tmp, log)
+        self.assertTrue(all("## Layout ledger" in p for p in prompts_on))
 
 
 _GATE = "/app/scripts/storyboard-gate.mjs"
@@ -1055,17 +1075,41 @@ class StoryboardGateRulesTest(unittest.TestCase):
             env={"HTMLVIDEO_FRAME_VISUAL_LEDGER": "1"})
         self.assertEqual(rc, 0, out)
 
-    def test_ledger_on_by_default_missing_ledger_fails(self):
-        rc, out = self._run(_gate_frame("- rules: discrete-text-sequence\n"))
+    def test_ledger_on_missing_ledger_fails(self):
+        rc, out = self._run(
+            _gate_frame("- rules: discrete-text-sequence\n"),
+            env={"HTMLVIDEO_FRAME_VISUAL_LEDGER": "1"})
         self.assertEqual(rc, 1, out)
         self.assertIn("`## Layout ledger`", out)
 
-    def test_ledger_off_rollback_does_not_require(self):
-        rc, out = self._run(
-            _gate_frame("- rules: discrete-text-sequence\n"),
-            env={"HTMLVIDEO_FRAME_VISUAL_LEDGER": "0"})
+    def test_ledger_off_by_default_does_not_require(self):
+        rc, out = self._run(_gate_frame("- rules: discrete-text-sequence\n"))
         self.assertEqual(rc, 0, out)
         self.assertNotIn("Layout ledger", out)
+
+    def test_audio_sync_durations_rescales_motion_ledger(self):
+        import json
+        import os
+        import subprocess
+        import tempfile
+        d = tempfile.mkdtemp(prefix="sb-sync-")
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        sb_path = os.path.join(d, "STORYBOARD.md")
+        meta_path = os.path.join(d, "audio_meta.json")
+        with open(sb_path, "w", encoding="utf-8") as f:
+            f.write(_gate_frame("- rules: discrete-text-sequence\n") + _GATE_LEDGER)
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump({"voices": [{"frame": 1, "duration_s": 8.0}]}, f)
+        p = subprocess.run(
+            ["node", "/app/scripts/audio.mjs", "sync-durations", "--videodir", d],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        with open(sb_path, encoding="utf-8") as f:
+            synced = f.read()
+        self.assertIn("Scene 1 (0.0–4.0s)", synced)
+        self.assertIn("Scene 2 (4.0–8s)", synced)
+        self.assertIn("| scene1 | word | opacity 0 → 1 | power2.inOut | 2.0s |", synced)
 
 
 _LEDGER_COLORS = frozenset({
