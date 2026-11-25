@@ -54,6 +54,10 @@ function testParseCheckJsonLayoutOverlap() {
           severity: "error",
           message: "Two text blocks overlap and may render unreadable.",
           selector: "#cui-bg > div",
+          containerSelector: "#cui-badge",
+          firstSeen: 2.1,
+          lastSeen: 4.3,
+          rect: { left: 100, top: 200, width: 300, height: 80 },
           sourceFile: "/app/proj/compositions/frames/03.html",
         },
         {
@@ -86,10 +90,11 @@ function testParseCheckJsonLayoutOverlap() {
   assert.equal(b.infos.length, 1);
   assert.ok(b.errors.some((e) => e.code === "content_overlap"));
   assert.ok(b.errors.some((e) => e.code === "http_error"));
-  assert.equal(
-    b.errors.find((e) => e.code === "content_overlap").file,
-    "compositions/frames/03.html",
-  );
+  const ov = b.errors.find((e) => e.code === "content_overlap");
+  assert.equal(ov.file, "compositions/frames/03.html");
+  assert.ok(ov.msg.includes("#cui-bg > div overlaps #cui-badge"), ov.msg);
+  assert.ok(!ov.msg.includes(" inside "), ov.msg);
+  assert.ok(ov.msg.includes("[t=2.1-4.3s box(100,200,300x80)]"), ov.msg);
   assert.ok(!b.errors.some((e) => e.code === "should_be_ignored"), "lint skipped");
   console.log("parseCheckJson OK");
 }
@@ -216,6 +221,8 @@ function testTriage() {
   assert.equal(t({ selector: "#x", container: "#y", dataAttributes: { "data-layout-allow-overlap": "" } }), "designed_overlay");
   assert.equal(t({ selector: "#line1", container: "#line2" }), "real_collision");
   assert.equal(t({ selector: "#headline", container: ".body-copy" }), "real_collision");
+  assert.equal(t({ selector: "div.word", container: "div.sub" }), "real_collision");
+  assert.equal(t({ selector: "div.word.sell", container: "div.sub" }), "real_collision");
   assert.equal(t({ selector: "#a", container: "#b" }), "ambiguous");
   assert.equal(t({ selector: "#headline", container: "" }), "ambiguous");
   // Generic CLI fixHint mentions allow-overlap for every finding — not a signal
@@ -267,8 +274,11 @@ function testTriageCaptionBand() {
     full({ selector: "div.cap-sub", container: "#caption-word-1-0", dataAttributes: { "data-layout-allow-overlap": "" } }).kind,
     "designed_overlay",
   );
-  // Not a caption word id
-  assert.equal(full({ selector: "div.cap-sub", container: "#caption-words" }).kind, "ambiguous");
+  // Not a caption word id (must not trigger caption keep-out band reason)
+  assert.equal(full({ selector: "div.box", container: "#caption-words" }).kind, "ambiguous");
+  const capSub = full({ selector: "div.cap-sub", container: "#caption-words" });
+  assert.equal(capSub.kind, "real_collision");
+  assert.equal(capSub.reason, "both sides are text blocks");
   console.log("triage caption band OK");
 }
 
