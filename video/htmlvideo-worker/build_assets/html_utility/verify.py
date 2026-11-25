@@ -16,6 +16,7 @@ visual fix prompt, not the mechanical actionable-summary playbook.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import glob
 import hashlib
 import logging
@@ -49,6 +50,8 @@ VERIFY_ALL_SCRIPT = "/app/scripts/verify-all.mjs"
 _MAX_FIX_ROUNDS = 3  # default; HTMLVIDEO_VERIFY_FIX_ROUNDS overrides
 _PREPARE_TIMEOUT_S = 300
 _VERIFY_TIMEOUT_S = 900
+_INLINE_FILE_MAX_BYTES = 16_384
+_SCAN_LOG_LIMIT = 2000
 
 
 def _run_verify_phase(project_dir: str, phase: str, timeout: int, logger: logging.Logger) -> tuple[int, str]:
@@ -67,6 +70,22 @@ def _run_verify_phase(project_dir: str, phase: str, timeout: int, logger: loggin
     if proc.stderr:
         out += "\n[stderr]\n" + proc.stderr
     logger.info("verify-all %s done rc=%d (out %d bytes)", phase, proc.returncode, len(out))
+    if proc.returncode != 0:
+        if phase == "verify":
+            summary = (
+                _trim_scan_for_visual(out)
+                if classify_scan_failure(out) == "visual"
+                else _trim_scan_for_fix(out)
+            )
+        else:
+            summary = out[-_SCAN_LOG_LIMIT:]
+        summary = summary.strip()
+        if summary:
+            logger.info(
+                "verify-all %s findings:\n%s",
+                phase,
+                summary[:_SCAN_LOG_LIMIT],
+            )
     return proc.returncode, out
 
 
@@ -204,12 +223,154 @@ def _fix_prompt_prefix(root_line: str, label: str) -> str:
     )
 
 
-def _build_fix_prompt_from_fragment(fragment: str, project_dir: str, label: str) -> str:
-    root_line = f"Project root (absolute): {project_dir}\n\n" if project_dir else ""
+_PAREN_GROUP_RE = re.compile(r"(×\d+\s*)?\(([^()\n]*compositions/frames/[^()\n]*)\)")
+_BULLET_LINE_RE = re.compile(r"^\s+-\s+")
+_NUMBERED_RULE_RE = re.compile(r"^ {2}\d+\)\s+")
+
+
+def _inline_file_enabled() -> bool:
+    raw = os.environ.get("HTMLVIDEO_VERIFY_INLINE_FILE", "").strip().lower()
+    return raw not in ("0", "false", "off", "no")
+
+
+def _inline_target_file_block(project_dir: str, rel: str | None) -> str:
+    """Inline a small single target frame file so the fix worker can Edit on
+    turn 1 without spending an extra Read round-trip."""
+    if not project_dir or not rel or rel == "__other__" or not _inline_file_enabled():
+        return ""
+    if not _FRAME_FILE_RE.fullmatch(rel):
+        return ""
+    comp_root = os.path.realpath(os.path.join(project_dir, "compositions"))
+    abs_path = os.path.realpath(os.path.join(project_dir, rel))
+    if not abs_path.startswith(comp_root + os.sep) or not os.path.isfile(abs_path):
+        return ""
+    try:
+        if os.path.getsize(abs_path) > _INLINE_FILE_MAX_BYTES:
+            return ""
+        with open(abs_path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return ""
+    numbered = "\n".join(f"{i}\t{line}" for i, line in enumerate(text.splitlines(), 1))
     return (
-        _fix_prompt_prefix(root_line, label)
+        f"\nThe target file `{abs_path}` is already inlined below — emit your Edit(s) "
+        "directly on turn 1 without calling Read first.\n\n"
+        f"── current file ({abs_path}) ──\n"
+        f"{numbered}\n"
+        "── end current file ──\n"
+    )
+
+
+def _single_target_frame(scan_text: str) -> str | None:
+    """Return the sole `compositions/frames/*.html` referenced in error lines, else None."""
+    idx = scan_text.find(_ACTIONABLE_HEADER)
+    head = scan_text[:idx] if idx >= 0 else scan_text
+    found: set[str] = set()
+    for line in _error_blocks(head):
+        if _ERROR_LINE_RE.match(line):
+            m = _FRAME_FILE_RE.search(line)
+            if not m:
+                return None
+            found.add(m.group(0))
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _filter_summary_line_for_file(line: str, rel: str) -> tuple[str | None, bool]:
+    """Filter parenthesized `where(...)` file lists in an actionable-summary line
+    down to entries for ``rel``.
+
+    Returns ``(new_line_or_None, had_frame_refs)``. ``new_line_or_None`` is
+    ``None`` when the line named other frame files and zero entries for ``rel``.
+    """
+    had_frame_refs = False
+    empty_match = False
+
+    def _replace(m: re.Match) -> str:
+        nonlocal had_frame_refs, empty_match
+        had_frame_refs = True
+        count_prefix = m.group(1) or ""
+        inner = m.group(2)
+        parts = [p.strip() for p in inner.split(";")]
+        kept = []
+        for p in parts:
+            if not p or p.startswith("…+"):
+                continue
+            files_in_part = _FRAME_FILE_RE.findall(p)
+            if not files_in_part or rel in files_in_part:
+                kept.append(p)
+        if not kept:
+            empty_match = True
+            return m.group(0)
+        if count_prefix:
+            ws = count_prefix[len(count_prefix.rstrip()):]
+            count_prefix = f"×{len(kept)}{ws}"
+        return f"{count_prefix}({'; '.join(kept)})"
+
+    new_line = _PAREN_GROUP_RE.sub(_replace, line)
+    if empty_match:
+        return None, True
+    if not had_frame_refs:
+        files_in_line = _FRAME_FILE_RE.findall(line)
+        if files_in_line and rel not in files_in_line:
+            return None, True
+    return new_line, had_frame_refs
+
+
+def _filter_summary_for_file(tail: str, rel: str) -> str:
+    """Filter the shared ``── actionable summary ──`` tail for a single frame
+    worker so sibling files never leak into its prompt (2026-11-24 R1 bug:
+    worker 1 edited both 01 and 07, leaving worker 2 confused for 35s)."""
+    if rel == "__other__":
+        return tail
+    lines = tail.splitlines(keepends=True)
+    out: list[str] = []
+    skip_until_indent: int | None = None
+    for line in lines:
+        stripped = line.strip()
+        if skip_until_indent is not None:
+            if stripped and _indent(line) > skip_until_indent:
+                continue
+            skip_until_indent = None
+        if _NUMBERED_RULE_RE.match(line):
+            new_line, _ = _filter_summary_line_for_file(line, rel)
+            if new_line is None:
+                skip_until_indent = _indent(line)
+                continue
+            out.append(new_line)
+            continue
+        if _BULLET_LINE_RE.match(line):
+            new_line, _ = _filter_summary_line_for_file(line, rel)
+            if new_line is None:
+                continue
+            out.append(new_line)
+            continue
+        new_line, _ = _filter_summary_line_for_file(line, rel)
+        if new_line is None:
+            continue
+        out.append(new_line)
+    return "".join(out)
+
+
+def _build_fix_prompt_from_fragment(
+    fragment: str,
+    project_dir: str,
+    label: str,
+    target_file: str | None = None,
+) -> str:
+    root_line = f"Project root (absolute): {project_dir}\n\n" if project_dir else ""
+    scope_line = ""
+    if target_file and target_file != "__other__":
+        abs_target = os.path.join(project_dir, target_file) if project_dir else target_file
+        scope_line = (
+            f"Scope: fix ONLY `{target_file}` (`{abs_target}`). "
+            "Do NOT Read or Edit any other frame file (parallel sibling workers own other files).\n\n"
+        )
+    inline_block = _inline_target_file_block(project_dir, target_file)
+    return (
+        _fix_prompt_prefix(root_line + scope_line, label)
         + fragment
         + f"\n── end {label} ──\n"
+        + inline_block
     )
 
 
@@ -221,19 +382,23 @@ def _build_fix_prompt(scan_output: str, project_dir: str = "") -> str:
     """
     if _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN"):
         scan_text, label = strip_findings_payload(scan_output), "scan output"
+        target_file = None
     else:
         scan_text, label = _trim_scan_for_fix(scan_output), "scan findings"
-    return _build_fix_prompt_from_fragment(scan_text, project_dir, label)
+        target_file = _single_target_frame(scan_text)
+    return _build_fix_prompt_from_fragment(
+        scan_text, project_dir, label, target_file=target_file
+    )
 
 
 def _split_scan_by_file(scan_text: str) -> tuple[dict[str, str], str]:
     """Split the trimmed scan findings into one error block per frame file.
 
-    Returns ``(files: dict[rel_path -> fragment], shared_tail)``. The ``shared_tail``
-    is the actionable summary onward (file-agnostic rules + GATE line). When the
-    scan carries findings in only one file the dict has that single key; when the
-    findings cannot be attributed to distinct frame files the dict is empty and
-    the caller must fall back to the whole scan.
+    Returns ``(files: dict[rel_path -> fragment], shared_tail)``. Each per-file
+    fragment filters ``shared_tail`` to drop sibling-file references so a
+    worker never edits another worker's frame. When the scan carries findings
+    in only one file (or cannot be attributed to distinct frame files) the dict
+    is empty and the caller falls back to the whole scan.
     """
     idx = scan_text.find(_ACTIONABLE_HEADER)
     if idx < 0:
@@ -255,7 +420,12 @@ def _split_scan_by_file(scan_text: str) -> tuple[dict[str, str], str]:
     if len(order) <= 1:
         return {}, scan_text
     fragments = {
-        f: "── error findings ──\n" + "\n".join(groups[f]) + "\n\n" + tail
+        f: (
+            "── error findings ──\n"
+            + "\n".join(groups[f])
+            + "\n\n"
+            + _filter_summary_for_file(tail, f)
+        )
         for f in order
     }
     return fragments, tail
@@ -507,16 +677,16 @@ def _dispatch_fix(
     round_no: int,
     logger: logging.Logger,
     label: str | None,
-) -> None:
-    """One batched model turn, raising on a truncation or non-zero exit."""
+) -> int:
+    """One batched model turn, raising on non-truncation non-zero exit.
+
+    Returns ``fix_rc`` (``0`` or ``TRUNCATED_RC``) so callers can check whether
+    edits already landed on disk before raising on truncation.
+    """
     fix_rc = _run_fix_worker(project_dir, prompt, logger, label)
-    if fix_rc == TRUNCATED_RC:
-        raise RuntimeError(
-            f"verify fix round {round_no} [{label or '-'}] truncated: the model "
-            "burned its output budget on thinking without emitting an Edit"
-        )
-    if fix_rc != 0:
+    if fix_rc not in (0, TRUNCATED_RC):
         raise RuntimeError(f"claude verify fix failed rc:{fix_rc} [{label or '-'}]")
+    return fix_rc
 
 
 def _apply_model_fix(
@@ -528,23 +698,39 @@ def _apply_model_fix(
     """Batched model fixes, then rescan. Raises on a zero-edit digest.
 
     When the mechanical findings span more than one frame file they are split
-    into one small self-contained worker per file (P2): a single worker facing
-    10 findings across 4 files runs its adaptive thinking into the output cap;
-    a per-file worker of 1–2 findings edits on turn 1. Falls back to the whole
-    scan for a single-file failure or ``HTMLVIDEO_VERIFY_FIX_FULL_SCAN=1``.
+    into one small self-contained worker per file (P2) and run in parallel:
+    a single worker facing 10 findings across 4 files runs its adaptive
+    thinking into the output cap; a per-file worker of 1–2 findings edits on
+    turn 1. Falls back to the whole scan for a single-file failure or
+    ``HTMLVIDEO_VERIFY_FIX_FULL_SCAN=1``.
     """
     before_digest = _composition_html_digest(project_dir)
     fragments: dict[str, str] = {}
     if not _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN"):
         fragments, _tail = _split_scan_by_file(_trim_scan_for_fix(scan_output))
+    truncated_labels: list[str] = []
     if fragments:
-        for rel, fragment in fragments.items():
-            prompt = _build_fix_prompt_from_fragment(fragment, project_dir, "scan findings")
-            _dispatch_fix(project_dir, prompt, round_no, logger, rel)
+        max_workers = min(len(fragments), 4)
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = {}
+            for rel, fragment in fragments.items():
+                prompt = _build_fix_prompt_from_fragment(
+                    fragment, project_dir, "scan findings", target_file=rel
+                )
+                futs[ex.submit(_dispatch_fix, project_dir, prompt, round_no, logger, rel)] = rel
+            for fut in as_completed(futs):
+                rel = futs[fut]
+                rc = fut.result()
+                if rc == TRUNCATED_RC:
+                    truncated_labels.append(rel)
     else:
         prompt = _build_fix_prompt(scan_output, project_dir)
-        _dispatch_fix(project_dir, prompt, round_no, logger, None)
-    return _require_changed_and_rescan(project_dir, before_digest, round_no, logger)
+        rc = _dispatch_fix(project_dir, prompt, round_no, logger, None)
+        if rc == TRUNCATED_RC:
+            truncated_labels.append("-")
+    return _require_changed_and_rescan(
+        project_dir, before_digest, round_no, logger, truncated_labels=truncated_labels
+    )
 
 
 def _require_changed_and_rescan(
@@ -552,14 +738,33 @@ def _require_changed_and_rescan(
     before_digest: str,
     round_no: int,
     logger: logging.Logger,
+    truncated_labels: list[str] | None = None,
 ) -> tuple[int, str]:
-    """Zero-edit guard + rescan. Raises when the model turn changed nothing."""
+    """Zero-edit guard + rescan. Raises when the model turn changed nothing.
+
+    If a worker hit ``TRUNCATED_RC`` AFTER writing edits to disk (2026-11-24
+    6b05ba2b5d081581), accept the landed edits and rescan instead of throwing
+    away a completed fix.
+    """
     after_digest = _composition_html_digest(project_dir)
     if after_digest == before_digest:
+        if truncated_labels:
+            joined = ", ".join(truncated_labels)
+            raise RuntimeError(
+                f"verify fix round {round_no} [{joined}] truncated: the model "
+                "burned its output budget on thinking without emitting an Edit"
+            )
         raise RuntimeError(
             f"verify fix round {round_no} made no changes to "
             "compositions/**/*.html — refusing to re-dispatch the same scan "
             "(model produced no Edit, or scan findings were non-actionable)"
+        )
+    if truncated_labels:
+        logger.warning(
+            "verify fix round %d [%s] hit truncation after writing edits to disk "
+            "— proceeding to rescan",
+            round_no,
+            ", ".join(truncated_labels),
         )
     return _run_verify(project_dir, logger)
 
@@ -572,8 +777,11 @@ def _apply_visual_fix(
 ) -> tuple[int, str]:
     """One pixels-fix model turn (no file split), zero-edit guard, then rescan."""
     before_digest = _composition_html_digest(project_dir)
-    _dispatch_fix(project_dir, prompt, round_no, logger, None)
-    return _require_changed_and_rescan(project_dir, before_digest, round_no, logger)
+    rc = _dispatch_fix(project_dir, prompt, round_no, logger, None)
+    truncated = ["-"] if rc == TRUNCATED_RC else None
+    return _require_changed_and_rescan(
+        project_dir, before_digest, round_no, logger, truncated_labels=truncated
+    )
 
 
 def verify_frame(
