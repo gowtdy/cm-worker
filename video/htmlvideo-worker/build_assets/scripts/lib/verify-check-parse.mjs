@@ -57,15 +57,37 @@ export function parseCheckJson(json, opts = {}) {
       const container = f.containerSelector ? String(f.containerSelector) : "";
       const text = f.text ? String(f.text) : "";
       const message = f.message ? String(f.message) : "";
+      const code = String(f.code || "unknown");
+      const isOverlap = code.includes("overlap");
+      const relation = isOverlap ? "overlaps" : "inside";
+      let geo = "";
+      if (isOverlap) {
+        const parts = [];
+        if (typeof f.firstSeen === "number" && typeof f.lastSeen === "number" && f.lastSeen > f.firstSeen) {
+          parts.push(`t=${f.firstSeen.toFixed(1)}-${f.lastSeen.toFixed(1)}s`);
+        } else if (typeof f.time === "number") {
+          parts.push(`t=${f.time.toFixed(1)}s`);
+        }
+        const r = f.rect || f.bbox;
+        if (r && typeof r.width === "number" && typeof r.height === "number") {
+          const x = typeof r.left === "number" ? r.left : r.x;
+          const y = typeof r.top === "number" ? r.top : r.y;
+          if (typeof x === "number" && typeof y === "number") {
+            parts.push(`box(${Math.round(x)},${Math.round(y)},${Math.round(r.width)}x${Math.round(r.height)})`);
+          }
+        }
+        if (parts.length) geo = `[${parts.join(" ")}]`;
+      }
       const head = [
         selector,
-        container ? `inside ${container}` : "",
+        container ? `${relation} ${container}` : "",
         text ? `"${trunc(text, 40)}"` : "",
+        geo,
       ].filter(Boolean).join(" ");
-      const msg = trunc([head, message].filter(Boolean).join(" — "), n);
+      const msg = trunc([head, message].filter(Boolean).join(" — "), isOverlap ? Math.max(n, 180) : n);
       const item = {
         mark,
-        code: String(f.code || "unknown"),
+        code,
         msg,
         section: titleCase(section),
         file: relPath(f.sourceFile || "", root),
@@ -253,6 +275,7 @@ const CAPTION_WORD_RE = /^(?:[a-z][\w-]*)?#caption-word-\d+-\d+$/i;
 const TEXT_TOKENS = new Set([
   "headline", "heading", "title", "subtitle", "body", "line", "copy", "caption",
   "paragraph", "lede", "quote", "text", "h1", "h2", "h3", "h4", "p",
+  "word", "sub", "subline", "kicker", "eyebrow", "deck",
 ]);
 // A number + checkmark that sit on top of each other in the SAME badge circle
 // (`.f04-num` / `.f04-ck`) is a status overlay, not a collision: the check
@@ -273,13 +296,13 @@ function tokens(s) {
     .flatMap((t) => [t, t.replace(/\d+$/, "")]);
 }
 
-/** Split a layout msg "sel inside #cont \"text\" — message" into its sides. */
+/** Split a layout msg "sel overlaps|inside #cont \"text\" — message" into its sides. */
 function overlapSides(item) {
   if (item.selector || item.container) {
     return { selector: item.selector || "", container: item.container || "" };
   }
   const head = String(item.msg || "").split(" — ")[0];
-  const m = /^(.*?)\s+inside\s+(\S+)/.exec(head);
+  const m = /^(.*?)\s+(?:overlaps|inside)\s+(\S+)/.exec(head);
   if (m) return { selector: m[1], container: m[2] };
   return { selector: head.replace(/\s+".*$/, ""), container: "" };
 }
