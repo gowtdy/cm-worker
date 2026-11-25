@@ -168,10 +168,93 @@ function fontActionLines(ctx, errors) {
   return lines;
 }
 
+/** Scan project via `hyperframes lint --json` for gsap_exit_missing_hard_kill hits. */
+function scanGsapExitMissingHardKill(ctx) {
+  if (Array.isArray(ctx.lintErrors) && ctx.lintErrors.length) {
+    return ctx.lintErrors.filter((e) => e.code === "gsap_exit_missing_hard_kill");
+  }
+  // Only spawn lint inside prepare (stub is a boolean only in prepare's autofixCtx)
+  // when a real project exists on disk.
+  if (typeof ctx.stub !== "boolean" || !ctx.videodir) return [];
+  if (!fs.existsSync(path.join(ctx.videodir, "hyperframes.json"))) return [];
+  if (!compositionHtmlFiles(ctx.videodir).length) return [];
+  const r = spawnSync("npx", ["hyperframes", "lint", ".", "--json"], {
+    cwd: ctx.videodir, encoding: "utf8", timeout: 120_000, maxBuffer: 32 * 1024 * 1024,
+  });
+  if (r.error || !r.stdout) return [];
+  const first = r.stdout.indexOf("{");
+  const last = r.stdout.lastIndexOf("}");
+  if (first === -1 || last <= first) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(r.stdout.slice(first, last + 1));
+  } catch {
+    return [];
+  }
+  const findings = Array.isArray(parsed?.findings) ? parsed.findings : [];
+  return findings
+    .filter((f) => f.severity === "error" && f.code === "gsap_exit_missing_hard_kill")
+    .map((f) => {
+      const rawFile = String(f.file || "");
+      const file = rawFile.startsWith(ctx.videodir)
+        ? rawFile.slice(ctx.videodir.length + 1)
+        : rawFile.replace(/^\.\//, "");
+      return {
+        file,
+        code: f.code,
+        selector: f.selector ? String(f.selector) : "",
+        fixHint: f.fixHint ? String(f.fixHint) : "",
+        snippet: f.snippet ? String(f.snippet) : "",
+        msg: f.message ? String(f.message) : "",
+      };
+    });
+}
+
+/**
+ * Insert the deterministic `tl.set(...)` hard kill suggested by lint's fixHint
+ * right after the exiting GSAP tween. Skips clip-element hints (which require
+ * an inner wrapper and stay with the model). Idempotent.
+ */
+function insertGsapHardKill(source, hit) {
+  const hint = String(hit.fixHint || "");
+  const m = /Add `(tl\.set\([^`]+\))` after the exit tween\./.exec(hint);
+  if (!m) return { text: source, changed: false };
+  const setStmt = m[1].trim().replace(/;?$/, ";");
+  if (source.includes(setStmt)) return { text: source, changed: false };
+
+  let anchorIdx = -1;
+  const rawSnippet = String(hit.snippet || "").trim().replace(/…+$/, "").trim();
+  if (rawSnippet) {
+    const firstLine = rawSnippet.split("\n")[0].trim();
+    if (firstLine) {
+      anchorIdx = source.indexOf(firstLine);
+    }
+  }
+  if (anchorIdx < 0 && hit.selector) {
+    const esc = String(hit.selector).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`tl\\.(?:to|fromTo)\\(\\s*["']${esc}["'][^;]*?(?:autoAlpha|opacity|visibility)\\s*:\\s*(?:0|["']hidden["'])`, "g");
+    let lastMatch = null;
+    let cur;
+    while ((cur = re.exec(source)) !== null) lastMatch = cur;
+    if (lastMatch) anchorIdx = lastMatch.index;
+  }
+  if (anchorIdx < 0) return { text: source, changed: false };
+
+  const semiIdx = source.indexOf(";", anchorIdx);
+  if (semiIdx < 0) return { text: source, changed: false };
+  const lineStart = source.lastIndexOf("\n", anchorIdx) + 1;
+  const indentMatch = /^[ \t]*/.exec(source.slice(lineStart, anchorIdx));
+  const indent = indentMatch ? indentMatch[0] : "";
+  const insertAt = semiIdx + 1;
+  const next = source.slice(0, insertAt) + `\n${indent}${setStmt}` + source.slice(insertAt);
+  return { text: next, changed: true };
+}
+
 /** Affected-file list for a bald block of check/lint findings. */
 function where(list, cap = 4) {
   const parts = list.slice(0, cap).map((e) => {
-    const side = e.container ? `${e.selector} inside ${e.container}` : (e.selector || e.msg.split(" — ")[0]);
+    const rel = String(e.code || "").includes("overlap") ? "overlaps" : "inside";
+    const side = e.container ? `${e.selector} ${rel} ${e.container}` : (e.selector || e.msg.split(" — ")[0]);
     return `${e.file || "?"}: ${trunc(side, 70)}`;
   });
   if (list.length > cap) parts.push(`…+${list.length - cap}`);
@@ -242,6 +325,51 @@ export const KNOWN_FAILURES = [
     prompt:
       'Strip root/clip `data-duration="Ns"` to a plain number `data-duration="N"`. Do NOT diagnose transitions by reading scripts (the verify-all prepare phase strips this automatically).',
     reason: "STORYBOARD `duration: 6.664s` is copied verbatim into frame roots; the deployed transitions regex only matches a bare number (2026-11-21 regression).",
+  },
+
+  {
+    id: "gsap-exit-missing-hard-kill",
+    title: "gsap_exit_missing_hard_kill",
+    match: (ctx) => scanGsapExitMissingHardKill(ctx),
+    mode: "autofix",
+    autofix: (ctx, hits) => {
+      let changed = false;
+      let fixed = 0;
+      const byFile = new Map();
+      for (const hit of hits) {
+        if (!hit.file) continue;
+        if (!byFile.has(hit.file)) byFile.set(hit.file, []);
+        byFile.get(hit.file).push(hit);
+      }
+      for (const [relFile, fileHits] of byFile) {
+        const abs = path.resolve(ctx.videodir, relFile);
+        if (!fs.existsSync(abs)) continue;
+        let text = fs.readFileSync(abs, "utf8");
+        let fileChanged = false;
+        for (const hit of fileHits) {
+          const res = insertGsapHardKill(text, hit);
+          if (res.changed) {
+            text = res.text;
+            fileChanged = true;
+            fixed += 1;
+          }
+        }
+        if (fileChanged) {
+          fs.writeFileSync(abs, text, "utf8");
+          changed = true;
+        }
+      }
+      return {
+        changed,
+        note: changed
+          ? `inserted ${fixed} tl.set hard kill(s)`
+          : "no non-clip hard kills auto-insertable (clip elements left for model)",
+      };
+    },
+    prompt:
+      "Add the exact `tl.set(selector, { autoAlpha: 0 }, boundary)` hard kill from the lint `[hint: …]` right after the exit tween (verify-all prepare auto-inserts this for non-clip targets).",
+    reason:
+      "2026-11-24 (6b05ba2b5d081581): two gsap_exit_missing_hard_kill lint errors short-circuited hyperframes check and forced an entire extra verify round (43s + 2 model calls). Lint already emits the exact tl.set fixHint.",
   },
 
   /* ————— model entries (rule injected into the fix prompt when matched) ————— */
@@ -421,7 +549,7 @@ export const KNOWN_FAILURES = [
     match: (ctx) => (ctx.lintErrors || []).filter((e) => e.code !== "font_family_without_font_face"),
     mode: "model",
     prompt: (_ctx, hits) =>
-      `Fix the named file according to the lint message (${where(hits)}). Do not act on google_fonts_import or id_requires_css_escape (those are warning/info).`,
+      `Fix the named file according to the lint message and its \`[hint: …]\` (${where(hits)}). Do not act on google_fonts_import or id_requires_css_escape (those are warning/info).`,
     reason: "Lint errors other than font_family_without_font_face have no specific entry. google_fonts_import and id_requires_css_escape stay on their info entries.",
   },
 ];
