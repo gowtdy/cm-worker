@@ -8,13 +8,15 @@ import logging
 import os
 import re
 
-from html_utility.claude_cli import run_claude
+from html_utility.claude_cli import run_claude, run_claude_result
 from html_utility.storyboard_contract import build_storyboard_prompt
 
 STORYBOARD_FILENAME = "STORYBOARD.md"
 SCRIPT_FILENAME = "SCRIPT.md"
 BRIEF_FILENAME = "BRIEF.md"
 FRAME_FILENAME = "frame.md"
+STORYBOARD_TEXT_OUT_ENV = "HTMLVIDEO_STORYBOARD_TEXT_OUT"
+STORYBOARD_TEXT_OUT_MAX_TURNS = 2
 
 # `- voiceover: "..."` on its own line; the quoted value is the spoken guide.
 _VOICEOVER_RE = re.compile(r'^\s*-\s+voiceover:\s*"([^"]*)"', re.MULTILINE)
@@ -209,18 +211,50 @@ def finalize_storyboard_outputs(
     return _validate_storyboard_outputs(project_dir)
 
 
+def _storyboard_text_out_on() -> bool:
+    raw = os.environ.get(STORYBOARD_TEXT_OUT_ENV, "").strip().lower()
+    if not raw:
+        return True
+    return raw not in ("0", "false", "off", "no")
+
+
+def _extract_storyboard_markdown(text: str | None) -> str | None:
+    """Extract a valid STORYBOARD.md document from a 1-turn text-out reply."""
+    if not text:
+        return None
+    s = text.strip()
+    fence = re.match(r"^```(?:markdown|md|yaml)?\s*\n([\s\S]*?)\n```\s*$", s, re.I)
+    if fence:
+        s = fence.group(1).strip()
+    # Strip any accidental leading prose before `---` frontmatter or `## Frame 1`.
+    if not s.startswith("---") and not _FRAME_HEADING_RE.match(s):
+        fm_match = re.search(r"^---\r?\n[\s\S]*?\r?\n---", s, re.M)
+        fh_match = _FRAME_HEADING_RE.search(s)
+        cut = -1
+        if fm_match and fh_match and fm_match.start() < fh_match.start():
+            cut = fm_match.start()
+        elif fh_match:
+            cut = fh_match.start()
+        if cut >= 0:
+            s = s[cut:].strip()
+    if not _FRAME_HEADING_RE.search(s):
+        return None
+    return s + "\n"
+
+
 def build_storyboard(
     project_dir: str,
     logger: logging.Logger,
 ) -> str:
     """
-    Call /aiflow-build-storyboard via claude --print.
+    Call storyboard planner via claude --print.
 
     ``project_dir`` is the HyperFrames project root and must already have
-    ``BRIEF.md`` and ``frame.md``. Raises on missing prerequisites, CLI
-    failure, or missing/empty ``STORYBOARD.md``. Returns the path to
-    ``STORYBOARD.md``. ``SCRIPT.md`` is derived from voiceover fields when
-    narration is needed (not written by the model).
+    ``BRIEF.md`` and ``frame.md``. Default (`HTMLVIDEO_STORYBOARD_TEXT_OUT=1`)
+    uses 1-turn text-out (`--tools ""`, `max_turns=2`) so the model emits
+    `STORYBOARD.md` in one API turn without paying a 2nd post-Write turn; `=0`
+    rolls back to the `Write` tool flow. ``SCRIPT.md`` is derived from voiceover
+    fields when narration is needed.
     """
     brief_path = os.path.join(project_dir, BRIEF_FILENAME)
     frame_path = os.path.join(project_dir, FRAME_FILENAME)
@@ -236,7 +270,30 @@ def build_storyboard(
         if os.path.isfile(path):
             os.remove(path)
 
-    prompt = build_storyboard_prompt(project_dir, logger)
+    if _storyboard_text_out_on():
+        prompt = build_storyboard_prompt(project_dir, logger, text_out=True)
+        rc, reply = run_claude_result(
+            project_dir,
+            prompt,
+            logger,
+            skill="storyboard",
+            tools="",
+            max_turns=STORYBOARD_TEXT_OUT_MAX_TURNS,
+            trunc_kill=True,
+        )
+        extracted = _extract_storyboard_markdown(reply) if rc == 0 else None
+        if extracted:
+            with open(storyboard_path, "w", encoding="utf-8") as f:
+                f.write(extracted)
+            return finalize_storyboard_outputs(project_dir, logger)
+        if logger is not None:
+            logger.warning(
+                "storyboard text-out failed (rc=%s, extracted=%s) — falling back to Write tool mode",
+                rc,
+                bool(extracted),
+            )
+
+    prompt = build_storyboard_prompt(project_dir, logger, text_out=False)
     rc = run_claude(project_dir, prompt, logger, skill="storyboard")
     if rc != 0:
         raise RuntimeError(f"claude build-storyboard failed rc:{rc}")

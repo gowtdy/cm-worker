@@ -43,7 +43,28 @@ def _prompt_header() -> str:
     )
 
 
-def _prompt_footer() -> str:
+def _prompt_footer(text_out: bool = False) -> str:
+    if text_out:
+        return (
+            "Output ONLY the complete `STORYBOARD.md` markdown document directly "
+            "as your FINAL message text in ONE turn — no `Write` or other tool "
+            "calls, no markdown code fences around the whole file, no preamble "
+            "or trailing commentary. The harness extracts your markdown reply, "
+            "writes `STORYBOARD.md`, normalizes `- src:`, and derives `SCRIPT.md` "
+            "from each frame's `voiceover`.\n\n"
+            "The STORYBOARD frontmatter is pre-computed and INLINED above (under "
+            "`## Pre-seeded STORYBOARD frontmatter`) — start your output with that "
+            "`---` YAML frontmatter copied EXACTLY, filling only `music` and any "
+            "`<FILL>` slot. When `arc` is already a real structure (not `<FILL>`), "
+            "treat it as the DECIDED story structure and expand it into frames — "
+            "do not re-decide it. Follow immediately with `## Frame 1 — …` blocks "
+            "(`status: outline`, all required narrative fields filled, crisp "
+            "phrase-segmented `voiceover` lines).\n\n"
+            "Keep thinking concise (beat list + key cues only; NEVER draft full "
+            "frame blocks or voiceover sentences inside thinking — write them once "
+            "in your visible output). Do not write `## Video direction` or "
+            "time-coded `Scene` shot blocks — those belong to `/aiflow-build-frame-visual`.\n"
+        )
     return (
         "First tool call MUST be Write(\"STORYBOARD.md\"). Any Bash/Read/Glob/Grep "
         "of project or skill files is a protocol fail — every input is already "
@@ -149,12 +170,15 @@ def build_storyboard_prompt(
     project_dir: str,
     logger: logging.Logger | None = None,
     contract_card: str | None = None,
+    text_out: bool = False,
 ) -> str:
     """Assemble the storyboard-stage prompt for one project.
 
     ``contract_card`` defaults to ``load_contract_card()``; pass an empty
     string to force no card (safe degradation to the legacy read-loop).
-    Raises FileNotFoundError when a required input (BRIEF.md, frame.md)
+    ``text_out`` switches the output protocol from ``Write("STORYBOARD.md")``
+    to 1-turn direct markdown output (eliminating the post-Write confirmation
+    turn). Raises FileNotFoundError when a required input (BRIEF.md, frame.md)
     is missing.
     """
     card = load_contract_card(logger) if contract_card is None else contract_card
@@ -197,5 +221,5 @@ def build_storyboard_prompt(
         )
     else:
         raise FileNotFoundError(f"frame.md missing: {frame_path}")
-    parts.append(_prompt_footer())
+    parts.append(_prompt_footer(text_out=text_out))
     return "\n\n".join(parts)

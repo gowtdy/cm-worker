@@ -341,9 +341,13 @@ TWO_PHASE_A_MAX_TURNS = 20
 # P2-3: hedge the last running frame when it shows no Write after HEDGE_AFTER s.
 HEDGE_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE"
 HEDGE_AFTER_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_AFTER"
-DEFAULT_HEDGE_AFTER = 660
+DEFAULT_HEDGE_AFTER = 300
 HEDGE_POLL_SECONDS = 5
 HEDGE_DIR = os.path.join(".hyperframes", "hedge")
+# Cross-frame prefix KV cache warm-up: give frame #1 a short head-start so the
+# gateway prefills the shared ~24KB prefix before siblings fan out. 0 disables.
+PREFIX_WARMUP_ENV = "HTMLVIDEO_PREFIX_WARMUP_SECONDS"
+DEFAULT_PREFIX_WARMUP_SECONDS = 1.8
 # A hedge races a minimal fallback, not the primary's full build: degrade cap +
 # short turns + short wall-clock so it returns before the slow primary does
 # (the hedge only ever launches because the primary is already slow/stuck).
@@ -637,6 +641,12 @@ If the block lists several `- blueprint:` lines, the one under
 - when the dispatch carries a `## Layout ledger` / `## Motion ledger`,
   transcribe their concrete values verbatim (place/size/color/ease/dur) — they
   ARE the layout decisions; do not re-derive them.
+- layout & visual guardrails: NEVER add an in-frame `.caption-band` or bottom
+  subtitle bar (`captions.html` owns `y > 83cqh`); use `display: flex` or
+  `display: grid` (`padding`, `gap`, `box-sizing: border-box`) inside cards and
+  side-by-side panels instead of raw `position: absolute` row/column offsets;
+  keep text on white/cream surfaces in dark `ink` (never yellow/lime/mint/peach
+  text on white); fade outgoing morph/swap elements to `autoAlpha: 0`.
 {draft_line}
 
 ## Dispatch (authoritative — already complete)
@@ -1284,9 +1294,16 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
         return prim_res
 
     try:
-        for fid in frame_ids:
+        raw_warmup = os.environ.get(PREFIX_WARMUP_ENV, "").strip()
+        try:
+            warmup_s = float(raw_warmup) if raw_warmup else DEFAULT_PREFIX_WARMUP_SECONDS
+        except ValueError:
+            warmup_s = DEFAULT_PREFIX_WARMUP_SECONDS
+        for idx, fid in enumerate(frame_ids):
             attempts[fid] = 1
             submit(fid, 1, None, None, "normal")
+            if idx == 0 and len(frame_ids) > 1 and warmup_s > 0:
+                wait(list(running), timeout=warmup_s)
         while running:
             done_set, _ = wait(
                 list(running), return_when=FIRST_COMPLETED,

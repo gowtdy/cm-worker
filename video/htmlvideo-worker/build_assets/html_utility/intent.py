@@ -15,16 +15,31 @@ INTENT_FILENAME = "intent.json"
 
 
 def _build_identify_intent_prompt(content: str) -> str:
+    # Self-contained prompt (no leading `/aiflow-identify-intent` slash command):
+    # avoids loading SKILL.md + SessionStart hooks (~3.6k extra input tokens)
+    # when Skill/slash-commands are disabled on the intent profile.
     return (
-        "/aiflow-identify-intent\n\n"
-        "Source text is inlined below — nothing to read, no files to create.\n\n"
-        f"{content}\n\n"
-        "Respond with ONLY the JSON object as your final message text (extract\n"
-        "message, angle, audience, name, summary, and — when a clear structure is\n"
-        "implied — an optional `arc` like \"how-to-process (Hook → Thesis → Steps → CTA)\";\n"
-        "plus optional customization/notes; prefer the input language). No markdown\n"
-        "code fences, no preamble, no prose, no tool calls — the caller captures\n"
-        "your text reply and writes/validates intent.json itself. flow is automation → autonomous.\n"
+        "Extract the faceless-explainer video intent from the inlined source text "
+        "below into a single JSON object (autonomous mode — no questions, no tools, "
+        "no files to read or write).\n\n"
+        "Required string fields (use the SAME language as the source text):\n"
+        '- "message": one-sentence core thesis / takeaway the viewer will remember.\n'
+        '- "angle": teaching perspective and tone (e.g. counterintuitive breakdown, '
+        "practical checklist, cautionary story).\n"
+        '- "audience": target viewer persona and knowledge level.\n'
+        '- "name": concise video title (<= 15 chars in CJK or 2-5 words in English).\n'
+        '- "summary": 2-3 sentence executive summary of what the video covers.\n'
+        "Optional fields (include when supported by the source):\n"
+        '- "arc": best-fit narrative structure (`concept-explainer`, `how-to-process`, '
+        '`listicle`, or `story-explainer`) plus beat flow in parentheses, e.g. '
+        '"how-to-process (Hook -> Thesis -> Steps -> CTA)".\n'
+        '- "customization": explicit style/aspect/duration/voice requests if present.\n'
+        '- "notes": key constraints or must-keep facts/numbers from the source.\n\n'
+        "Keep thinking brief (a few lines only — do not draft the JSON in thinking). "
+        "Respond with ONLY the raw JSON object (no markdown fences, no prose).\n\n"
+        "── source text ──\n"
+        f"{content}\n"
+        "── end source text ──\n"
     )
 
 

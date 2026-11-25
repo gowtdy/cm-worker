@@ -475,13 +475,21 @@ def _build_design_prompt(
         "1. **Video direction — creative body** (plain prose with **bold** labels, NOT "
         "`##` headings — it joins the pre-written palette/type under the existing "
         "`## Video direction` heading): color role-mapping (which candy = which "
-        "emphasis), motion grammar, rhythm/held-frames (name the breather vs "
-        "reveal-cascade frame numbers), caption band, negative list, "
+        "emphasis; text on white/cream surfaces MUST use `ink` — light/warm candies "
+        "like `yellow`, `lime`, `mint`, `peach`, `lavender`, `sky` are for pill/badge "
+        "FILLS only, NEVER text color on light surfaces), motion grammar, "
+        "rhythm/held-frames (name the breather vs reveal-cascade frame numbers), "
+        "caption keep-out (root `captions.html` owns the bottom 17% — NEVER design, "
+        "mention, or place an in-frame caption band, subtitle strip, or bottom rule), "
+        "negative list, "
         "**Locked transitions** (one line, every frame in order, e.g. "
         "`F1 cut → F2 push-slide RIGHT → …` — copy each frame's existing "
         "`transition_in` verbatim, never rename it; the shot sequences land them), and "
-        "**Shared stage** (which adjacent frames share one stage and what persists "
-        "across the cut; `none` if none — the per-frame summary below flags candidates).\n\n"
+        "**Shared stage** (which adjacent frames share one stage, locking the exact "
+        "container width — e.g. `56cqw` card — title text, Flex/Grid slot layout, and "
+        "the COMPLETE numbered list of short slot labels that stay identical across "
+        "every shared frame so inactive slots dim rather than turn blank/`—`/renamed; "
+        "`none` if none — the per-frame summary below flags candidates).\n\n"
         "2. **Exact H2 parser-anchor heading `## Blueprint assignment` on its own line** "
         "(REQUIRED literal `## Blueprint assignment` — do NOT replace `##` with bold "
         "and do NOT omit it, the harness splits on this exact H2 line):\n\n"
@@ -877,6 +885,15 @@ def _build_worker_prompt(
         "default shape (e.g. \"assemble and hold\"). When they clash, follow the motion "
         "grammar and state the adaptation in ONE Adapt sentence — decide once here, do "
         "NOT re-read or re-derive the tension in your thinking.\n\n"
+        "VISUAL GUARDRAILS: (1) NEVER place an in-frame caption band, bottom subtitle "
+        "strip, or footer rule — root `captions.html` already owns the bottom 17% "
+        "(`y > 83cqh`). (2) Scale the focal hero to fill 35–55% of the canvas (never a "
+        "tiny lone pill floating on empty ground). (3) When `[DESIGN CONTRACT]` defines "
+        "a **Shared stage** covering your frame, keep its exact card dimensions, slot "
+        "grid, and complete numbered slot labels verbatim (dim inactive slots; never "
+        "render blank slots, `—` dashes, or renamed labels). (4) Text on white/cream "
+        "surfaces MUST use `ink`; light candies (`yellow`/`lime`/`mint`/`peach`) are "
+        "pill fills only, never text on light surfaces.\n\n"
         "`- rules:` is REQUIRED (a reply without it is rejected and re-dispatched): ≥1, "
         "ideally 2–4 ids, plain comma-separated, each an exact rule id from the list "
         "below. Pick the ids for the motions your Scenes actually use — from the "
@@ -1319,8 +1336,18 @@ def _run_frame_workers(
 
     additions: dict[str, str] = {}
     failed: list[str] = []
+    raw_warmup = os.environ.get("HTMLVIDEO_PREFIX_WARMUP_SECONDS", "").strip()
+    try:
+        warmup_s = float(raw_warmup) if raw_warmup else 1.8
+    except ValueError:
+        warmup_s = 1.8
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        running = {pool.submit(run_one, fn, 0, None): (fn, 0) for fn in order}
+        running: dict = {}
+        for idx, fn in enumerate(order):
+            fut = pool.submit(run_one, fn, 0, None)
+            running[fut] = (fn, 0)
+            if idx == 0 and len(order) > 1 and warmup_s > 0:
+                wait([fut], timeout=warmup_s)
         while running:
             done, _ = wait(list(running), return_when=FIRST_COMPLETED)
             for fut in done:
@@ -1458,7 +1485,11 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
             os.remove(stale)
         except OSError:
             pass
-    ledger_on = _env_on(VISUAL_LEDGER_ENV, default=True)
+    # 2026-11-25 (6b06 review): Layout+Motion ledger defaults OFF (=1 opt-in).
+    # Per-frame coordinate tables burned 22k thinking in Phase B and triggered
+    # 41k-thinking contradictions in frame_html; Shared-stage spec + CSS Flex/Grid
+    # replace hand-calculated coordinate ledgers.
+    ledger_on = _env_on(VISUAL_LEDGER_ENV, default=False)
     color_catalog = frozenset(_color_token_names(tokens)) if ledger_on else None
     additions = _run_frame_workers(
         project_dir, blocks, order, design, visual_dir, max_workers, logger,
