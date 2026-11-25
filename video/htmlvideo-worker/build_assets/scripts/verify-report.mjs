@@ -206,6 +206,38 @@ if (check.error) {
     say("  ⚠ check --json unparseable; used text fallback parser");
   }
   checkContradiction = checkParseContradiction(check.status, chk, contradictionOpts);
+  // Promote severe unreadability (`contrast_aa_failure` with ratio < 2.5, e.g.
+  // 1.4:1 yellow #F2D160 on white #FFFFFF in 6b06 F5) from non-held warning to
+  // blocking error AFTER checkParseMismatch/checkContradiction so CLI errorCount
+  // accounting stays exact. Skip caption words and low-alpha mid-fade samples.
+  const severeContrastFlag = (process.env.HTMLVIDEO_VERIFY_SEVERE_CONTRAST || "1").trim().toLowerCase();
+  if (!["0", "false", "off", "no"].includes(severeContrastFlag) && chk.warns.length) {
+    const keptWarns = [];
+    for (const w of chk.warns) {
+      const lowAlpha = /rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0\.[0-5]/i.test(String(w.fg || ""));
+      const isCaption = /#caption-word|\.caption-line/i.test(`${w.selector || ""} ${w.msg || ""}`);
+      if (
+        w.code === "contrast_aa_failure"
+        && typeof w.ratio === "number"
+        && w.ratio > 0
+        && w.ratio < 2.5
+        && !lowAlpha
+        && !isCaption
+      ) {
+        const suggest = w.suggestedColor
+          ? `Use high-contrast text color (e.g. ${w.suggestedColor} or #1A1A1A on light / #FFFFFF on dark; fg=${w.fg || "?"} on bg=${w.bg || "?"}).`
+          : `Use dark ink (#1A1A1A) on light surfaces or #FFFFFF on dark surfaces (ratio ${w.ratio}:1 < 2.5:1).`;
+        chk.errors.push({
+          ...w,
+          mark: "✗",
+          fixHint: w.fixHint || suggest,
+        });
+      } else {
+        keptWarns.push(w);
+      }
+    }
+    chk.warns = keptWarns;
+  }
   const isCaptionFP = (c) =>
     c.code === "text_box_overflow" && /#caption-word|\.caption-line/.test(c.msg);
   say(
@@ -276,7 +308,7 @@ for (const { entry, hits } of matchKnownFailures(ctx)) {
   for (const line of rest) say(`     ${line}`);
 }
 const realErrors = chk.errors.length + lintErrors.length + self.digit.length;
-const gate = (lintOk === true) && checkOk && self.digit.length === 0 && !tv.error && tv.status === 0;
+const gate = (lintOk === true) && checkOk && chk.errors.length === 0 && self.digit.length === 0 && !tv.error && tv.status === 0;
 say("");
 say(`GATE: ${gate ? "PASS ✓ (lint+check+structural+transitions — go to snapshot)" : `FAIL ✗ (lint ok=${lintOk}, check exit=${check.status === null ? "n/a" : check.status}, digit-led selectors=${self.digit.length}, transitions=${tv.error ? "n/a" : tv.status === 0 ? "ok" : tv.status}, ${realErrors} error finding(s))`}`);
 if (!gate) {

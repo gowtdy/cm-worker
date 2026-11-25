@@ -98,6 +98,13 @@ export function parseCheckJson(json, opts = {}) {
         dataAttributes:
           f.dataAttributes && typeof f.dataAttributes === "object" ? f.dataAttributes : {},
       };
+      if (typeof f.ratio === "number" && Number.isFinite(f.ratio)) item.ratio = f.ratio;
+      if (typeof f.requiredRatio === "number" && Number.isFinite(f.requiredRatio)) {
+        item.requiredRatio = f.requiredRatio;
+      }
+      if (f.fg) item.fg = String(f.fg);
+      if (f.bg) item.bg = String(f.bg);
+      if (f.suggestedColor) item.suggestedColor = String(f.suggestedColor);
       bucketFor(mark, buckets).push(item);
     }
   }

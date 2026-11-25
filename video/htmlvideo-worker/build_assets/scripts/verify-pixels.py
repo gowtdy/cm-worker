@@ -42,6 +42,8 @@ except AttributeError:  # PIL < 9
 
 CONTENT_DIST = 45.0      # RGB euclidean distance from dominant colour
 EMPTY_RATIO = 0.002      # content below this = empty frame
+STAGE_TOP_FRAC = 0.83    # top 83% main stage (excludes bottom 17% caption band)
+SPARSE_STAGE_WARN = 0.01 # <1.0% content in top 83% = tiny/under-scaled hero warning
 SPARSE_RATIO = 0.15      # content bbox below this = suspicious
 CORNER_BAND = 0.25       # bbox hugging within this fraction of an edge
 INK_MAX = 90             # max(r,g,b) below this = ink
@@ -61,6 +63,9 @@ def analyze(path):
     dominant = Counter(p[2] for p in pixels).most_common(1)[0][0]
     content = [(x, y, c) for (x, y, c) in pixels if rgb_dist(c, dominant) > CONTENT_DIST]
     ratio = len(content) / (sw * sh)
+    stage_h = max(1, int(sh * STAGE_TOP_FRAC))
+    stage_content = [(x, y, c) for (x, y, c) in content if y < stage_h]
+    stage_ratio = len(stage_content) / (sw * stage_h)
     quads = [0, 0, 0, 0]
     for (x, y, _) in content:
         q = (0 if x < sw / 2 else 1) + (0 if y < sh / 2 else 2)
@@ -77,9 +82,15 @@ def analyze(path):
     findings = []
     if ratio < EMPTY_RATIO:
         findings.append(("FAIL", f"empty frame ({ratio * 100:.2f}% content)"))
+    elif stage_ratio < EMPTY_RATIO:
+        findings.append((
+            "FAIL",
+            f"empty main stage above caption band ({stage_ratio * 100:.2f}% content in top 83%)",
+        ))
     else:
-        xs = [p[0] for p in content]
-        ys = [p[1] for p in content]
+        probe = stage_content if stage_content else content
+        xs = [p[0] for p in probe]
+        ys = [p[1] for p in probe]
         x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
         xspan = (x1 - x0 + 1) / sw
         yspan = (y1 - y0 + 1) / sh
@@ -96,12 +107,15 @@ def analyze(path):
         elif bbox_ratio < SPARSE_RATIO:
             shape = "full-width band" if xspan > 0.9 else ("tall band" if yspan > 0.5 else "small cluster")
             findings.append(("WARN", f"sparse content bbox={bbox_ratio * 100:.1f}% ({shape})"))
+        if stage_ratio < SPARSE_STAGE_WARN:
+            findings.append(("WARN", f"under-scaled main stage ({stage_ratio * 100:.2f}% content in top 83%)"))
     if ink < 0.00001 and ratio >= EMPTY_RATIO:
         findings.append(("WARN", "no text-contrast pixels detected"))
     return {
         "file": os.path.basename(path),
         "dominant": tuple(dominant),
         "content_pct": round(ratio * 100, 2),
+        "stage_content_pct": round(stage_ratio * 100, 2),
         "quads_tl_tr_bl_br_pct": quads_pct,
         "ink_pct": round(ink * 100, 3),
         "findings": findings,
