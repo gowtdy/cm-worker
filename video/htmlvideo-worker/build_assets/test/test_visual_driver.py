@@ -77,8 +77,30 @@ class DesignPromptTest(unittest.TestCase):
             vis._validate_design_contract("<creative>\n\n## Blueprint assignment\nF1 = a"),
             "<creative>\n\n## Blueprint assignment\nF1 = a",
         )
+        # P0-1 (2026-11-25 6b06cfc0eeb0cbb3): bold heading variant normalized to H2
+        bold_out = vis._validate_design_contract(
+            "**Color roles.** Cream.\n\n**Blueprint assignment**\nF1 = kinetic-type-beats (Adapt)\n"
+        )
+        self.assertIn("\n## Blueprint assignment\nF1 = kinetic-type-beats (Adapt)", bold_out)
+        self.assertNotIn("**Blueprint assignment**", bold_out)
+        # Bare F1 = ... lines without heading also get normalized
+        bare_out = vis._validate_design_contract(
+            "**Motion grammar.** Snap.\n\nF1 = kinetic-type-beats (Adapt)\nF2 = compose\n"
+        )
+        self.assertIn("\n## Blueprint assignment\nF1 = kinetic-type-beats (Adapt)", bare_out)
+        # H3 variant also normalized
+        h3_out = vis._validate_design_contract(
+            "prose\n\n### Blueprint assignment:\nF1 = titlecard-reveal (Adapt)\n"
+        )
+        self.assertIn("\n## Blueprint assignment\nF1 = titlecard-reveal (Adapt)", h3_out)
         with self.assertRaises(RuntimeError):
             vis._validate_design_contract("<creative, no assignment>")
+
+    def test_catalog_prompt_block_includes_blueprint_intents(self):
+        p = vis._catalog_prompt_block(frozenset({"titlecard-reveal", "comparison-split"}))
+        self.assertIn("- titlecard-reveal — ", p)
+        self.assertIn("- comparison-split — ", p)
+        self.assertIn("- compose — ", p)
 
     def test_falls_back_to_reading_frame_md_without_tokens(self):
         p = vis._build_design_prompt(
@@ -573,11 +595,13 @@ class PromptShapeTest(unittest.TestCase):
         self.assertIn("beat: recognition + concern", p)
         self.assertIn("6.153s", p)
         self.assertIn("transition_in: push-slide RIGHT", p)
+        self.assertIn("scene: Cream canvas. Two kinetic words swap in place.", p)
         self.assertIn('vo: "Most investors buy on a hunch."', p)
         self.assertNotIn("Neither ends well", p)        # only the first sentence
         self.assertIn("**Locked transitions**", p)
         self.assertIn("**Shared stage**", p)
         self.assertIn("F2→F3", p)
+        self.assertIn("parser-anchor", p)
 
     def test_shared_stage_pairs(self):
         sums = vis._frame_summaries(_BLOCKS, ["1", "2", "3"])
@@ -626,10 +650,15 @@ class DriverFanOutTest(unittest.TestCase):
     """Phase B end-to-end with Claude + gate mocked."""
 
     def setUp(self):
+        import os as os_
         import tempfile
         self.tmp = tempfile.mkdtemp(prefix="visual-driver-")
         self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
-        os_ = __import__("os")
+        # Existing fan-out fixtures omit ledger tables; pin LEDGER=0 here and
+        # verify default-ON ledger in a dedicated test below.
+        ledger_patch = mock.patch.dict(os_.environ, {vis.VISUAL_LEDGER_ENV: "0"})
+        ledger_patch.start()
+        self.addCleanup(ledger_patch.stop)
         self.board = "---\nformat: 1920x1080\n---\n\n" + "\n".join(
             _BLOCKS[k] for k in ("1", "2"))
         with open(os_.path.join(self.tmp, "STORYBOARD.md"), "w", encoding="utf-8") as f:
@@ -676,7 +705,9 @@ class DriverFanOutTest(unittest.TestCase):
             vis.build_frame_visual(self.tmp, log)
 
         design_kw = next(kw for label, _, kw in calls if label == "design")
-        self.assertEqual(design_kw["thinking_default"], "32000")
+        self.assertEqual(design_kw["skill"], "visual_design")
+        self.assertEqual(design_kw["thinking_default"], "12000")
+        self.assertTrue(design_kw.get("trunc_kill"))
         retry_prompt = next(p for label, p, _ in calls
                             if label == "F2" and "[RE-DISPATCH]" in p)
         self.assertIn("missing `Scene N", retry_prompt)
@@ -879,6 +910,67 @@ class DriverFanOutTest(unittest.TestCase):
         self.assertEqual(rc.call_args.kwargs["skill"], "visual_legacy")
         self.assertTrue(rc.call_args.args[1].startswith("/aiflow-build-frame-visual"))
 
+    def test_design_bold_blueprint_heading_and_missing_assignment_repair(self):
+        import os
+        # 1) Bold **Blueprint assignment** (6b06 failure) succeeds with ZERO extra calls
+        calls = []
+        def fake_bold(project_dir, prompt, logger, **kw):
+            label = kw.get("label")
+            calls.append(label)
+            if label == "design":
+                return 0, ("**Motion grammar.** snap\n\n**Blueprint assignment**\n"
+                           "F1 = titlecard-reveal (Adapt)\nF2 = compose (Adapt)\n")
+            return 0, (f"done OK {label[1:]}\n- focal: f\n- roles: r\n"
+                       "- rules: gsap-effects\nScene 1 (0–3): a\nScene 2 (3–6.2): b")
+        gate = mock.Mock(returncode=0, stdout="", stderr="")
+        log = logging.getLogger("test.visual.driver")
+        with mock.patch.object(vis, "run_claude_result", side_effect=fake_bold), \
+                mock.patch.object(vis.subprocess, "run", return_value=gate), \
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}):
+            vis.build_frame_visual(self.tmp, log)
+        self.assertNotIn("design-bp-fix", calls)
+        with open(os.path.join(self.tmp, ".hyperframes", "visual", "_design.md"), encoding="utf-8") as f:
+            self.assertIn("\n## Blueprint assignment\n", f.read())
+
+        # 2) Completely missing assignment triggers targeted repair instead of hard crash
+        with open(os.path.join(self.tmp, "STORYBOARD.md"), "w", encoding="utf-8") as f:
+            f.write(self.board)
+        calls2 = []
+        def fake_missing(project_dir, prompt, logger, **kw):
+            label = kw.get("label")
+            calls2.append((label, kw.get("skill")))
+            if label == "design":
+                return 0, "**Motion grammar.** snap only — forgot assignment"
+            if label == "design-bp-fix":
+                return 0, "## Blueprint assignment\nF1 = titlecard-reveal (Adapt)\nF2 = compose\n"
+            return 0, (f"done OK {label[1:]}\n- focal: f\n- roles: r\n"
+                       "- rules: gsap-effects\nScene 1 (0–3): a\nScene 2 (3–6.2): b")
+        with mock.patch.object(vis, "run_claude_result", side_effect=fake_missing), \
+                mock.patch.object(vis.subprocess, "run", return_value=gate), \
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}):
+            vis.build_frame_visual(self.tmp, log)
+        self.assertIn(("design-bp-fix", "visual_design"), calls2)
+
+    def test_ledger_is_default_on_in_driver(self):
+        import os
+        os.environ.pop(vis.VISUAL_LEDGER_ENV, None)
+        prompts = []
+        def fake(project_dir, prompt, logger, **kw):
+            label = kw.get("label")
+            if label == "design":
+                return 0, ("## Blueprint assignment\nF1 = compose\nF2 = compose\n")
+            prompts.append(prompt)
+            return 0, (f"done OK {label[1:]}\n- focal: f\n- roles: r\n"
+                       "- rules: gsap-effects\nScene 1 (0–3): a\nScene 2 (3–6.2): b\n"
+                       + _GATE_LEDGER)
+        gate = mock.Mock(returncode=0, stdout="", stderr="")
+        log = logging.getLogger("test.visual.driver")
+        with mock.patch.object(vis, "run_claude_result", side_effect=fake), \
+                mock.patch.object(vis.subprocess, "run", return_value=gate), \
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}):
+            vis.build_frame_visual(self.tmp, log)
+        self.assertTrue(all("## Layout ledger" in p for p in prompts))
+
 
 _GATE = "/app/scripts/storyboard-gate.mjs"
 
@@ -931,7 +1023,9 @@ class StoryboardGateRulesTest(unittest.TestCase):
         return p.returncode, p.stdout + p.stderr
 
     def test_valid_rules_pass(self):
-        rc, out = self._run(_gate_frame("- rules: discrete-text-sequence, context-sensitive-cursor\n"))
+        rc, out = self._run(
+            _gate_frame("- rules: discrete-text-sequence, context-sensitive-cursor\n") + _GATE_LEDGER
+        )
         self.assertEqual(rc, 0, out)
 
     def test_missing_rules_fails_with_hint(self):
@@ -961,15 +1055,15 @@ class StoryboardGateRulesTest(unittest.TestCase):
             env={"HTMLVIDEO_FRAME_VISUAL_LEDGER": "1"})
         self.assertEqual(rc, 0, out)
 
-    def test_ledger_on_missing_ledger_fails(self):
-        rc, out = self._run(
-            _gate_frame("- rules: discrete-text-sequence\n"),
-            env={"HTMLVIDEO_FRAME_VISUAL_LEDGER": "1"})
+    def test_ledger_on_by_default_missing_ledger_fails(self):
+        rc, out = self._run(_gate_frame("- rules: discrete-text-sequence\n"))
         self.assertEqual(rc, 1, out)
         self.assertIn("`## Layout ledger`", out)
 
-    def test_ledger_off_by_default_does_not_require(self):
-        rc, out = self._run(_gate_frame("- rules: discrete-text-sequence\n"))
+    def test_ledger_off_rollback_does_not_require(self):
+        rc, out = self._run(
+            _gate_frame("- rules: discrete-text-sequence\n"),
+            env={"HTMLVIDEO_FRAME_VISUAL_LEDGER": "0"})
         self.assertEqual(rc, 0, out)
         self.assertNotIn("Layout ledger", out)
 
