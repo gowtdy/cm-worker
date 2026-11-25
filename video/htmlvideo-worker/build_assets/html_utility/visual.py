@@ -32,12 +32,13 @@ VISUAL_CONCURRENCY_ENV = "HTMLVIDEO_FRAME_VISUAL_MAX_CONCURRENCY"
 VISUAL_REPAIR_ROUNDS_ENV = "HTMLVIDEO_FRAME_VISUAL_REPAIR_ROUNDS"
 VISUAL_DESIGN_THINKING_ENV = "HTMLVIDEO_FRAME_VISUAL_DESIGN_THINKING_TOKENS"
 VISUAL_BLUEPRINT_MAX_CHARS_ENV = "HTMLVIDEO_FRAME_VISUAL_BLUEPRINT_MAX_CHARS"
+VISUAL_TRUNC_KILL_ENV = "HTMLVIDEO_FRAME_VISUAL_TRUNC_KILL"
 DEFAULT_MAX_WORKERS = 16
 MAX_RETRY_ROUNDS = 1
 DEFAULT_REPAIR_ROUNDS = 2
-# Design sees every frame and writes the video-wide contract, so it keeps a
-# wider budget than the per-frame workers (profile default 24000).
-DEFAULT_DESIGN_THINKING_TOKENS = 32000
+# Design emits ~800–1100 tokens of creative direction + blueprint assignment;
+# 12000 keeps ~10x headroom while preventing 165s runaway thinking marathons.
+DEFAULT_DESIGN_THINKING_TOKENS = 12000
 DEFAULT_BLUEPRINT_MAX_CHARS = 5000
 
 VISUAL_DIR = os.path.join(".hyperframes", "visual")
@@ -73,6 +74,11 @@ GATE_COVERAGE = 0.9
 GATE_OVERRUN = 0.2
 _DONE_RE = re.compile(r"\bdone\s+OK\s+(\d+)\b")
 _ASSIGN_LINE_RE = re.compile(r"^F(\d+)\s*=\s*([\w-]+)(.*)$", re.M)
+_BP_ASSIGN_HEAD_RE = re.compile(
+    r"^[ \t]*(?:#{1,6}[ \t]*|\*\*[ \t]*)?Blueprint\s+assignment(?:[ \t]*\*\*)?[ \t]*[:：.]?[ \t]*$",
+    re.I | re.M,
+)
+_BP_INTENT_RE = re.compile(r"^\*\*intent\*\*:?[ \t]*(.+)$", re.I | re.M)
 _MODE_RE = re.compile(r"\((adapt|reproduce)\)", re.I)
 # `- blueprint: <id> …` field line (bullet/bold tolerant); group 1 is the id,
 # None on a mode-only line such as `- blueprint: Adapt`.
@@ -270,15 +276,49 @@ def _color_token_names(tokens: str) -> list[str]:
     return out
 
 
-def _catalog_prompt_block(catalog: frozenset[str], banned_tokens: list[str] | None = None) -> str:
+def _blueprint_intents(
+    catalog: frozenset[str] | None = None,
+    max_chars: int = 110,
+) -> dict[str, str]:
+    """One-line intent summary per blueprint from BLUEPRINTS_DIR/*.md so Phase A
+    does not burn thinking tokens guessing what each catalog id does."""
+    cat = catalog if catalog is not None else _blueprint_catalog()
+    out: dict[str, str] = {}
+    for bid in sorted(cat):
+        path = os.path.join(BLUEPRINTS_DIR, f"{bid}.md")
+        try:
+            with open(path, encoding="utf-8") as f:
+                head = f.read(1200)
+        except OSError:
+            continue
+        m = _BP_INTENT_RE.search(head)
+        if not m:
+            continue
+        desc = re.sub(r"\s+", " ", m.group(1)).strip()
+        if len(desc) > max_chars:
+            cut = desc[: max_chars - 1].rsplit(" ", 1)[0].rstrip(" ,;—–-")
+            desc = (cut or desc[: max_chars - 1]) + "…"
+        if desc:
+            out[bid] = desc
+    return out
+
+
+def _catalog_prompt_block(
+    catalog: frozenset[str],
+    banned_tokens: list[str] | None = None,
+    intents: dict[str, str] | None = None,
+) -> str:
     """Tell Phase A which ids are legal shot shapes — and which type tokens are not."""
     ids = sorted(catalog)
+    desc_map = intents if intents is not None else _blueprint_intents(catalog)
     lines = [
         "Valid blueprint ids (pick ONLY from this list, or "
         f"`{COMPOSE_BLUEPRINT}` when no catalog shape fits):",
     ]
-    lines.extend(f"- {i}" for i in ids)
-    lines.append(f"- {COMPOSE_BLUEPRINT}")
+    for i in ids:
+        desc = desc_map.get(i, "")
+        lines.append(f"- {i} — {desc}" if desc else f"- {i}")
+    lines.append(f"- {COMPOSE_BLUEPRINT} — custom shot shape when no catalog shape fits")
     banned = [t for t in (banned_tokens or []) if t and t not in catalog and t != COMPOSE_BLUEPRINT]
     if banned:
         lines.append(
@@ -313,6 +353,8 @@ def _frame_summary(frame_num: str, block: str) -> dict[str, str]:
     """Design-phase digest of one outline frame block (read-only facts)."""
     head = (block or "").split("\n", 1)[0]
     m = re.match(r"^## Frame\s+\d+\s*(?:[—–:-]+\s*)?(.*)$", head)
+    bp_raw = _block_field(block, "blueprint")
+    bp_tok = re.match(r"^([\w-]+)", bp_raw).group(1) if bp_raw and re.match(r"^([\w-]+)", bp_raw) else ""
     return {
         "num": frame_num,
         "title": (m.group(1).strip() if m else ""),
@@ -320,6 +362,7 @@ def _frame_summary(frame_num: str, block: str) -> dict[str, str]:
         "duration": _block_field(block, "duration"),
         "transition_in": _block_field(block, "transition_in"),
         "scene": _block_field(block, "scene"),
+        "blueprint": bp_tok,
         "voiceover": _first_sentence(_block_field(block, "voiceover")),
     }
 
@@ -385,6 +428,13 @@ def _frame_summary_block(summaries: list[dict[str, str]]) -> str:
             parts.append(s["duration"])
         if s.get("transition_in"):
             parts.append(f"transition_in: {s['transition_in']}")
+        if s.get("blueprint"):
+            parts.append(f"outline_bp: {s['blueprint']}")
+        if s.get("scene"):
+            sc = s["scene"]
+            if len(sc) > 160:
+                sc = sc[:159].rstrip() + "…"
+            parts.append(f"scene: {sc}")
         if s.get("voiceover"):
             parts.append(f'vo: "{s["voiceover"]}"')
         lines.append(" · ".join(parts))
@@ -421,8 +471,8 @@ def _build_design_prompt(
         "contract (everything you need is inlined here — do not invoke any skill). "
         + intro + "\n"
         + (f"{tokens}\n" if tokens else "")
-        + "Produce ONLY the creative body then the assignment, in this order:\n\n"
-        "**Video direction — creative body** (plain prose with **bold** labels, NOT "
+        + "Produce ONLY two sections in this exact order:\n\n"
+        "1. **Video direction — creative body** (plain prose with **bold** labels, NOT "
         "`##` headings — it joins the pre-written palette/type under the existing "
         "`## Video direction` heading): color role-mapping (which candy = which "
         "emphasis), motion grammar, rhythm/held-frames (name the breather vs "
@@ -432,6 +482,9 @@ def _build_design_prompt(
         "`transition_in` verbatim, never rename it; the shot sequences land them), and "
         "**Shared stage** (which adjacent frames share one stage and what persists "
         "across the cut; `none` if none — the per-frame summary below flags candidates).\n\n"
+        "2. **Exact H2 parser-anchor heading `## Blueprint assignment` on its own line** "
+        "(REQUIRED literal `## Blueprint assignment` — do NOT replace `##` with bold "
+        "and do NOT omit it, the harness splits on this exact H2 line):\n\n"
         "## Blueprint assignment\n"
         f"<one line per frame, frames are: {joined}. Format: `F<num> = <blueprint> "
         "(Adapt|Reproduce)` — `<blueprint>` MUST be a valid catalog id or "
@@ -439,7 +492,9 @@ def _build_design_prompt(
         + catalog_block
         + "\n"
         "Output this as your FINAL message text (no tools, no Write, no per-frame Scene "
-        "lines — the per-frame workers do those). flow is automation → autonomous.\n\n"
+        "lines — the per-frame workers do those). Keep thinking tight and decisive — "
+        "pick one clear catalog shape per frame without enumerating every candidate. "
+        "flow is automation → autonomous.\n\n"
         + (summary_block + "\n" if summary_block else "")
         + "── outline preamble ──\n"
         + preamble
@@ -447,12 +502,39 @@ def _build_design_prompt(
     )
 
 
+def _normalize_design_contract(design_text: str) -> str:
+    """Normalize minor heading formatting drift around `## Blueprint assignment`.
+
+    Observed 2026-11-25 (6b06cfc0eeb0cbb3): the creative-body instruction's
+    "NOT ## headings" caused the model to emit `**Blueprint assignment**`
+    instead of `## Blueprint assignment` even though all 7 `F<n> = ...` lines
+    were valid. Rewrite any bold/heading variant — or inject the heading before
+    the first `F<n> = ...` block — into the canonical `## Blueprint assignment`.
+    """
+    text = (design_text or "").strip()
+    if not text:
+        return ""
+    if _BP_ASSIGN_HEAD_RE.search(text):
+        return _BP_ASSIGN_HEAD_RE.sub("## Blueprint assignment", text, count=1)
+    if "## Blueprint assignment" in text:
+        return text
+    m = _ASSIGN_LINE_RE.search(text)
+    if m:
+        before = text[: m.start()].rstrip()
+        after = text[m.start() :].lstrip()
+        if before:
+            return f"{before}\n\n## Blueprint assignment\n{after}"
+        return f"## Blueprint assignment\n{after}"
+    return text
+
+
 def _split_design(design: str):
     """Split the Phase-A contract on `## Blueprint assignment` → (direction, assignment)."""
-    idx = design.find("## Blueprint assignment")
+    norm = design if "## Blueprint assignment" in (design or "") else _normalize_design_contract(design)
+    idx = norm.find("## Blueprint assignment")
     if idx == -1:
-        return design, ""
-    return design[:idx].strip(), design[idx:].strip()
+        return norm, ""
+    return norm[:idx].strip(), norm[idx:].strip()
 
 
 def _frame_blueprint(assignment: str, frame_num: str) -> str:
@@ -877,10 +959,12 @@ def _scripted_direction_head(tokens: str) -> str:
 def _validate_design_contract(design_text: str) -> str:
     """The model's half of the contract: creative body + `## Blueprint assignment`.
 
-    The `## Video direction` header + palette/type are scripted (see
-    `_scripted_direction_head`); the model supplies the creative body + assignment.
+    Normalizes minor heading variants (e.g. `**Blueprint assignment**` or bare
+    `F1 = ...` lines) before gating so a 2-char markdown slip never aborts the
+    whole pipeline. The `## Video direction` header + palette/type are scripted
+    (see `_scripted_direction_head`).
     """
-    text = design_text.strip()
+    text = _normalize_design_contract(design_text)
     if "## Blueprint assignment" not in text:
         raise RuntimeError("design contract missing ## Blueprint assignment")
     return text
@@ -1223,8 +1307,9 @@ def _run_frame_workers(
         if note:
             prompt += f"\n[RE-DISPATCH] {note} — output the additions now."
         t0 = time.monotonic()
+        worker_kw = {"trunc_kill": True} if _env_on(VISUAL_TRUNC_KILL_ENV, default=True) else {}
         rc, reply = run_claude_result(
-            project_dir, prompt, logger, skill="visual", label=f"F{fn}")
+            project_dir, prompt, logger, skill="visual", label=f"F{fn}", **worker_kw)
         wall = time.monotonic() - t0
         addition = _parse_worker_additions(
             fn, reply, rule_catalog, require_ledger, color_catalog)
@@ -1291,16 +1376,32 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
         preamble, order, tokens, catalog, _frame_summaries(blocks, order))
     design_thinking = str(_env_positive_int(
         VISUAL_DESIGN_THINKING_ENV, DEFAULT_DESIGN_THINKING_TOKENS, logger))
+    design_trunc = {"trunc_kill": True} if _env_on(VISUAL_TRUNC_KILL_ENV, default=True) else {}
     t0 = time.monotonic()
     drc, design_text = run_claude_result(
-        project_dir, design_prompt, logger, skill="visual", label="design",
-        thinking_default=design_thinking,
+        project_dir, design_prompt, logger, skill="visual_design", label="design",
+        thinking_default=design_thinking, **design_trunc,
     )
     log("visual design wall=%.1fs rc=%s out=%d chars",
         time.monotonic() - t0, drc, len(design_text or ""))
     if drc != 0:
         raise RuntimeError(f"claude visual design-contract failed rc:{drc}")
-    design = _scripted_direction_head(tokens) + "\n" + _validate_design_contract(design_text)
+    normalized_design = _normalize_design_contract(design_text)
+    if "## Blueprint assignment" not in normalized_design:
+        warn = logger.warning if logger else logging.getLogger(__name__).warning
+        warn("visual design missing ## Blueprint assignment — attempting targeted assignment repair")
+        repair_prompt = _build_assignment_rewrite_prompt(
+            normalized_design, [(fn, "") for fn in order], order, catalog, banned_tokens
+        )
+        rrc, repair_text = run_claude_result(
+            project_dir, repair_prompt, logger, skill="visual_design", label="design-bp-fix",
+            thinking_default=design_thinking, **design_trunc,
+        )
+        if rrc == 0 and repair_text:
+            normalized_design = _splice_assignment(
+                normalized_design, _normalize_design_contract(repair_text)
+            )
+    design = _scripted_direction_head(tokens) + "\n" + _validate_design_contract(normalized_design)
 
     # Catalog gate: every F<n> must name a real shot shape (or compose). Type
     # tokens (display/headline/…) were a common miss that left Phase B workers
@@ -1327,14 +1428,14 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
             design, misses, order, catalog, banned_tokens
         )
         rrc, rewrite_text = run_claude_result(
-            project_dir, rewrite_prompt, logger, skill="visual", label="design-bp-fix",
-            thinking_default=design_thinking,
+            project_dir, rewrite_prompt, logger, skill="visual_design", label="design-bp-fix",
+            thinking_default=design_thinking, **design_trunc,
         )
         if rrc != 0:
             raise RuntimeError(
                 f"claude visual design assignment rewrite failed rc:{rrc} (bad: {bad})"
             )
-        design = _splice_assignment(design, rewrite_text)
+        design = _splice_assignment(design, _normalize_design_contract(rewrite_text))
         if "## Blueprint assignment" not in design:
             raise RuntimeError(
                 "design assignment rewrite lost ## Blueprint assignment "
@@ -1357,7 +1458,7 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
             os.remove(stale)
         except OSError:
             pass
-    ledger_on = _env_on(VISUAL_LEDGER_ENV, default=False)
+    ledger_on = _env_on(VISUAL_LEDGER_ENV, default=True)
     color_catalog = frozenset(_color_token_names(tokens)) if ledger_on else None
     additions = _run_frame_workers(
         project_dir, blocks, order, design, visual_dir, max_workers, logger,
