@@ -299,6 +299,52 @@ test("other-lint-errors skips font_family_without_font_face", () => {
   );
 });
 
+test("gsap-exit-missing-hard-kill autofix inserts tl.set for non-clip targets and skips clips", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kf-gsap-"));
+  const frames = path.join(dir, "compositions", "frames");
+  fs.mkdirSync(frames, { recursive: true });
+  const frame = path.join(frames, "01.html");
+  const initial = [
+    "<template><script>",
+    '  tl.to("#ticker", { autoAlpha: 0, duration: 0.3, ease: "power1.in" }, 1.14);',
+    '  tl.to(".clip-exit", { autoAlpha: 0, duration: 0.3 }, 2.0);',
+    "</script></template>\n",
+  ].join("\n");
+  fs.writeFileSync(frame, initial, "utf8");
+  try {
+    const hits = [
+      {
+        file: "compositions/frames/01.html",
+        code: "gsap_exit_missing_hard_kill",
+        selector: "#ticker",
+        fixHint: 'Add `tl.set("#ticker", { autoAlpha: 0 }, 1.46)` after the exit tween.',
+        snippet: 'tl.to("#ticker", { autoAlpha: 0, duration: 0.3, ease: "power1.in" }, 1.14)',
+      },
+      {
+        file: "compositions/frames/01.html",
+        code: "gsap_exit_missing_hard_kill",
+        selector: ".clip-exit",
+        fixHint: '".clip-exit" is a clip element — wrap in an inner <div> instead.',
+        snippet: 'tl.to(".clip-exit", { autoAlpha: 0, duration: 0.3 }, 2.0)',
+      },
+    ];
+    const ctx = mkCtx({ videodir: dir, lintErrors: hits });
+    const m = matchKnownFailures(ctx).find((x) => x.entry.id === "gsap-exit-missing-hard-kill");
+    assert.ok(m, "gsap-exit-missing-hard-kill did not match");
+    const r1 = m.entry.autofix(ctx, m.hits);
+    assert.equal(r1.changed, true);
+    const after = fs.readFileSync(frame, "utf8");
+    assert.match(after, /tl\.to\("#ticker"[^\n]+\n  tl\.set\("#ticker", \{ autoAlpha: 0 \}, 1\.46\);/);
+    assert.doesNotMatch(after, /tl\.set\("\.clip-exit"/);
+    // idempotent: second run makes no changes
+    const r2 = m.entry.autofix(ctx, m.hits);
+    assert.equal(r2.changed, false);
+    assert.equal(fs.readFileSync(frame, "utf8"), after);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("transitions boundary mismatch is info (self-healing, non-actionable)", () => {
   const ctx = mkCtx({ transitions: { status: 1, error: null } });
   const m = matchKnownFailures(ctx).find((x) => x.entry.id === "transitions-verify");

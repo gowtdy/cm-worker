@@ -36,6 +36,7 @@ services:
       - /home/aigc/data/aioutput/worker-logs/htmlvideo-worker-logs/claude:/app/log/claude
       - /home/aigc/data/aioutput/worker-logs/htmlvideo-worker-logs/codex:/app/log/codex
       - /home/aigc/data/aioutput/worker-logs/htmlvideo-worker-logs/grok:/app/log/grok
+      - /home/aigc/data/agent/gemini:/root/.gemini
       - /home/aigc/data/aioutput/htmlvideos:/app/videos
       - /home/aigc/work/models/translate_models/fasttext_models:/app/models/fasttext_models
       - /home/aigc/data/ssh_control/htmlvideo-worker:/app/data/ssh_control
