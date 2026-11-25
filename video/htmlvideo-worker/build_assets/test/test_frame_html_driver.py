@@ -43,11 +43,13 @@ def make_project(skeleton=False, with_dispatch=True):
 
 class DriverTest(unittest.TestCase):
     def setUp(self):
-        # Production defaults: TWO_PHASE OFF, HEDGE ON. Unit fixtures expect a
-        # single call per attempt unless a test explicitly re-enables them.
+        # Production defaults: TWO_PHASE OFF, HEDGE ON, TEXT_OUT ON. Unit fixtures
+        # below exercise the tool-mode protocol (`done OK <fid>`) unless a test
+        # explicitly turns TEXT_OUT / TWO_PHASE / HEDGE on.
         patcher = mock.patch.dict(os.environ, {
             "HTMLVIDEO_FRAME_HTML_DRIVER": "1",
             "HTMLVIDEO_FRAME_HTML_SKELETON": "1",
+            fh.TEXT_OUT_ENV: "0",
             fh.TWO_PHASE_ENV: "0",
             fh.HEDGE_ENV: "0",
         }, clear=False)
@@ -730,3 +732,112 @@ class PromptModesTest(unittest.TestCase):
                       fh._worker_prompt("01-hook", True, project_dir=d))
         self.assertNotIn("data-skeleton",
                          fh._worker_prompt("02-answer", True, dispatch_text="# D\n"))
+
+
+class TextOutAndPrefixCacheTest(unittest.TestCase):
+    """P0-2 shared prefix cache order + P0-3 1-turn text-out mode."""
+
+    _TEMPLATE = (
+        '<template>\n<div id="root" data-composition-id="{fid}" data-duration="4">'
+        '<div class="clip bg" data-start="0" data-duration="4" data-track-index="0"></div>'
+        '<div class="clip" data-start="0" data-duration="4" data-track-index="1"><h1>Hi</h1></div>'
+        '</div>\n<style>.bg{position:absolute;inset:0}</style>\n'
+        '<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>\n'
+        '<script>window.__timelines=window.__timelines||{};const tl=gsap.timeline({paused:true});'
+        'window.__timelines["{fid}"]=tl;tl.to("h1",{opacity:1,duration:0.5},0);</script>\n</template>'
+    )
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {
+            "HTMLVIDEO_FRAME_HTML_DRIVER": "1",
+            "HTMLVIDEO_FRAME_HTML_SKELETON": "1",
+            fh.HEDGE_ENV: "0",
+            fh.TWO_PHASE_ENV: "0",
+        }, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop(fh.TEXT_OUT_ENV, None)
+        self.addCleanup(os.environ.pop, fh.TEXT_OUT_ENV, None)
+
+    def test_worker_prompt_shared_prefix_identical_across_frames(self):
+        shared = "## Project inputs\n- Project: /x\n\n## Role\nRULE CARD\n\n## Design contract\nGRAMMAR\n"
+        d1 = shared + "\n# Dispatch: 01-hook\n\n## Rule recipes (snippets)\n### a\n"
+        d2 = shared + "\n# Dispatch: 02-answer\n\n## Rule recipes (snippets)\n### b\n"
+        for text_out in (False, True):
+            p1 = fh._worker_prompt("01-hook", True, dispatch_text=d1, text_out=text_out)
+            p2 = fh._worker_prompt("02-answer", True, dispatch_text=d2, text_out=text_out)
+            cut1 = p1.index("# Dispatch: 01-hook")
+            cut2 = p2.index("# Dispatch: 02-answer")
+            self.assertEqual(cut1, cut2)
+            self.assertEqual(p1[:cut1], p2[:cut2], f"prefix diverged for text_out={text_out}")
+            self.assertNotIn("01-hook", p1[:cut1])
+
+    def _tpl(self, fid):
+        return self._TEMPLATE.replace("{fid}", fid)
+
+    def test_extract_template_html(self):
+        html = self._tpl("01-hook")
+        self.assertEqual(fh._extract_template_html(f"```html\n{html}\n```"), html)
+        self.assertEqual(fh._extract_template_html(f"Here:\n{html}\n"), html)
+        self.assertIsNone(fh._extract_template_html("done OK 01-hook"))
+        self.assertIsNone(fh._extract_template_html("<template>unclosed"))
+
+    def test_text_out_default_on_writes_template_with_zero_tools(self):
+        d = make_project(skeleton=True)
+        for fid in ("01-hook", "02-answer"):
+            with open(os.path.join(d, ".hyperframes", "frame-packets", f"{fid}.dispatch.md"), "w") as f:
+                f.write(f"## Role\ncard\n\n# Dispatch: {fid}\n\n{fh.RECIPES_SNIPPET_HEADING}\n### x\n")
+        seen = []
+
+        def fake(project_dir, prompt, logger, extra_env=None, skill=None, label=None, **kw):
+            fid = "01-hook" if "01-hook.html" in prompt else "02-answer"
+            seen.append((fid, prompt, kw))
+            return 0, f"```html\n{self._tpl(fid)}\n```"
+
+        with mock.patch.object(fh, "run_claude_result", side_effect=fake), \
+             mock.patch.object(fh, "build_index_html", return_value=(0, "")), \
+             mock.patch.object(fh, "_run_frame_selfcheck", return_value=(True, "PASS")):
+            fh.build_frame_html(d, None)
+
+        self.assertEqual(len(seen), 2)
+        for fid, prompt, kw in seen:
+            self.assertEqual(kw.get("tools"), "")
+            self.assertEqual(kw.get("max_turns"), fh.TEXT_OUT_MAX_TURNS)
+            self.assertIn("## Pre-built skeleton", prompt)
+            self.assertIn("<!-- skeleton-v1 -->", prompt)
+            with open(fh._frame_path(d, fid)) as f:
+                written = f.read()
+            self.assertIn(f'data-composition-id="{fid}"', written)
+            self.assertNotIn("```", written)
+
+    def test_text_out_missing_template_retries_with_diagnostic(self):
+        d = make_project(skeleton=True)
+        for fid in ("01-hook", "02-answer"):
+            with open(os.path.join(d, ".hyperframes", "frame-packets", f"{fid}.dispatch.md"), "w") as f:
+                f.write(f"# Dispatch: {fid}\n\n{fh.RECIPES_SNIPPET_HEADING}\n")
+        seen = []
+
+        def fake(project_dir, prompt, logger, extra_env=None, skill=None, label=None, **kw):
+            fid = "01-hook" if "01-hook.html" in prompt else "02-answer"
+            seen.append((fid, prompt))
+            if fid == "02-answer" and sum(x[0] == fid for x in seen) == 1:
+                return 0, "sorry no template"
+            return 0, self._tpl(fid)
+
+        with mock.patch.object(fh, "run_claude_result", side_effect=fake), \
+             mock.patch.object(fh, "build_index_html", return_value=(0, "")), \
+             mock.patch.object(fh, "_run_frame_selfcheck", return_value=(True, "PASS")):
+            fh.build_frame_html(d, None)
+
+        retries = [p for fid, p in seen if fid == "02-answer"]
+        self.assertEqual(len(retries), 2)
+        self.assertIn("without a complete <template>", retries[1])
+
+    def test_hedge_workdir_does_not_copy_claude_md(self):
+        d = make_project(skeleton=True)
+        with open(os.path.join(d, "CLAUDE.md"), "w") as f:
+            f.write("# Interactive CLAUDE.md\n")
+        work = fh._prepare_hedge_dir(d, "01-hook", 1)
+        self.addCleanup(__import__("shutil").rmtree, work, True)
+        self.assertFalse(os.path.exists(os.path.join(work, "CLAUDE.md")))
+        self.assertTrue(os.path.isfile(os.path.join(work, "frame.md")))
