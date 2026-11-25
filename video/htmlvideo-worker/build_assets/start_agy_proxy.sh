@@ -37,11 +37,11 @@ export no_proxy="$NO_PROXY_LIST"
 # Node 20+/undici 默认不读 HTTP_PROXY，agy 的网络请求需要显式打开
 export NODE_USE_ENV_PROXY=1
 
-if [ -n "${GEMINI_API_KEY:-}" ]; then
-    echo "Authentication: Gemini API Key"
-else
-    echo "Authentication: Existing CLI credentials"
-fi
+#if [ -n "${GEMINI_API_KEY:-}" ]; then
+#    echo "Authentication: Gemini API Key"
+#else
+#    echo "Authentication: Existing CLI credentials"
+#fi
 
 echo "Starting agy via proxy: $PROXY"
 exec "$AGY_BIN" "$@"
