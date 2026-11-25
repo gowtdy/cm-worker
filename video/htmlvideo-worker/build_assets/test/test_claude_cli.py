@@ -17,15 +17,16 @@ PROMPT = "PROMPT_SECRET_DO_NOT_LOG"
 CWD = "/tmp/htmlvideo-proj"
 
 # Mirrors html_utility.claude_cli._PROFILES (post-clamp thinking where needed).
-# Tuple: effort, thinking, max_turns, timeout, deny_agent, max_output
+# Tuple: effort, thinking, max_turns, timeout, deny_agent, max_output, tools
 _PROFILES = {
-    "intent": ("high", "32000", "100", 1800, True, "32000"),
-    "storyboard": ("high", "64000", "8", 1800, True, "16000"),
-    "visual": ("high", "24000", "100", 1800, True, "32000"),
-    "visual_legacy": ("high", "64000", "100", 1800, True, "32000"),
-    "frame_html": ("high", "64000", "60", 1500, True, "64000"),
-    "repair": ("high", "40000", "40", 600, True, "16000"),
-    "verify": ("medium", "32000", "40", 1800, True, "16000"),
+    "intent": ("high", "32000", "100", 1800, True, "32000", ""),
+    "storyboard": ("high", "64000", "8", 1800, True, "16000", "Write"),
+    "visual_design": ("medium", "12000", "4", 1800, True, "12000", ""),
+    "visual": ("high", "24000", "100", 1800, True, "32000", "Read"),
+    "visual_legacy": ("high", "64000", "100", 1800, True, "32000", None),
+    "frame_html": ("medium", "64000", "60", 1500, True, "64000", "Read,Write,Edit"),
+    "repair": ("high", "40000", "40", 600, True, "16000", None),
+    "verify": ("medium", "32000", "40", 1800, True, "16000", "Read,Write,Edit"),
 }
 _AGENT_DENY = ["Agent", "Task"]
 _FORBIDDEN = [
@@ -34,7 +35,6 @@ _FORBIDDEN = [
     "--no-session-persistence",
     "--max-budget-usd",
     "--max-thinking-tokens",
-    "--tools",
     "--system-prompt",
 ]
 _CLEAR_ENV = (
@@ -152,7 +152,7 @@ class RunClaudeTests(unittest.TestCase):
 
     def test_each_skill_profile(self) -> None:
         os.environ["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
-        for skill, (effort, thinking, turns, timeout, deny_agent, max_output) in _PROFILES.items():
+        for skill, (effort, thinking, turns, timeout, deny_agent, max_output, tools) in _PROFILES.items():
             with self.subTest(skill=skill):
                 self.popen_mock.reset_mock()
                 code, logs, cmd, kwargs = self._invoke(skill=skill)
@@ -173,6 +173,11 @@ class RunClaudeTests(unittest.TestCase):
                 self.assertNotIn("--model", cmd)
                 for flag in _FORBIDDEN:
                     self.assertNotIn(flag, cmd)
+                if tools is not None:
+                    self.assertIn("--tools", cmd)
+                    self.assertEqual(cmd[cmd.index("--tools") + 1], tools)
+                else:
+                    self.assertNotIn("--tools", cmd)
                 from html_utility.claude_cli import _BASE_DENY, _PROFILES as REAL
 
                 deny = list(_BASE_DENY)
@@ -371,11 +376,40 @@ class RunClaudeTests(unittest.TestCase):
             extra_env={"CLAUDE_CODE_SUBAGENT_EFFORT": "high"},
         )
         self.assertEqual(kwargs["env"]["CLAUDE_CODE_SUBAGENT_EFFORT"], "high")
-        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "high")
+        self.assertEqual(kwargs["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "medium")
         # B architecture: no stage dispatches subagents, frame_html included.
         self.assertIn("Agent", cmd)
         self.assertIn("Task", cmd)
         self.assertIn("WebFetch", cmd)
+
+    def test_tools_override_passes_empty_tools_flag(self) -> None:
+        from html_utility.claude_cli import run_claude_result
+        self._completed_popen(stdout=_result_json())
+        with self.assertLogs("test.claude_cli", level="INFO"):
+            run_claude_result(CWD, PROMPT, self.logger, skill="frame_html", tools="")
+        cmd = self.popen_mock.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--tools") + 1], "")
+
+    def test_init_strips_project_claude_md_by_default(self) -> None:
+        import tempfile
+        from html_utility import init_htmlvideo as ih
+        d = tempfile.mkdtemp(prefix="init-strip-")
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        claude_md = os.path.join(d, "CLAUDE.md")
+        def fake_run(cmd, **kw):
+            with open(claude_md, "w") as f:
+                f.write("# Interactive guide\n")
+            return mock.Mock(returncode=0, stdout="ok", stderr="")
+        with mock.patch.object(ih.subprocess, "run", side_effect=fake_run):
+            ret, _ = ih.init_htmlframe(self.logger, d, resolution="landscape")
+        self.assertEqual(ret, 0)
+        self.assertFalse(os.path.exists(claude_md))
+        # Rollback switch preserves CLAUDE.md
+        with mock.patch.object(ih.subprocess, "run", side_effect=fake_run), \
+             mock.patch.dict(os.environ, {"HTMLVIDEO_STRIP_PROJECT_CLAUDE_MD": "0"}):
+            ret, _ = ih.init_htmlframe(self.logger, d, resolution="landscape")
+        self.assertEqual(ret, 0)
+        self.assertTrue(os.path.isfile(claude_md))
 
     def test_thinking_at_output_cap_clamps_to_safe_cap(self) -> None:
         os.environ["HTMLVIDEO_CLAUDE_INTENT_THINKING_TOKENS"] = "128000"
@@ -591,7 +625,7 @@ class RunClaudeTests(unittest.TestCase):
         )
         env = kwargs["env"]
         self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "128000")
-        self.assertEqual(env["CLAUDE_CODE_EFFORT_LEVEL"], "high")
+        self.assertEqual(env["CLAUDE_CODE_EFFORT_LEVEL"], "medium")
 
     def test_heartbeat_logs_while_running(self) -> None:
         proc = mock.Mock()
