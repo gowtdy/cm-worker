@@ -973,6 +973,113 @@ class FixPromptTest(unittest.TestCase):
         self.assertNotIn("── actionable summary ──", p)
         self.assertNotIn("GATE: PASS", p)
 
+    def test_split_scan_filters_sibling_files_from_summary(self):
+        scan = (
+            "── error findings ──\n"
+            "    ✗ gsap_exit_missing_hard_kill  compositions/frames/01-buy.html — exit on #ticker\n"
+            "    ✗ gsap_exit_missing_hard_kill  compositions/frames/07-rules.html — exit on .f7-cap\n"
+            "\n"
+            "── actionable summary ──\n"
+            "  • google_fonts_import (non-blocking) — ignore.\n"
+            "  1) other lint errors — Fix the named file (compositions/frames/01-buy.html: exit on #ticker; compositions/frames/07-rules.html: exit on .f7-cap). Do not act on google_fonts_import.\n"
+            "\nGATE: FAIL ✗ (2 error finding(s))\n"
+        )
+        frags, _ = v._split_scan_by_file(scan)
+        self.assertEqual(set(frags.keys()), {
+            "compositions/frames/01-buy.html",
+            "compositions/frames/07-rules.html",
+        })
+        self.assertIn("01-buy.html", frags["compositions/frames/01-buy.html"])
+        self.assertNotIn("07-rules.html", frags["compositions/frames/01-buy.html"])
+        self.assertIn("07-rules.html", frags["compositions/frames/07-rules.html"])
+        self.assertNotIn("01-buy.html", frags["compositions/frames/07-rules.html"])
+        p1 = v._build_fix_prompt_from_fragment(
+            frags["compositions/frames/01-buy.html"], "/abs/proj", "scan findings",
+            target_file="compositions/frames/01-buy.html",
+        )
+        self.assertIn("Scope: fix ONLY `compositions/frames/01-buy.html`", p1)
+
+    def test_single_file_small_html_is_inlined_and_toggleable(self):
+        d = tempfile.mkdtemp(prefix="verify-inline-")
+        self.addCleanup(shutil.rmtree, d, True)
+        frames = os.path.join(d, "compositions", "frames")
+        os.makedirs(frames)
+        with open(os.path.join(frames, "01-hook.html"), "w", encoding="utf-8") as f:
+            f.write("<template><div class=\"word\">BUY</div></template>\n")
+        scan = (
+            "── check ──\n"
+            "  ✗ [Layout] content_overlap in compositions/frames/01-hook.html — div.word overlaps div.sub\n"
+            "── actionable summary ──\n"
+            "  1) content_overlap — real_collision×1 (compositions/frames/01-hook.html: div.word overlaps div.sub)\n"
+            "GATE: FAIL ✗ (1 error finding(s))\n"
+        )
+        os.environ.pop("HTMLVIDEO_VERIFY_INLINE_FILE", None)
+        p = v._build_fix_prompt(scan, d)
+        self.assertIn("── current file (", p)
+        self.assertIn("1\t<template><div class=\"word\">BUY</div></template>", p)
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_INLINE_FILE": "0"}):
+            p_off = v._build_fix_prompt(scan, d)
+        self.assertNotIn("── current file (", p_off)
+
+    def test_truncated_worker_with_landed_edits_proceeds_to_rescan(self):
+        d = tempfile.mkdtemp(prefix="verify-trunc-")
+        self.addCleanup(shutil.rmtree, d, True)
+        frames = os.path.join(d, "compositions", "frames")
+        os.makedirs(frames)
+        target = os.path.join(frames, "01-hook.html")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write("<template>before</template>\n")
+        logger = logging.getLogger("test.verify.trunc")
+
+        def edit_then_truncate(project_dir, prompt, log, label):
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("<template>after</template>\n")
+            return v.TRUNCATED_RC
+
+        scan = (
+            "── check ──\n"
+            "  ✗ [Layout] content_overlap in compositions/frames/01-hook.html — x\n"
+            "── actionable summary ──\n"
+            "  1) content_overlap — reposition\n"
+            "GATE: FAIL ✗ (1 error finding(s))\n"
+        )
+        with mock.patch.object(v, "_run_fix_worker", side_effect=edit_then_truncate), \
+             mock.patch.object(v, "_run_verify", return_value=(0, "GATE: PASS ✓\n")) as rescan, \
+             self.assertLogs("test.verify.trunc", level="WARNING") as logs:
+            rc, _ = v._apply_model_fix(d, scan, 1, logger)
+        self.assertEqual(rc, 0)
+        rescan.assert_called_once()
+        self.assertTrue(any("after writing edits" in m for m in logs.output))
+
+        # Without edits, TRUNCATED_RC still raises.
+        with mock.patch.object(v, "_run_fix_worker", return_value=v.TRUNCATED_RC):
+            with self.assertRaises(RuntimeError) as ctx:
+                v._apply_model_fix(d, scan, 1, logger)
+        self.assertIn("truncated", str(ctx.exception))
+
+    def test_run_verify_phase_logs_findings_on_failure(self):
+        d = tempfile.mkdtemp(prefix="verify-log-")
+        self.addCleanup(shutil.rmtree, d, True)
+        logger = logging.getLogger("test.verify.log")
+        proc = subprocess.CompletedProcess(
+            args=[], returncode=1,
+            stdout=(
+                "── check ──\n"
+                "  ✗ [Layout] content_overlap in compositions/frames/01.html — div.word overlaps div.sub\n"
+                "── actionable summary ──\n"
+                "  1) content_overlap — reposition\n"
+                "GATE: FAIL ✗ (1 error finding(s))\n"
+            ),
+            stderr="",
+        )
+        with mock.patch.object(v.subprocess, "run", return_value=proc), \
+             self.assertLogs("test.verify.log", level="INFO") as logs:
+            rc, _ = v._run_verify(d, logger)
+        self.assertEqual(rc, 1)
+        joined = "\n".join(logs.output)
+        self.assertIn("verify-all verify findings:", joined)
+        self.assertIn("div.word overlaps div.sub", joined)
+
 
 if __name__ == "__main__":
     unittest.main()
