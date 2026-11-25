@@ -76,10 +76,10 @@ export function withAssignment(sel, assigned, warnLabel) {
   return sel;
 }
 
-// `## Blueprint assignment` → Map(frameNumber → { id, mode }).
+// `## Blueprint assignment` (or tolerant bold/heading variant) → Map(frameNumber → { id, mode }).
 export function blueprintAssignment(storyboard) {
   const out = new Map();
-  const sec = /^## Blueprint assignment\s*$([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(storyboard ?? "");
+  const sec = /^[ \t]*(?:#{1,6}[ \t]*|\*\*[ \t]*)?Blueprint\s+assignment(?:[ \t]*\*\*)?[ \t]*[:：.]?[ \t]*$([\s\S]*?)(?=^## |(?![\s\S]))/im.exec(storyboard ?? "");
   if (!sec) return out;
   for (const m of sec[1].matchAll(/^\s*[-*]?\s*F(\d+)\s*[=:]\s*(.+)$/gm)) {
     const sel = selectBlueprint(`- blueprint: ${m[2].trim()}`);
@@ -577,7 +577,7 @@ const FRAME_MD_EXCERPT_HEADINGS = [
   "## Colors", "## Typography", "## Depth & Surface", "## Shapes",
   "## Components", "## Composition Rules",
   "## Approved Real Entities", "## Approved Entities",
-  "## Numerals & Claims (hard rule)", "## Pre-Render Self-Audit",
+  "## Numerals & Claims (hard rule)",
 ];
 
 function frameMdFrontmatter(frameMd) {
@@ -937,6 +937,20 @@ export function resolvedConflictsSection(conflicts) {
   return `\n## Resolved conflicts\n\n> Deterministic packet-time checks found these contradictions in the inputs above. The rulings are final and override every section above (Scene list > design contract > blueprint > prose) — apply them, do not re-deliberate.\n\n${items.join("\n")}\n`;
 }
 
+// P1-3: trim per-frame assignment table (each frame already gets `## Selected
+// blueprint`) and duplicate verbatim palette/type block when frame.md tokens
+// are already inlined right above. Keeps the creative body 100% shared across
+// frames so cross-worker prompt prefix caching hits.
+export function trimDesignContractForDispatch(designContract, hasFrameTokens = false) {
+  let out = String(designContract ?? "").trim();
+  if (!out) return "";
+  out = out.replace(/^[ \t]*(?:#{1,6}[ \t]*|\*\*[ \t]*)?Blueprint\s+assignment(?:[ \t]*\*\*)?[ \t]*[:：.]?[ \t]*$[\s\S]*$/im, "").trim();
+  if (hasFrameTokens) {
+    out = out.replace(/^\*\*Palette & type\b[^\n]*\*\*\n(?:(?!\n\n)[\s\S])*?(?:\n\n|$)/im, "").trim();
+  }
+  return out.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export function buildDispatchDocs({ projectDir, frames, outDir, animationDir, cardPath, frameMdPath, storyboard, maxDispatchBytes = 40000, inlineRecipes = inlineRecipesMode(), resolveConflicts = envSwitch("HTMLVIDEO_FRAME_PACKETS_RESOLVE_CONFLICTS", true) }) {
   const card = readFileSync(cardPath, "utf8").trim();
   const frameMd = frameMdPath && existsSync(frameMdPath) ? readFileSync(frameMdPath, "utf8") : "";
@@ -947,6 +961,8 @@ export function buildDispatchDocs({ projectDir, frames, outDir, animationDir, ca
   // projects built frame-html-first have no _design.md).
   const designMdPath = join(projectDir, ".hyperframes", "visual", "_design.md");
   const designContract = existsSync(designMdPath) ? readFileSync(designMdPath, "utf8").trim() : "";
+  const hasFrameTokens = excerpt.includes("## frame.md tokens (resolved values)");
+  const sharedDesign = trimDesignContractForDispatch(designContract, hasFrameTokens);
   const ruleIds = knownRuleIds(animationDir);
   const assignment = blueprintAssignment(storyboard);
   const direction = [videoDirection(storyboard), designContract].filter(Boolean).join("\n\n");
@@ -972,9 +988,10 @@ export function buildDispatchDocs({ projectDir, frames, outDir, animationDir, ca
       ? "## Rule index (open a recipe file only while authoring its phase)"
       : `## Rule index (recipes ${inlineRecipes === "full" ? "inlined in full" : "summarized"} below — open a file only if a detail is missing)`;
     const recipes = recipeSections(rules, animationDir, inlineRecipes);
-    const doc = `# Dispatch: ${frame.frameId}
-
-## Project inputs
+    // P0-2: shared cross-frame prefix FIRST (Project inputs → Role card →
+    // frame.md excerpt → video-wide Design contract) so concurrent workers hit
+    // prompt prefix cache; frame-specific sections follow `# Dispatch: <id>`.
+    const doc = `## Project inputs
 
 - Project: ${resolve(projectDir)}
 - RULES_DIR: ${join(animationDir, "rules")}
@@ -983,6 +1000,12 @@ export function buildDispatchDocs({ projectDir, frames, outDir, animationDir, ca
 
 ${card}
 
+## frame.md design tokens (excerpt)
+
+${excerpt}
+${sharedDesign ? `\n## Design contract (video-wide)\n\n${sharedDesign}\n` : ""}
+# Dispatch: ${frame.frameId}
+
 ## Assigned storyboard block
 
 ${frame.block}
@@ -990,11 +1013,7 @@ ${blueprintSection}
 ${indexHeading}
 
 ${ruleIndex}
-${recipes}
-## frame.md design tokens (excerpt)
-
-${excerpt}
-${designContract ? `\n## Design contract (video-wide)\n\n${designContract}\n` : ""}${resolveConflicts ? resolvedConflictsSection(conflicts) : ""}`;
+${recipes}${resolveConflicts ? resolvedConflictsSection(conflicts) : ""}`;
     const bytes = Buffer.byteLength(doc);
     if (bytes > maxDispatchBytes)
       console.warn(`frame-packets: dispatch ${frame.frameId} is ${bytes} bytes (budget ${maxDispatchBytes})`);
