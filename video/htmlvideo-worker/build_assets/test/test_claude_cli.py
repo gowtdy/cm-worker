@@ -735,10 +735,24 @@ class RunClaudeTests(unittest.TestCase):
         self.assertIn("claude skill cancelled", "\n".join(logs.output))
 
 
+    def test_unused_tools_and_hooks_disabled_for_self_contained_skills(self) -> None:
+        _, _, cmd, _ = self._invoke(skill="verify")
+        self.assertIn("--disable-slash-commands", cmd)
+        self.assertIn("--settings", cmd)
+        self.assertEqual(cmd[cmd.index("--settings") + 1], '{"disableAllHooks":true}')
+        for tool in ("Workflow", "ScheduleWakeup", "SendMessage", "CronCreate", "EnterWorktree"):
+            self.assertIn(tool, cmd)
+        # visual_legacy keeps Skill/hooks since it runs via slash command.
+        self.popen_mock.reset_mock()
+        _, _, legacy_cmd, _ = self._invoke(skill="visual_legacy")
+        self.assertNotIn("--disable-slash-commands", legacy_cmd)
+        self.assertNotIn("--settings", legacy_cmd)
+
+
 class TruncationWatcherTests(unittest.TestCase):
     SID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
-    def _watcher(self, entries, cap=48000):
+    def _watcher(self, entries, cap=48000, max_streak=2):
         import tempfile
         from html_utility.claude_cli import _TruncationWatcher
         cfg = tempfile.mkdtemp(prefix="cfg-")
@@ -749,7 +763,9 @@ class TruncationWatcherTests(unittest.TestCase):
         with open(path, "w") as f:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
-        w = _TruncationWatcher(self.SID, proj, cfg, cap, logging.getLogger("t"))
+        w = _TruncationWatcher(
+            self.SID, proj, cfg, cap, logging.getLogger("t"), max_streak=max_streak
+        )
         return w, path
 
     @staticmethod
@@ -758,20 +774,58 @@ class TruncationWatcherTests(unittest.TestCase):
             "id": mid, "stop_reason": stop, "usage": {"output_tokens": out},
             "content": [{"type": t} for t in types]}}
 
-    def test_meta_nudge_detected(self):
+    def test_meta_nudge_detected_at_streak_1(self):
         w, _ = self._watcher([
             self._asst("m1", ["thinking"], 48000),
             {"type": "user", "isMeta": True, "message": {"role": "user", "content":
              "[Your previous response had no visible output. Please continue and produce a user-visible response.]"}},
-        ])
+        ], max_streak=1)
         self.assertIn("no-visible-output", w.poll() or "")
 
-    def test_thinking_only_at_cap_detected_on_next_user_line(self):
+    def test_thinking_only_at_cap_detected_on_next_user_line_at_streak_1(self):
         w, _ = self._watcher([
             self._asst("m1", ["thinking"], 48000),
             {"type": "user", "message": {"role": "user", "content": "next"}},
-        ])
+        ], max_streak=1)
         self.assertIn("output cap", w.poll() or "")
+
+    def test_single_max_tokens_recovery_is_allowed_and_not_killed(self):
+        # 2026-11-24 6b05ba2b5d081581: m1 hits max_tokens thinking-only, Claude
+        # Code auto-resumes without a user JSONL line, m2 emits Edit, m3 emits
+        # fixed 1. Watcher must allow 1 auto-resume and never kill on recovery.
+        w, path = self._watcher([
+            self._asst("m0", ["thinking", "tool_use"], 259, stop="tool_use"),
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "html"}]}},
+            self._asst("m1", ["thinking"], 16000, stop="max_tokens"),
+        ], cap=16000)
+        self.assertIsNone(w.poll())
+        with open(path, "a") as f:
+            f.write(json.dumps(self._asst("m2", ["thinking"], 3781, stop="tool_use")) + "\n")
+            f.write(json.dumps(self._asst("m2", ["tool_use"], 3781, stop="tool_use")) + "\n")
+            f.write(json.dumps(self._asst("m3", ["thinking", "text"], 39, stop="end_turn")) + "\n")
+        self.assertIsNone(w.poll())
+
+    def test_two_consecutive_max_tokens_kills_immediately(self):
+        w, path = self._watcher([
+            self._asst("m1", ["thinking"], 16000, stop="max_tokens"),
+        ], cap=16000)
+        self.assertIsNone(w.poll())
+        with open(path, "a") as f:
+            f.write(json.dumps(self._asst("m2", ["thinking"], 16000, stop="max_tokens")) + "\n")
+        # Kills immediately on m2 without waiting for a 3rd message.
+        self.assertIn("output cap", w.poll() or "")
+
+    def test_flushed_chunk_with_truncation_and_recovery_never_retroactively_kills(self):
+        # Even at max_streak=1, consuming the full chunk sees m2's tool_use
+        # recovery and must not retroactively kill the finished session.
+        w, _ = self._watcher([
+            self._asst("m1", ["thinking"], 16000, stop="max_tokens"),
+            self._asst("m2", ["thinking"], 3781, stop="tool_use"),
+            self._asst("m2", ["tool_use"], 3781, stop="tool_use"),
+            self._asst("m3", ["text"], 39, stop="end_turn"),
+        ], cap=16000, max_streak=1)
+        self.assertIsNone(w.poll())
 
     def test_cap_with_tool_use_is_not_truncation(self):
         w, _ = self._watcher([
@@ -787,7 +841,7 @@ class TruncationWatcherTests(unittest.TestCase):
         self.assertIsNone(w.poll())
 
     def test_incremental_tail_and_partial_lines(self):
-        w, path = self._watcher([self._asst("m1", ["thinking"], 100)])
+        w, path = self._watcher([self._asst("m1", ["thinking"], 100)], max_streak=1)
         self.assertIsNone(w.poll())
         line = json.dumps({"type": "user", "isMeta": True, "message": {
             "content": "[Your previous response had no visible output. x]"}})
