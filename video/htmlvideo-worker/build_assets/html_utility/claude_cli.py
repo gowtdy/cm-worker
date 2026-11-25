@@ -42,6 +42,7 @@ _PROFILES: dict[str, dict[str, object]] = {
         "max_turns": 100, "timeout": 1800, "deny_agent": True,
         # 免工具模式(P3):intent 只需产出 JSON 文本,禁文件/命令工具 → 单请求 ~4-6s。
         # 模型只回文本,Python 侧 parse + 落盘 + 校验(详见 intent.py)。
+        "tools": "",
         "deny_tools": ["Write", "Edit", "Bash", "Read", "Glob", "Grep"],
     },
     "storyboard": {
@@ -62,23 +63,32 @@ _PROFILES: dict[str, dict[str, object]] = {
         # see storyboard_contract._prompt_header); a SessionStart "invoke a
         # skill" hook would re-inject SKILL.md, so deny it (same rationale as
         # visual/verify/frame_html).
+        "tools": "Write",
         "deny_tools": ["Bash", "Read", "Glob", "Grep", "Edit", "Skill"],
+    },
+    "visual_design": {
+        # Phase A global design contract (2026-11-25 P1-2): visible output is
+        # ~800-1100 tokens; 12000 leaves ~10x headroom while capping runaway
+        # thinking (6b06 burned 8.4k thinking / 165s at high×32000). Zero tools
+        # (--tools "") eliminates the unused Read schema.
+        # Rollback: HTMLVIDEO_CLAUDE_VISUAL_DESIGN_EFFORT=high / _MAX_OUTPUT_TOKENS=32000.
+        "effort": "medium", "thinking": "12000",
+        "max_output": "12000",
+        "max_turns": 4, "timeout": 1800, "deny_agent": True,
+        "tools": "",
+        "deny_tools": ["Bash", "Glob", "Grep", "Write", "Edit", "Read", "Skill"],
     },
     "visual": {
         # 2026-11-22 (6b01 analysis): a per-frame worker only emits ~1-2k
         # tokens of shot lines; F1 burned minutes drafting the full answer +
         # negative-list self-check in thinking. 24000 is the worker default;
-        # the design session asks for 32000 per call (visual.py). Rollback:
-        # HTMLVIDEO_CLAUDE_VISUAL_THINKING_TOKENS=64000 (wins over both).
+        # Rollback: HTMLVIDEO_CLAUDE_VISUAL_THINKING_TOKENS=64000.
         "effort": "high", "thinking": "24000",
         "max_output": "32000",  # 同上（visual 7.1m 历史最优）
         "max_turns": 100, "timeout": 1800, "deny_agent": True,
-        # Text-out workers (design + per-frame): harness merges replies; no
-        # Write/Edit. Keep Read for the optional one-file rules escape hatch.
-        # Bash/Glob/Grep were soft-forbidden in the prompt only — hard-deny
-        # stops the ls/find exploration tax (aligns with frame_html).
-        # Skill: the contract is inlined; a SessionStart "invoke a skill" hook
-        # would re-inject the whole SKILL.md (same rationale as verify).
+        # Text-out workers: harness merges replies; no Write/Edit. Keep Read
+        # for the optional one-file rules escape hatch via --tools whitelist.
+        "tools": "Read",
         "deny_tools": ["Bash", "Glob", "Grep", "Write", "Edit", "Skill"],
     },
     "visual_legacy": {
@@ -89,27 +99,14 @@ _PROFILES: dict[str, dict[str, object]] = {
         "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
     "frame_html": {
-        "effort": "high", "thinking": "64000",
-        # Per-worker session cap. 64000: enough output budget that a worker
-        # with inlined dispatch + skeleton Edit/Write never truncates on the
-        # first attempt, far enough below 128k that marathon thinking loses
-        # its silent runway. 2026-11-22 (6b02 analysis): the 48000 probe
-        # truncated first attempts and paid a full re-dispatch at 64000, so
-        # 64000 is the default again; serial stages stay 32000.
+        # P1-1 (2026-11-25): medium×64000 cuts thinking marathon while keeping
+        # the 64000 output cap. Rollback: HTMLVIDEO_FRAME_HTML_EFFORT=high.
+        "effort": "medium", "thinking": "64000",
         "max_output": "64000",
         "max_turns": 60,       # fill only; driver owns frame-selfcheck
-        # Per-worker wall kill-switch (a skeleton keeps a valid file on disk).
-        # 2026-11-19 test: 720s was too short — on the adaptive backend the
-        # thinking cap is stripped (see header note), so a worker burns 20–35k
-        # thinking tokens/turn; content-dense frames need >12 min and 4/6
-        # workers were killed at 720s mid-write. 1500s gives ~25 min headroom.
         "timeout": 1500,
         "deny_agent": True,    # B architecture: no stage dispatches subagents anymore
-        # Driver runs frame-selfcheck; Bash was only used for that + exploration.
-        # Skill: dispatch is inlined; a Skill call re-injects SKILL.md (2026-11-22:
-        # frame 01 ttfb 20s) — same rationale as verify.
-        # Effort/cap A/B: HTMLVIDEO_FRAME_HTML_EFFORT / _MAX_OUTPUT (frame_html.py,
-        # docs/2026-11-22-frame-html-effort-medium-ab.md); keep high×64000 until then.
+        "tools": "Read,Write,Edit",
         "deny_tools": ["Bash", "Glob", "Grep", "Skill"],
     },
     "repair": {
@@ -119,18 +116,9 @@ _PROFILES: dict[str, dict[str, object]] = {
     "verify": {
         # Default stays medium; A/B lower effort via HTMLVIDEO_CLAUDE_VERIFY_EFFORT=low.
         "effort": "medium", "thinking": "32000",
-        # 2026-11-19: 32000 太宽 — 单回合可烧 ~27k thinking token(≈100s)才触顶,
-        # verify 实测被深思考尖峰拖到 22.7m(76%=思考)。verify 不生成大内容(读报告 +
-        # 小 Edit:改色值/加 data-layout-allow-overlap),16000 足够「思考 + 数个批量
-        # Edit」,把尖峰压到 ~60s。A/B 更激进档 8000 走 HTMLVIDEO_CLAUDE_VERIFY_MAX_OUTPUT_TOKENS。
         "max_output": "16000",
-        # Fix role only (scan is Python-owned). 40 turns fail-fast vs 100 leftover.
         "max_turns": 40, "timeout": 1800, "deny_agent": True,
-        # Findings + playbook are inlined; Bash/Glob/Grep only re-explore.
-        # Keep Read/Edit/Write so the model can open and patch frame HTML.
-        # Deny Skill: SessionStart hooks may say "always invoke a skill", which
-        # contradicts the fix prompt — tool denial + disableAllHooks wins
-        # without needing --bare (bare would break ANTHROPIC_AUTH_TOKEN auth).
+        "tools": "Read,Write,Edit",
         "deny_tools": ["Bash", "Glob", "Grep", "Skill"],
     },
 }
@@ -515,6 +503,7 @@ def _resolve_profile(
         ),
         "deny_agent": bool(base["deny_agent"]),
         "deny_tools": list(base.get("deny_tools", [])),
+        "tools": base.get("tools"),
         "model": model,
         "thinking_fallback": str(base["thinking"]),
     }
@@ -527,6 +516,7 @@ def _profile_cmd(
     model: str,
     extra_deny: list[str] | None = None,
     session_id: str | None = None,
+    tools: str | None = None,
 ) -> list[str]:
     deny = list(_BASE_DENY)
     if deny_agent:
@@ -554,6 +544,8 @@ def _profile_cmd(
             "--settings",
             '{"disableAllHooks":true}',
         ])
+    if tools is not None:
+        cmd.extend(["--tools", tools])
     cmd.extend([
         "--disallowedTools",
         *deny,
@@ -896,12 +888,15 @@ def _run_profile(
     timeout_override: int | None = None,
     cancel_event: threading.Event | None = None,
     thinking_default: str | None = None,
+    tools_override: str | None = None,
 ) -> tuple[int, str]:
     profile = _resolve_profile(skill, logger, thinking_default)
     if max_turns_override and max_turns_override > 0:
         profile["max_turns"] = int(max_turns_override)
     if timeout_override and timeout_override > 0:
         profile["timeout"] = int(timeout_override)
+    if tools_override is not None:
+        profile["tools"] = tools_override
     if trunc_kill and not session_id:
         session_id = str(uuid.uuid4())
     env = _child_env(extra_env)
@@ -956,6 +951,7 @@ def _run_profile(
         model,
         profile.get("deny_tools"),
         session_id=session_id,
+        tools=profile.get("tools"),
     )
     watcher = None
     if trunc_kill and session_id:
@@ -1077,6 +1073,7 @@ def run_claude_result(
     timeout: int | None = None,
     cancel_event: threading.Event | None = None,
     thinking_default: str | None = None,
+    tools: str | None = None,
 ) -> tuple[int, str]:
     """run_claude + the parsed terminal 'result' text.
 
@@ -1108,6 +1105,7 @@ def run_claude_result(
         session_id=session_id, trunc_kill=trunc_kill,
         max_turns_override=max_turns, timeout_override=timeout,
         cancel_event=cancel_event, thinking_default=thinking_default,
+        tools_override=tools,
     )
 
 
