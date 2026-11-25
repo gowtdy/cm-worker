@@ -178,9 +178,10 @@ Write each `voiceover` as the final spoken line:
 
 ## Output protocol (this run)
 
-1. Compose the plan: structure → hook → frame list with all required fields (quality `voiceover` lines included).
-2. **First tool call MUST be** `Write("STORYBOARD.md")`. Do not Bash/Read/Glob project or skill files — every input is already inlined. Do not Write `SCRIPT.md`.
-3. Write the file in the SAME response as your reasoning — no draft or summary text before the Write. After the Write succeeds, reply with exactly one confirmation line (`STORYBOARD.md written — <N> frames, arc <arc>`) and stop. Do NOT echo a frame table or re-summarize `scene`/`voiceover`/`on screen`/`why` — the file is the deliverable, and the harness derives `SCRIPT.md` and the plan summary itself. No board, no approval questions, no waiting.
+1. Compose the plan: structure → hook → frame list with all required fields (quality `voiceover` lines included). Keep thinking concise — do not draft full frame blocks in thinking before emitting output.
+2. Follow the invoking prompt's footer mode:
+   - **1-turn text-out mode (default):** output ONLY the complete `STORYBOARD.md` markdown document directly as your final message text (no `Write` or other tools, no surrounding fences or commentary; the harness writes `STORYBOARD.md` and derives `SCRIPT.md`).
+   - **Write-tool fallback (`HTMLVIDEO_STORYBOARD_TEXT_OUT=0`):** first tool call MUST be `Write("STORYBOARD.md")`, then reply with one short confirmation line (`STORYBOARD.md written — <N> frames, arc <arc>`) and stop. Do not Bash/Read/Glob project or skill files; do not Write `SCRIPT.md`. No board, no approval questions, no waiting.
 
 ## Self-check before writing
 

@@ -726,7 +726,9 @@ const NEGATION_RE = /\b(?:no|never|without|not|avoid|avoiding|forbid\w*|instead 
 const MOTION_BANS = [
   {
     key: "3d",
-    banned: /\b3d\b|\brotate[xyz]?\b|\bperspective\b|\btilt/i,
+    // Do not treat surface/material bans ("no 3D extrude", "no 3D bevel/mesh/render")
+    // as banning CSS 3D card flips (`rotateY` / `perspective`).
+    banned: /\b3d\b(?!\s+(?:extrud\w*|bevel\w*|render\w*|mesh\w*|model\w*|shad\w*|light\w*))|\brotate[xyz]?\b|\bperspective\b|\btilt/i,
     used: /\b3d\b|\brotat(?:e|ion)[XY]\b|\bperspective\b|\btilt(?:s|ed|ing)?\b|\bflip(?:s|ped|ping)?\b/gi,
     // Blueprint bodies enumerate variants ("status pill flips", "tilted grid"):
     // only unambiguous 3D vocabulary counts there.

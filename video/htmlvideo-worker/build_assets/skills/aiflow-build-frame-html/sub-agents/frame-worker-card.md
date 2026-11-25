@@ -20,25 +20,25 @@
 
 ## Ruled conventions (do not re-derive)
 
-- **Fonts (Override).** Write only `frame.md` family names plus a generic fallback (`sans-serif` / `serif`). Never write `@import`, `<link>`, or `@font-face` — the driver runs `font-imports.mjs`. Lint still checks `font_family_without_font_face`; `google_fonts_import` is a warning only.
+- **Fonts (Override).** Write only `frame.md` family names + generic fallback (`sans-serif`/`serif`). Never write `@import`, `<link>`, or `@font-face` — driver runs `font-imports.mjs`. Lint checks `font_family_without_font_face`; `google_fonts_import` is warning only.
 - **GSAP.** Ship `<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>` inside `<template>`, pinned `3.14.2`.
 - **Root shape.** `<div id="root" data-composition-id="<frame_id>" data-width="1920" data-height="1080" data-duration="<duration>">`; style via `#root`.
-- **Units.** Primary `cqw` / `cqh` (ramp is cqw-based; 1cqw = 19.2px at 1920-wide); fixed-size décor (4/6/8/12px shadows/dots/strokes) uses px. Place on the card / frame.md cqw·cqh grid and tokens — no per-pixel math, no re-verifying positions, no conversion tables.
-- **Turn discipline.** Every turn ends with a tool call or visible text (thinking-only turns are discarded); undecided → pick sibling-consistent, proceed this turn.
-- **Thinking = layout/beat notes only.** Never draft CSS/HTML/JS in thinking; code appears only in Edit/Write arguments.
+- **Units.** Primary `cqw`/`cqh` (1cqw = 19.2px at 1920w); fixed décor (4/6/8/12px shadows/strokes) uses px. No pixel conversion tables.
+- **Turn & thinking discipline.** Every turn ends with a tool call or visible text; keep thinking to brief notes — never draft CSS/HTML/JS in thinking.
 
 ## Frame visual law
 
-- **Top ~83% keep-out.** Karaoke caption pill owns bottom ~17% — holds even when `Captions: disabled`.
-- **Fill the content area.** Compose whole top-83% region, not one small cluster mid-frame; hero high (≈0.2–0.35 × height), supporting elements down with rhythm, hero toward full-bleed (landscape: center ~0.42 × height).
-- **Visible text is short motion-graphics copy** — hero word / stat / one-word emphasis, never a narration sentence (caption track already shows the spoken words; repeating double-prints).
-- **Whole shot — never front-load.** Reveal pieces as voiceover reaches them (esp. back ~50%), macro camera move underneath — full canvas from ~25% = slide. Mid-shot reveals free; exits banned (`exit_animation_on_non_final_scene` — root transition IS the exit; settle/fade-out only if final frame); stillness note → entrance + quiet settle. Entrances via `fromTo`, not CSS-hidden starts; hero visible by `t <= 0.5s`.
-- **Shot-sequence fidelity.** Every Scene is a timeline phase; named motions reproduce their `RULES_DIR` recipe — never name-guess; blueprint's signature move recognizable (`compose` = no template).
-- **Roles design** — all invented. `focal` = hero; `foreground subject` — eye lands there, keep-out respected, text around not over; `background` — full-bleed, dimmed ~30–50% for legibility; `supporting` — quiet. Built in SVG/CSS/type, never from a file. Only real media: user image in `roles:`/`focal:` — `[video]` `.mp4` → muted `<video class="clip">`, direct child of frame root (nested in a timed element it freezes); untagged → `<img>`.
-- **Same-track clips never overlap** (`timeline_track_too_dense`) — track = temporal lane, stacking = CSS `z-index`; nest full-duration ambient décor (pills/stickers/grain) in the background clip, not N siblings on track `0`.
-- **Glow / badge décor: not a second timed sibling on the same track.** Glow/bloom/badge/accent lines with a hero are concurrent — never another `class="clip"` on the hero's `data-track-index` while windows overlap. Prefer nest (parent clip owns the window; children no timing attrs, GSAP drives them) or split (own `data-track-index` each). Side-by-side badges → distinct tracks or one parent clip.
-- **Full-bleed ground on a `class="clip"`, never `background` on `#root`.** One dedicated full-duration background clip (color field / gradient / grid) on the lowest content track — a root background is scene-clipped at assembly, so dark content can render invisible over the host body; the assembler paints the base ground.
-- **GSAP owns transforms — transform-only motion.** Never a CSS `transform` (e.g. `translateY(-50%)`) on a GSAP-animated element — GSAP overwrites it, centering jumps (`gsap_css_transform_conflict`); center via `xPercent`/`yPercent` (idioms below). Never tween layout props — `fontSize`, `letterSpacing`, `wordSpacing`, `width`, `height`, `top`, `left`, `margin*`, `padding*`, `roundProps` (`gsap_non_transform_motion`); a size change: fix CSS `font-size` at the larger size, keep `display: inline-block` (or block), tween `scale: endSize/startSize`.
+- **Top ~83% keep-out & NO in-frame caption band.** Root `captions.html` owns bottom ~17% (`y > 83cqh`) even when `Captions: disabled`. NEVER render `.caption-band`, bottom subtitle bars, or footer rules inside a frame.
+- **Scale & legibility floor.** Hero occupies `35–55%` of canvas (center ~`40–42cqh`, never a `<10%` lone box on empty ground). Pill/body labels `>= 1.05cqw` (load-bearing copy `>= 1.4cqw`, never `<0.85cqw`).
+- **Flex/Grid inside cards & splits (mandatory).** Lay out card interiors, slot racks, and side-by-side card+chart splits with `display: flex` or `display: grid`, `padding`, `gap`, and `box-sizing: border-box` (`min-width: 0`) — NEVER stack rows/titles/columns inside cards with raw `position: absolute` `%` offsets.
+- **Contrast & Shared stage.** Text on white/cream surfaces MUST use `ink`; light candies (`yellow`/`lime`/`mint`/`peach`/`lavender`/`sky`) are pill FILLS only, NEVER text color on light surfaces. For a **Shared stage**, keep exact card width/grid and render ALL numbered slot labels identically across frames (dim inactive slots, never blank/`—`).
+- **Clean morphs & SVG axes.** Morph/swap transitions fade outgoing cards to `autoAlpha: 0` (never an `opacity: 0.3` ghost). SVG line charts put X-axis at bottom (`y = H - pad`); higher values have smaller `y`.
+- **Short motion-graphics copy** — hero word / stat / 1–3 word label, never a narration sentence.
+- **Whole shot — never front-load.** Reveal pieces on voiceover cues (esp. back ~50%). Exits banned on non-final frames (`exit_animation_on_non_final_scene` — root transition IS the exit; fade-out only if final frame). Entrances via `fromTo`, hero visible by `t <= 0.5s`.
+- **Shot-sequence fidelity & Roles.** Every Scene = one timeline phase; named motions follow `RULES_DIR` recipes; keep blueprint signature move (`compose` = no template). `focal` = hero; `foreground subject` — text around not over; `background` — full-bleed; `supporting` — quiet. Built in SVG/CSS/type; only real media is user asset in `roles:`/`focal:` (`[video]` `.mp4` → muted `<video class="clip">` direct child of `#root`; image → `<img>`).
+- **Same-track clips never overlap** (`timeline_track_too_dense`) — track = temporal lane, stacking = `z-index`; nest ambient décor/glow/badges inside one parent clip (children without timing attrs) or use distinct `data-track-index` lanes.
+- **Full-bleed ground on `class="clip"`, never `background` on `#root`.** One full-duration background clip on track `0`.
+- **GSAP owns transforms.** Never put CSS `transform` on a GSAP-animated element (`gsap_css_transform_conflict`); center via `xPercent`/`yPercent`. Never tween layout props — `fontSize`, `letterSpacing`, `wordSpacing`, `width`, `height`, `top`, `left`, `margin*`, `padding*`, `roundProps` (`gsap_non_transform_motion`); for size changes, set larger CSS `font-size` and tween `scale`.
 
 ## Workflow
 
