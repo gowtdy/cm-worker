@@ -18,6 +18,12 @@ sudo mkdir -p /home/aigc/data/ssh_control/htmlvideo-worker
 sudo chown -R aigc:aigc /home/aigc/data/ssh_control/htmlvideo-worker
 sudo chmod -R 755 /home/aigc/data/ssh_control/htmlvideo-worker
 
+sudo mkdir -R /home/aigc/data/agent/gemini/antigravity-cli
+sudo chown -R aigc:aigc /home/aigc/data/agent/gemini/antigravity-cli
+sudo chmod -R 755 /home/aigc/data/agent/gemini/antigravity-cli
+
+cp conf/agy_settings.json /home/aigc/data/agent/gemini/antigravity-cli/settings.json
+
 echo "permission set completed!"
 echo "directory permission information:"
 ls -la /home/aigc/data/aioutput/worker-logs/htmlvideo-worker-logs
