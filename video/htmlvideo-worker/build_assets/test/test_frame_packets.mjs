@@ -275,7 +275,30 @@ export function testDispatchIngestsDesignContract() {
   const textB = readFileSync(docsB[0].path, "utf8");
   assert.ok(!textB.includes("## Design contract (video-wide)"),
     "no design-contract section when _design.md is absent");
-  console.log("design contract ingestion OK");
+
+  // P0-2 + P1-3: shared prefix byte-identical across frames; Blueprint assignment
+  // stripped from Design contract; Pre-Render Self-Audit excluded.
+  const textA1 = readFileSync(docsA[0].path, "utf8");
+  const textA2 = readFileSync(docsA[1].path, "utf8");
+  const cut1 = textA1.indexOf("# Dispatch: 01-hook");
+  const cut2 = textA2.indexOf("# Dispatch: 02-answer");
+  assert.ok(cut1 > 0 && cut1 === cut2, "shared prefix must precede # Dispatch");
+  assert.strictEqual(textA1.slice(0, cut1), textA2.slice(0, cut2),
+    "cross-frame prefix (Role + frame.md excerpt + Design contract) must be byte-identical");
+  assert.ok(textA1.slice(0, cut1).includes("## Design contract (video-wide)"));
+  assert.ok(textA1.slice(0, cut1).includes("## frame.md design tokens"));
+  assert.ok(!textA1.includes("## Blueprint assignment"),
+    "other frames' Blueprint assignment must be trimmed from Design contract");
+  // Duplicate Palette & type prose trimmed when frontmatter tokens are present
+  const trimmed = core.trimDesignContractForDispatch(
+    "## Video direction\n\n**Palette & type (verbatim from frame.md — authoritative, do not restate)**\nColors: cream `#F5F5F0`\n\n**Motion grammar.** Snap.\n\n## Blueprint assignment\nF1 = compose\n",
+    true,
+  );
+  assert.ok(!trimmed.includes("Palette & type") && trimmed.includes("Motion grammar") && !trimmed.includes("Blueprint assignment"));
+  // Tolerant blueprintAssignment parses bold **Blueprint assignment** too
+  const boldMap = core.blueprintAssignment("**Blueprint assignment**\nF1 = titlecard-reveal (Adapt)\n");
+  assert.strictEqual(boldMap.get(1)?.id, "titlecard-reveal");
+  console.log("design contract ingestion + shared prefix OK");
 }
 
 export function testSkeletons() {
