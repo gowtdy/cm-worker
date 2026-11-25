@@ -898,9 +898,21 @@ def _gate_frame(rules_line: str, scenes: bool = True) -> str:
     return body
 
 
+_GATE_LEDGER = (
+    "\n## Layout ledger\n\n"
+    "| element | role | place | size | color | order |\n"
+    "|---------|------|-------|------|-------|-------|\n"
+    "| word | focal | center | 8cqw | cream | 1 |\n\n"
+    "## Motion ledger\n\n"
+    "| scene | element | from → to | ease | dur |\n"
+    "|-------|---------|-----------|------|-----|\n"
+    "| scene1 | word | opacity 0 → 1 | power2.inOut | 1s |\n"
+)
+
+
 @unittest.skipUnless(__import__("shutil").which("node"), "node not installed")
 class StoryboardGateRulesTest(unittest.TestCase):
-    def _run(self, frame: str, direction: bool = True):
+    def _run(self, frame: str, direction: bool = True, env: dict | None = None):
         import os
         import subprocess
         import tempfile
@@ -911,8 +923,11 @@ class StoryboardGateRulesTest(unittest.TestCase):
             text += "## Video direction\n\ncalm\n\n"
         with open(os.path.join(d, "STORYBOARD.md"), "w", encoding="utf-8") as f:
             f.write(text + frame)
+        full_env = None
+        if env is not None:
+            full_env = {**os.environ, **env}
         p = subprocess.run(["node", _GATE, "--videodir", d],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=60, env=full_env)
         return p.returncode, p.stdout + p.stderr
 
     def test_valid_rules_pass(self):
@@ -939,6 +954,96 @@ class StoryboardGateRulesTest(unittest.TestCase):
         _rc, out = self._run(_gate_frame("", scenes=False), direction=False)
         self.assertIn("pre-design outline", out)
         self.assertNotIn("rules:", out)
+
+    def test_ledger_on_with_ledger_passes(self):
+        rc, out = self._run(
+            _gate_frame("- rules: discrete-text-sequence\n") + _GATE_LEDGER,
+            env={"HTMLVIDEO_FRAME_VISUAL_LEDGER": "1"})
+        self.assertEqual(rc, 0, out)
+
+    def test_ledger_on_missing_ledger_fails(self):
+        rc, out = self._run(
+            _gate_frame("- rules: discrete-text-sequence\n"),
+            env={"HTMLVIDEO_FRAME_VISUAL_LEDGER": "1"})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("`## Layout ledger`", out)
+
+    def test_ledger_off_by_default_does_not_require(self):
+        rc, out = self._run(_gate_frame("- rules: discrete-text-sequence\n"))
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("Layout ledger", out)
+
+
+_LEDGER_COLORS = frozenset({
+    "cream", "ink", "outline", "white", "coral", "lime", "lavender",
+    "sky", "violet", "yellow", "peach", "mint", "shadow",
+})
+
+_GOOD_LEDGER = (
+    "## Layout ledger\n\n"
+    "| element | role | place | size | color | order |\n"
+    "|---------|------|-------|------|-------|-------|\n"
+    "| word | focal | center x=50% y=42% | 8.5cqw | violet | 2 |\n"
+    "| bg | background | full-bleed | — | cream | 0 |\n\n"
+    "## Motion ledger\n\n"
+    "| scene | element | from → to | ease | dur |\n"
+    "|-------|---------|-----------|------|-----|\n"
+    "| scene1 | word | opacity 0 → 1 | power2.inOut | 1.2s |\n"
+)
+
+
+class LedgerValidationTest(unittest.TestCase):
+    def _good(self):
+        return _GOOD_REPLY + "\n" + _GOOD_LEDGER
+
+    def test_ledger_not_required_by_default(self):
+        # Backward compat: without require_ledger the old reply still passes.
+        self.assertIsNone(vis._diagnose_worker_reply("6", _GOOD_REPLY))
+
+    def test_ledger_requested_requires_both_tables(self):
+        self.assertIsNone(vis._diagnose_worker_reply(
+            "6", self._good(), require_ledger=True, color_catalog=_LEDGER_COLORS))
+        no_layout = self._good().replace("## Layout ledger", "## Layout table")
+        self.assertIn("`## Layout ledger`", vis._diagnose_worker_reply(
+            "6", no_layout, require_ledger=True, color_catalog=_LEDGER_COLORS))
+        no_motion = self._good().split("## Motion ledger")[0]
+        self.assertIn("`## Motion ledger`", vis._diagnose_worker_reply(
+            "6", no_motion, require_ledger=True, color_catalog=_LEDGER_COLORS))
+
+    def test_empty_ledger_tables_rejected(self):
+        empty = _GOOD_REPLY + "\n## Layout ledger\n\n## Motion ledger\n"
+        self.assertIn("data row", vis._diagnose_worker_reply(
+            "6", empty, require_ledger=True, color_catalog=_LEDGER_COLORS))
+
+    def test_unknown_ledger_color_rejected(self):
+        bad = self._good().replace("| violet |", "| red-magic |")
+        self.assertIn("palette role", vis._diagnose_worker_reply(
+            "6", bad, require_ledger=True, color_catalog=_LEDGER_COLORS))
+
+    def test_unknown_ledger_ease_rejected(self):
+        bad = self._good().replace("power2.inOut", "wiggle.fast")
+        self.assertIn("ease", vis._diagnose_worker_reply(
+            "6", bad, require_ledger=True, color_catalog=_LEDGER_COLORS))
+
+    def test_color_token_names_excludes_typography(self):
+        self.assertEqual(set(vis._color_token_names(_TOKENS)), {"cream", "coral"})
+
+
+class LedgerPromptTest(unittest.TestCase):
+    def test_worker_prompt_emits_ledger_contract_when_requested(self):
+        p = vis._build_worker_prompt(
+            "7", "block", "design", require_ledger=True,
+            color_catalog=frozenset({"cream", "ink", "violet"}))
+        self.assertIn("## Layout ledger", p)
+        self.assertIn("## Motion ledger", p)
+        self.assertIn("Valid color roles: ", p)
+        self.assertIn("cream", p)
+        self.assertIn("from → to", p)
+
+    def test_worker_prompt_omits_ledger_by_default(self):
+        p = vis._build_worker_prompt("7", "block", "design")
+        self.assertNotIn("## Layout ledger", p)
+        self.assertNotIn("## Motion ledger", p)
 
 
 if __name__ == "__main__":

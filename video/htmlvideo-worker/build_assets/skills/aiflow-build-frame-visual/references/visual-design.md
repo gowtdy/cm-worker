@@ -120,6 +120,32 @@ Do **not** repeat these per frame — restating video-level rules in every frame
 
 The bottom ~17% of the canvas is reserved for the caption pill. Plan every frame's content into the **top ~83%** so nothing important lands in the band (the worker enforces the pixel cutoff; you plan the layout). When captions are enabled, primary content and key visuals **cap at the band top**, and a centered hero anchors at **y ≈ 0.42 × height** (landscape ≈454, portrait ≈806), not the canvas midpoint; background / ambient / surface layers are exempt and may stay full-bleed. Holds even when captions are disabled — bottom-edge consistency.
 
+## Layout / Motion ledger (schema-sinking, opt-in)
+
+When `HTMLVIDEO_FRAME_VISUAL_LEDGER=1`, each frame ALSO appends **two concrete
+tables** after its Scene lines — the exact values the frame-html worker
+transcribes instead of re-deriving. This is the one opt-in exception to "no px /
+ease in Scene prose": the Scene prose stays vocabulary-only, and the numbers go
+in the ledger.
+
+    ## Layout ledger
+
+    | element | role | place | size | color | order |
+    |---------|------|-------|------|-------|-------|
+    | word | focal | center x=50% y=42% | 8.5cqw | violet | 1 |
+
+    ## Motion ledger
+
+    | scene | element | from → to | ease | dur |
+    |-------|---------|-----------|------|-----|
+    | scene1 | word | opacity 0 → 1 | power2.inOut | 1.2s |
+
+`color` MUST be a palette role from `## Video direction` (never a hex or a
+made-up hue); `ease` ONLY `power1-4`/`sine`/`quad`/`cubic`/`quart`/`quint`/`expo`/
+`circ`/`back`/`elastic`/`bounce` `.in`/`.out`/`.inOut`; `place`/`size` are values
+or named zones — never CSS selectors or GSAP calls. One data row per element /
+per scene motion; empty tables are rejected by the driver and the gate.
+
 ## Where the detail lives
 
 | For…                                                                            | Read                                                                                         |
@@ -144,6 +170,7 @@ The bottom ~17% of the canvas is reserved for the caption pill. Plan every frame
 - Each frame has a non-empty **`- rules:`** line of real rule ids, and each named motion in its Scenes carries its rule id in backticks (plain "types on" / "pop-stagger" alone is not a citation).
 - The invented hero fills 40–60% of the frame (a diagram big enough to read, a hero word near full-bleed) — not shrunk into decoration around empty space.
 - Layout named **inline** per Scene (template / density / depth / hierarchy — the **Layout** vocabulary here); motion named **inline** per Scene from the vocabulary (`motion-language.md`). No px / ease curves / ms / JS.
+- (Ledger mode) a non-empty `## Layout ledger` + `## Motion ledger` appended per frame, `color` from the `## Video direction` palette and `ease` from the motion grammar only.
 - Content planned into the top ~83% (caption band clear).
 - Palette / type pulled from `frame.md` by role — nothing invented.
 - You wrote no HTML; every visual is invented (no captured assets).

@@ -188,6 +188,55 @@ export function testDispatchInlinesFrontmatterTokens() {
   console.log("dispatch frontmatter tokens OK");
 }
 
+export function testDispatchInlinesLedger() {
+  // scheme-1 (L-4): the visual stage appends the Layout/Motion ledger to the
+  // frame block, and buildDispatchDocs inlines `frame.block` verbatim — so the
+  // ledger must reach the dispatch under `## Assigned storyboard block` with no
+  // extra inline code.
+  const dir = mkdtempSync(join(tmpdir(), "fh-ledger-"));
+  const card = join(dir, "card.md"); writeFileSync(card, "role card text");
+  writeFileSync(join(dir, "frame.md"), FIX_FRAME_MD);
+  const anim = join(dir, "rules"); mkdirSync(anim, { recursive: true });
+  writeFileSync(join(anim, "punch-in.md"), "recipe body");
+  const sb = `## Frame 1 — Hook
+
+- status: outline
+- src: compositions/frames/01-hook.html
+- duration: 4s
+- blueprint: compose
+- rules: punch-in
+
+Scene 1 (0.0–4.0s): word settles.
+
+## Layout ledger
+
+| element | role | place | size | color | order |
+|---------|------|-------|------|-------|-------|
+| word | focal | center x=50% y=42% | 8.5cqw | cream | 1 |
+
+## Motion ledger
+
+| scene | element | from → to | ease | dur |
+|-------|---------|-----------|------|-----|
+| scene1 | word | opacity 0 → 1 | power2.inOut | 1s |
+`;
+  writeFileSync(join(dir, "STORYBOARD.md"), sb);
+  const frames = core.splitFrames(sb).map((f) => ({ ...f, frameId: core.frameId(f) }));
+  const docs = core.buildDispatchDocs({
+    projectDir: dir, frames, outDir: join(dir, "out"), animationDir: anim,
+    cardPath: card, frameMdPath: join(dir, "frame.md"), storyboard: sb,
+  });
+  const text = readFileSync(docs[0].path, "utf8");
+  assert.ok(text.includes("## Layout ledger"), "dispatch must inline the Layout ledger");
+  assert.ok(text.includes("## Motion ledger"), "dispatch must inline the Motion ledger");
+  assert.ok(text.includes("center x=50% y=42%"), "ledger place values reach the dispatch");
+  assert.ok(text.includes("power2.inOut"), "ledger ease values reach the dispatch");
+  const blockStart = text.indexOf("## Assigned storyboard block");
+  assert.ok(blockStart > 0 && text.indexOf("## Layout ledger") > blockStart,
+    "ledger must land inside the Assigned storyboard block");
+  console.log("dispatch ledger inline OK");
+}
+
 export function testDispatchIngestsDesignContract() {
   const storyboard = FIX_STORYBOARD;
   const mk = () => {
@@ -878,6 +927,7 @@ if (process.argv[1] && process.argv[1].endsWith("test_frame_packets.mjs")) {
   testIdleLoopConflict();
   testCard(); testDispatchDocs(); testSkeletons();
   testDispatchInlinesFrontmatterTokens();
+  testDispatchInlinesLedger();
   testDispatchIngestsDesignContract();
   testSelectBlueprint();
   testDualBlueprintDispatch();

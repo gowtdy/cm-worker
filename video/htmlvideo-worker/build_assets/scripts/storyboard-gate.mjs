@@ -89,6 +89,37 @@ try {
 } catch {}
 const EASE_RE = /^(power[1-4]|sine|quad|cubic|quart|quint|expo|circ|back|elastic|bounce)\.(in|out|inOut)$/;
 
+/* ── layout/motion ledger (schema-sinking scheme-1, opt-in) ─────────────── */
+const ledgerOn = ["1", "true", "on", "yes"].includes(
+  (process.env.HTMLVIDEO_FRAME_VISUAL_LEDGER ?? "").trim().toLowerCase());
+// Body between a `## <name>` heading and the next `## ` heading (or end); null
+// when the heading is absent.
+function ledgerSection(block, name) {
+  const idx = block.search(new RegExp(`^## [ \\t]*${name}\\b`, "m"));
+  if (idx < 0) return null;
+  const afterHead = block.slice(idx).replace(/^[^\n]*\n/, "");
+  const end = afterHead.search(/\n## [\t ]/);
+  return end < 0 ? afterHead : afterHead.slice(0, end);
+}
+// Data rows in a `## <name>` markdown table (skipping header + `|---|` separator);
+// -1 when the heading is absent.
+function ledgerDataRowCount(block, name) {
+  const sec = ledgerSection(block, name);
+  if (sec === null) return -1;
+  let count = 0;
+  for (const raw of sec.split("\n")) {
+    const line = raw.trim();
+    if (!(line.startsWith("|") && line.endsWith("|"))) continue;
+    const cells = line.slice(1, -1).split("|").map((c) => c.trim());
+    if (!cells.length || cells.every((c) => !c)) continue;
+    if (cells.every((c) => /^:?-{2,}:?$/.test(c))) continue;
+    const first = cells[0].toLowerCase();
+    if (first === "element" || first === "scene") continue;
+    count++;
+  }
+  return count;
+}
+
 /* ── F3: per-frame checks ──────────────────────────────────────────────── */
 const windowRe = /^Scene\s+\d+\s*\(\s*([\d.]+)s?\s*[–—-]\s*([\d.]+)s?\s*\)/m;
 const tickRe = /`([^`]+)`/g;
@@ -146,6 +177,14 @@ for (const f of frameBlocks) {
     } else if (unknownRules.length) {
       say("✗", `${head}: \`- rules:\` has unknown rule id(s): ${unknownRules.join(", ")} — must be stems of ${rulesDir}/*.md (cut-catalog seams belong in Scene text, not here)`);
     }
+  }
+  if (ledgerOn && scenesRe.test(f.text)) {
+    const layoutRows = ledgerDataRowCount(f.text, "Layout ledger");
+    const motionRows = ledgerDataRowCount(f.text, "Motion ledger");
+    if (layoutRows < 0) say("✗", `${head}: missing \`## Layout ledger\` table`);
+    else if (layoutRows === 0) say("✗", `${head}: \`## Layout ledger\` has no data row`);
+    if (motionRows < 0) say("✗", `${head}: missing \`## Motion ledger\` table`);
+    else if (motionRows === 0) say("✗", `${head}: \`## Motion ledger\` has no data row`);
   }
   const unknowns = new Set();
   for (const t of f.text.matchAll(tickRe)) {
