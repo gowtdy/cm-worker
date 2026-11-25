@@ -139,7 +139,13 @@ if (lint.error) {
     for (const f of j.findings) {
       const file = rel(f.file || "?");
       if (f.severity === "error") {
-        lintErrors.push({ file, code: f.code, msg: trunc(f.message, 130) });
+        lintErrors.push({
+          file,
+          code: f.code,
+          selector: f.selector ? String(f.selector) : "",
+          fixHint: f.fixHint ? String(f.fixHint) : "",
+          msg: trunc(f.message, 160),
+        });
       } else if (f.severity === "warning") {
         const e = warnByCode.get(f.code) || 0;
         warnByCode.set(f.code, e + 1);
@@ -149,7 +155,10 @@ if (lint.error) {
     }
     if (lintErrors.length) {
       say("  ERRORS:");
-      for (const e of lintErrors) say(`    ✗ ${e.code}  ${e.file} — ${e.msg}`);
+      for (const e of lintErrors) {
+        const hint = e.fixHint ? `  [hint: ${trunc(e.fixHint, 200)}]` : "";
+        say(`    ✗ ${e.code}  ${e.file} — ${e.msg}${hint}`);
+      }
     }
     if (digitTell.size) {
       say("  digit-led id names (id_requires_css_escape warnings) — the tell, NOT the defect:");
