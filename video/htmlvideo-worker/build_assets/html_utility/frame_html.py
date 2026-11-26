@@ -300,7 +300,11 @@ SKELETON_ENV = "HTMLVIDEO_FRAME_HTML_SKELETON"
 # inlined), extracts <template>…</template> from the reply, writes disk, and runs
 # frame-selfcheck — eliminating T1 Read(skeleton) and T3 done OK (~60% uncached input).
 TEXT_OUT_ENV = "HTMLVIDEO_FRAME_HTML_TEXT_OUT"
-TEXT_OUT_MAX_TURNS = 2
+# 2026-11-26: 1 turn ONLY — on Qianfan adaptive-thinking (omitted/unsigned), a
+# Turn-1 cap hit followed by Claude Code's Turn-2 auto-resume drops 100% of
+# Turn-1 thinking and re-runs from scratch at the same cap. Failing fast on Turn
+# 1 returns TRUNCATED_RC so the driver immediately escalates to 64000 / slim fallback.
+TEXT_OUT_MAX_TURNS = 1
 _TEMPLATE_RE = re.compile(r"<template\b[^>]*>[\s\S]*?</template>", re.I)
 DISPATCH_SUFFIX = ".dispatch.md"
 # Bounded model→selfcheck loop per frame (default 3 attempts). Driver runs
@@ -338,22 +342,26 @@ EFFORT_ENV = "HTMLVIDEO_FRAME_HTML_EFFORT"
 TWO_PHASE_ENV = "HTMLVIDEO_FRAME_HTML_TWO_PHASE"
 TWO_PHASE_A_MAX_OUTPUT = "24000"
 TWO_PHASE_A_MAX_TURNS = 20
-# P2-3: hedge the last running frame when it shows no Write after HEDGE_AFTER s.
+# P2-3: hedge any slow frame independently when it shows no Write after HEDGE_AFTER s.
 HEDGE_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE"
 HEDGE_AFTER_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_AFTER"
-DEFAULT_HEDGE_AFTER = 300
+MAX_HEDGES_ENV = "HTMLVIDEO_FRAME_HTML_MAX_HEDGES"
+SLIM_FALLBACK_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_FALLBACK"
+DEFAULT_HEDGE_AFTER = 210
+DEFAULT_MAX_HEDGES = 2
 HEDGE_POLL_SECONDS = 5
 HEDGE_DIR = os.path.join(".hyperframes", "hedge")
-# Cross-frame prefix KV cache warm-up: give frame #1 a short head-start so the
-# gateway prefills the shared ~24KB prefix before siblings fan out. 0 disables.
+# Cross-frame prefix KV cache warm-up: give frame #1 a 5s head-start so the
+# gateway finishes prefill of the shared ~14k-token prefix before siblings fan out.
 PREFIX_WARMUP_ENV = "HTMLVIDEO_PREFIX_WARMUP_SECONDS"
-DEFAULT_PREFIX_WARMUP_SECONDS = 1.8
-# A hedge races a minimal fallback, not the primary's full build: degrade cap +
-# short turns + short wall-clock so it returns before the slow primary does
-# (the hedge only ever launches because the primary is already slow/stuck).
-HEDGE_MAX_OUTPUT = "32000"
+DEFAULT_PREFIX_WARMUP_SECONDS = 5.0
+# A hedge races a stripped minimal-motion fallback (blueprint + recipes stripped),
+# bounded to 1 turn / 24000 cap / 240s so it returns in ~60-110s without stalling.
+# 2026-11-26 (6b0795df): a 360s hedge that never lands just pins one of the
+# MAX_HEDGES slots (F2 hedge timed out at 360s while F7 waited until 562s).
+HEDGE_MAX_OUTPUT = "24000"
 HEDGE_MAX_TURNS = 30
-HEDGE_TIMEOUT = 600
+HEDGE_TIMEOUT = 240
 # P2-5: retries started with < DEGRADE_WINDOW s left before the stage deadline
 # use the minimal-motion prompt.
 DEGRADE_ENV = "HTMLVIDEO_FRAME_HTML_DEGRADE"
@@ -403,6 +411,36 @@ def _load_dispatch_text(project_dir: str, frame_id: str) -> str:
         raise FileNotFoundError(f"missing dispatch doc: {path}")
     with open(path, encoding="utf-8") as f:
         return f.read()
+
+
+_SLIM_DROP_SECTION_RE = re.compile(
+    r"\n## (?:Selected blueprint|Rule index)\b[^\n]*\n[\s\S]*?(?=\n## |\Z)"
+)
+_SLIM_RECIPES_SECTION_RE = re.compile(
+    r"\n(## Rule recipes \((?:snippets|full)\)[ \t]*)\n[\s\S]*?(?=\n## |\Z)"
+)
+
+
+def _minimal_dispatch_text(dispatch_text: str) -> str:
+    """Strip heavy per-frame blueprint + recipe sections for hedge/degraded fallbacks.
+
+    Preserves the entire shared prefix before `# Dispatch: <fid>` AND keeps the
+    `## Rule recipes (snippets|full)` heading as a 1-line stub so `_recipes_mode`
+    (and therefore the prompt prefix before `## Dispatch`) stays 100% byte-identical
+    for KV prefix cache hits while shedding ~12-20KB of complex recipe/blueprint prose.
+    """
+    anchor = "\n# Dispatch:"
+    idx = dispatch_text.find(anchor)
+    if idx == -1:
+        head, tail = "", dispatch_text
+    else:
+        head, tail = dispatch_text[:idx], dispatch_text[idx:]
+    tail = _SLIM_DROP_SECTION_RE.sub("", tail)
+    tail = _SLIM_RECIPES_SECTION_RE.sub(
+        r"\n\1\n\n> (Omitted in minimal-motion fallback — use simple GSAP `fromTo` rise/fade/scale-pop tweens directly; do NOT Read any file.)\n",
+        tail,
+    )
+    return head + tail
 
 
 def _recipes_mode(dispatch_text: str) -> str | None:
@@ -575,15 +613,38 @@ def _worker_prompt(
         "" if text_out else
         f" Optional, at most once: {CUT_CATALOG_PATH} (only for within-scene cut seams)."
     )
-    rich_note = (
-        "\n- Rich skeleton: the skeleton already carries a full-duration ground "
-        "clip (`data-skeleton=\"bg\"`, track 0) and Scene labels (`scene1`, "
-        "`scene2`, …) on the registered `tl` — style and reuse them, and drop "
-        "`data-skeleton` from the ground clip once it is styled."
-        if is_rich else ""
-    )
+    skeleton_html = _read_skeleton_text(sk_dir, frame_id) if skeleton_mode else ""
+    has_stage_card = 'id="stage-card"' in skeleton_html
+    has_hf_runtime = "const __hf =" in skeleton_html
+    if is_rich:
+        rich_note = (
+            "\n- Rich skeleton: the skeleton already carries a full-duration ground "
+            "clip (`data-skeleton=\"bg\"`, track 0) and Scene labels (`scene1`, "
+            "`scene2`, …) on the registered `tl` — style and reuse them, and drop "
+            "`data-skeleton` from the ground clip once it is styled."
+        )
+        if has_stage_card:
+            rich_note += (
+                "\n- Shared-stage scaffold: the pinned stage lockup/slots and "
+                "`#stage-card` are ALREADY built with collision-free cross-frame CSS "
+                "— KEEP `.hf-stage-*` styles and DOM intact (never move, resize, or "
+                "re-label the stage slots), drop `data-skeleton` from `#stage-card`, "
+                "and author this frame's hero content INSIDE `#stage-card`. When the "
+                "storyboard prose describes a different card width, column count or "
+                "single-card layout than this scaffold, the SCAFFOLD GEOMETRY WINS — "
+                "do not try to reconcile or redesign it; map the prose's content "
+                "onto the existing lockup slots + `#stage-card`."
+            )
+        if has_hf_runtime:
+            rich_note += (
+                "\n- Pre-injected `__hf` helpers: prefer `__hf.type(tl, textEl, "
+                "caretEl, fullStr, startAt, dur)` for deterministic character typing "
+                "(guarantees the full string lands with zero missing tail chars) and "
+                "`__hf.draw(tl, svgPathElOrSel, startAt, dur, ease)` for SVG stroke draw-on."
+            )
+    else:
+        rich_note = ""
     if text_out:
-        skeleton_html = _read_skeleton_text(sk_dir, frame_id) if skeleton_mode else ""
         skeleton_sec = (
             f"\n\n## Pre-built skeleton (fill and output the complete `<template>…</template>`)\n\n"
             f"```html\n{skeleton_html}\n```"
@@ -592,6 +653,9 @@ def _worker_prompt(
         target_block = (
             f"## Target frame & output protocol\n\n"
             f"- Frame id: `{frame_id}`\n"
+            f"- Text-out override: tools are disabled in this session — ignore any "
+            f"rule-card note about `Read`, `Write`, or replying `done OK`; emit "
+            f"ONLY the filled `<template>…</template>` directly.\n"
             f"- Scope is exactly one file: {frame_file} (driver writes it from "
             f"your `<template>…</template>` output; do NOT Read "
             f"`.hyperframes/frame-packets/{frame_id}.dispatch.md`).{rich_note}\n"
@@ -1071,6 +1135,8 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
     text_out_on = _env_on(TEXT_OUT_ENV, default=True) and not two_phase
     hedge_on = _env_on(HEDGE_ENV, default=True)
     hedge_after = _env_positive_int(HEDGE_AFTER_ENV, DEFAULT_HEDGE_AFTER, env_logger)
+    max_hedges = _env_positive_int(MAX_HEDGES_ENV, DEFAULT_MAX_HEDGES, env_logger)
+    slim_fallback = _env_on(SLIM_FALLBACK_ENV, default=True)
     degrade_on = _env_on(DEGRADE_ENV)
     degrade_window = _env_positive_int(
         DEGRADE_WINDOW_ENV, DEFAULT_DEGRADE_WINDOW, env_logger)
@@ -1118,6 +1184,8 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
             kw["timeout"] = SALVAGE_TIMEOUT
         else:
             dispatch_text = _load_dispatch_text(project_dir, fid)
+            if slim_fallback and mode in ("degraded", "hedge"):
+                dispatch_text = _minimal_dispatch_text(dispatch_text)
             recipes_mode = _recipes_mode(dispatch_text)
             prompt = _worker_prompt(
                 fid, skeleton_mode, project_dir=project_dir,
@@ -1156,7 +1224,12 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
                 rc, text = call(wd, prompt + _phase_b_suffix(fid, wd), extra_env,
                                 f"{label}-B", cancel_event)
         else:
-            rc, text = call(wd, prompt, extra_env, label, cancel_event, **kw)
+            # In text-out mode the model never touches disk directly (Python
+            # writes `frame_path` in `wd`), so keeping cwd=project_dir preserves
+            # the <system-reminder> Primary working directory and hits the shared
+            # prompt prefix cache instead of busting it on a temp hedge dir.
+            cli_cwd = project_dir if use_text_out else wd
+            rc, text = call(cli_cwd, prompt, extra_env, label, cancel_event, **kw)
         if use_text_out:
             done = (rc == 0) and _extract_and_write_frame_html(frame_path, text)
         else:
@@ -1180,7 +1253,7 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
     running: dict = {}   # future -> {fid, role, started, hash0, cancel, ...}
     races: dict = {}     # fid -> {primary, hedge, winner, workdir}
     hedged: set[str] = set()
-    pool = ThreadPoolExecutor(max_workers=max_workers + (1 if hedge_on else 0))
+    pool = ThreadPoolExecutor(max_workers=max_workers + (max_hedges if hedge_on else 0))
 
     def submit(fid, n, note, prev_rc, mode, remaining=None):
         cancel = threading.Event() if hedge_on else None
@@ -1196,34 +1269,35 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
         now = time.monotonic()
         if now - started >= deadline_s:
             return
-        live = {i["fid"] for i in running.values()}
-        if len(live) != 1:
+        active_hedges = sum(1 for i in running.values() if i["role"] == "hedge")
+        if active_hedges >= max_hedges:
             return
-        fid = next(iter(live))
-        if fid in hedged or fid in races:
-            return
-        if any(f not in ok_set for f in frame_ids if f != fid):
-            return
-        prim = next((f for f, i in running.items()
-                     if i["fid"] == fid and i["role"] == "primary"), None)
-        if prim is None:
-            return
-        info = running[prim]
-        if info["mode"] == "salvage" or now - info["started"] < hedge_after:
-            return
-        if _file_hash(_frame_path(project_dir, fid)) != info["hash0"]:
-            return  # the primary already wrote — no hedge
-        hedged.add(fid)
-        work = _prepare_hedge_dir(project_dir, fid, info["n"])
-        cancel = threading.Event()
-        fut = pool.submit(run_attempt, fid, info["n"], info["note"],
-                          info["prev_rc"], "hedge", work, cancel, None)
-        running[fut] = {"fid": fid, "role": "hedge", "started": now,
-                        "hash0": None, "cancel": cancel}
-        races[fid] = {"primary": prim, "hedge": fut, "winner": None,
-                      "workdir": work}
-        log("hedge start %s after %ss without a Write (workdir=%s)",
-            fid, int(now - info["started"]), work)
+        primaries = sorted(
+            ((f, i) for f, i in list(running.items()) if i["role"] == "primary"),
+            key=lambda pair: (pair[1]["started"], pair[1]["fid"]),
+        )
+        for prim, info in primaries:
+            if active_hedges >= max_hedges:
+                break
+            fid = info["fid"]
+            if fid in hedged or fid in races or fid in ok_set:
+                continue
+            if info["mode"] == "salvage" or now - info["started"] < hedge_after:
+                continue
+            if _file_hash(_frame_path(project_dir, fid)) != info["hash0"]:
+                continue  # the primary already wrote — no hedge
+            hedged.add(fid)
+            work = _prepare_hedge_dir(project_dir, fid, info["n"])
+            cancel = threading.Event()
+            fut = pool.submit(run_attempt, fid, info["n"], info["note"],
+                              info["prev_rc"], "hedge", work, cancel, None)
+            running[fut] = {"fid": fid, "role": "hedge", "started": now,
+                            "hash0": None, "cancel": cancel}
+            races[fid] = {"primary": prim, "hedge": fut, "winner": None,
+                          "workdir": work}
+            active_hedges += 1
+            log("hedge start %s after %ss without a Write (workdir=%s)",
+                fid, int(now - info["started"]), work)
 
     def finish_ok(fid, kind, n):
         ok_set.add(fid)
@@ -1355,9 +1429,18 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
                     and _salvageable(res["sc_ok"], res["sc_out"])
                 )
                 remaining = deadline_s - elapsed
+                # After a hard truncation on retry >= 2 (i.e. even the 64000 cap
+                # truncated), switch the final attempt to slim degraded mode so
+                # it sheds complex blueprint/recipes instead of repeating the stall.
+                force_degrade = (
+                    degrade_on
+                    and (
+                        remaining < degrade_window
+                        or (res["rc"] == TRUNCATED_RC and n >= 2)
+                    )
+                )
                 mode = "salvage" if salvage else (
-                    "degraded" if degrade_on and remaining < degrade_window
-                    else "normal")
+                    "degraded" if force_degrade else "normal")
                 attempts[fid] = n + 1
                 log("retry %s as %s %s/%s degraded=%s remaining=%ss", fid,
                     "attempt" if mode == "normal" else mode, n + 1,

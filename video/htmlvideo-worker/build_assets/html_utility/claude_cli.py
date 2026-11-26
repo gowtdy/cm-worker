@@ -59,29 +59,27 @@ _PROFILES: dict[str, dict[str, object]] = {
         "deny_tools": ["Bash", "Read", "Glob", "Grep", "Edit", "Skill"],
     },
     "visual_design": {
-        # Phase A global design contract (2026-11-25 P1-2): visible output is
-        # ~800-1100 tokens; 12000 leaves ~10x headroom while capping runaway
-        # thinking (6b06 burned 8.4k thinking / 165s at high×32000). Zero tools
-        # (--tools "") eliminates the unused Read schema.
+        # Phase A global design contract (2026-11-26): visible output is ~900-1300
+        # tokens (including ## Shared stage spec); 24000 avoids Turn-1 cap hits on
+        # adaptive-thinking Qianfan while max_turns=1 eliminates 100%-amnesia
+        # Turn-2 re-rolls when unsigned thinking is dropped. Zero tools (--tools "").
         # Rollback: HTMLVIDEO_CLAUDE_VISUAL_DESIGN_EFFORT=high / _MAX_OUTPUT_TOKENS=32000.
-        "effort": "medium", "thinking": "12000",
-        "max_output": "12000",
-        "max_turns": 4, "timeout": 1800, "deny_agent": True,
+        "effort": "medium", "thinking": "24000",
+        "max_output": "24000",
+        "max_turns": 1, "timeout": 1800, "deny_agent": True,
         "tools": "",
         "deny_tools": ["Bash", "Glob", "Grep", "Write", "Edit", "Read", "Skill"],
     },
     "visual": {
-        # 2026-11-25 (6b06 review, deepseek-v4-pro-0813): a per-frame worker emits
-        # ~350-600 tokens of shot lines; at high×32000 F2 burned 22.6k thinking
-        # (425s). medium×16000 leaves >20x output headroom while cutting runaway
-        # deliberation. Rollback: HTMLVIDEO_CLAUDE_VISUAL_EFFORT=high / _MAX_OUTPUT_TOKENS=32000.
-        "effort": "medium", "thinking": "16000",
-        "max_output": "16000",
-        "max_turns": 12, "timeout": 1800, "deny_agent": True,
-        # Text-out workers: harness merges replies; no Write/Edit. Keep Read
-        # for the optional one-file rules escape hatch via --tools whitelist.
-        "tools": "Read",
-        "deny_tools": ["Bash", "Glob", "Grep", "Write", "Edit", "Skill"],
+        # 2026-11-26: per-frame shot-sequence worker emits ~350-600 tokens; all
+        # inputs (design contract, blueprint, candidate rules) are inlined, so run
+        # 1-turn pure text-out (--tools "", max_turns=1) at medium×20000.
+        # Rollback: HTMLVIDEO_CLAUDE_VISUAL_EFFORT=high / _MAX_OUTPUT_TOKENS=32000.
+        "effort": "medium", "thinking": "20000",
+        "max_output": "20000",
+        "max_turns": 1, "timeout": 1800, "deny_agent": True,
+        "tools": "",
+        "deny_tools": ["Bash", "Glob", "Grep", "Write", "Edit", "Read", "Skill"],
     },
     "visual_legacy": {
         # HTMLVIDEO_FRAME_VISUAL_DRIVER=0 single-session flow: the model edits
@@ -91,15 +89,14 @@ _PROFILES: dict[str, dict[str, object]] = {
         "max_turns": 100, "timeout": 1800, "deny_agent": True,
     },
     "frame_html": {
-        # 2026-11-25 (6b06 review, deepseek-v4-pro-0813): visible <template> HTML
-        # is 3.1k-4.2k tokens and healthy thinking is 5k-15k tokens, whereas 64000
-        # let F3/F7 marathon to 37k-41k thinking (592-664s). 28000 caps runaway
-        # thinking on attempt 1 while leaving ~10k headroom above normal frames,
-        # and TRUNCATED_RC automatically escalates retry #2 to 64000.
+        # 2026-11-26: visible <template> HTML is 3.1k-4.5k tokens and complex frames
+        # need 18k-32k thinking. 28000 triggered 50% Turn-1 cap hits (F2/F4/F5) and
+        # amnesia Turn-2 re-rolls; 48000 restores >90% Attempt-1 completion while
+        # TRUNCATED_RC escalates retry #2 to 64000.
         # Rollback: HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS=64000.
-        "effort": "medium", "thinking": "28000",
-        "max_output": "28000",
-        "max_turns": 30,       # fill only; driver owns frame-selfcheck
+        "effort": "medium", "thinking": "48000",
+        "max_output": "48000",
+        "max_turns": 30,       # fill only; driver owns frame-selfcheck (TEXT_OUT overrides to 1)
         "timeout": 1500,
         "deny_agent": True,    # B architecture: no stage dispatches subagents anymore
         "tools": "Read,Write,Edit",
@@ -111,11 +108,17 @@ _PROFILES: dict[str, dict[str, object]] = {
     },
     "verify": {
         # Default stays medium; A/B lower effort via HTMLVIDEO_CLAUDE_VERIFY_EFFORT=low.
+        # 2026-11-26 (6b0795df): 16000 < thinking 32000 let a fix turn hit the cap
+        # with zero visible output; Qianfan's unsigned thinking made Claude Code's
+        # auto-resume re-think from scratch under the same cap (2×16000, 603s).
+        # Align the cap with the thinking budget and kill on the FIRST empty
+        # capped turn (trunc_streak=1); verify.py retries once at a higher cap.
         "effort": "medium", "thinking": "32000",
-        "max_output": "16000",
+        "max_output": "32000",
         "max_turns": 40, "timeout": 1800, "deny_agent": True,
         "tools": "Read,Write,Edit",
         "deny_tools": ["Bash", "Glob", "Grep", "Skill"],
+        "trunc_streak": 1,
     },
 }
 # TodoWrite is the legacy name; task-tracking now lives in TaskCreate/Update/
@@ -160,6 +163,7 @@ _INSPECT_PRELOAD = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "claude_inspect_full.js"
 )
 _DEBUG_REQUEST_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_DEBUG_REQUEST_FALSY = frozenset({"0", "false", "no", "off"})
 # Long adaptive-thinking turns can sit silent for minutes after "skill invoke".
 # Heartbeat + stderr progress lines keep htmlvideo_worker.log moving.
 _HEARTBEAT_DEFAULT_SECONDS = 15
@@ -299,13 +303,22 @@ class _TruncationWatcher:
             if msg.get("stop_reason"):
                 self._group_stop = msg.get("stop_reason")
             visible = bool(self._group_types - _THINKING_TYPES)
+            hit_cap = (
+                self._group_stop == "max_tokens"
+                or (
+                    self._group_stop == "end_turn"
+                    and self.cap > 0
+                    and self._group_max_out >= int(self.cap * 0.98)
+                )
+            )
             if visible:
                 # Recovery succeeded: visible output or tool_use emitted.
                 self._streak = 0
                 self._last_reason = None
-            elif self._group_stop == "max_tokens" and not self._group_counted:
-                # Terminal max_tokens with thinking only — count immediately
-                # instead of waiting for the next message.
+            elif hit_cap and not self._group_counted:
+                # Terminal cap hit (Anthropic max_tokens or Qianfan end_turn at
+                # max_tokens) with thinking only — count immediately instead of
+                # waiting for the next message.
                 self._group_counted = True
                 self._record_truncation(
                     f"thinking-only turn hit output cap "
@@ -322,12 +335,13 @@ class _TruncationWatcher:
                     str(b.get("text", "")) for b in content
                     if isinstance(b, dict) and b.get("type") == "text")
             had_visible = bool(self._group_types - _THINKING_TYPES)
+            was_counted = self._group_counted
             streak_before = self._streak
             self._close_group()
             if entry.get("isMeta") and text.lstrip().startswith(_TRUNC_META_PREFIX):
-                # Do not double-count if _close_group (or stop=max_tokens) already
-                # counted the immediately preceding assistant turn.
-                if self._streak == streak_before and not had_visible:
+                # Do not double-count if _close_group or the assistant entry
+                # already counted the immediately preceding assistant turn.
+                if not was_counted and self._streak == streak_before and not had_visible:
                     self._record_truncation("no-visible-output nudge (thinking-only turn)")
                 else:
                     self._last_reason = "no-visible-output nudge (thinking-only turn)"
@@ -502,6 +516,7 @@ def _resolve_profile(
         "tools": base.get("tools"),
         "model": model,
         "thinking_fallback": str(base["thinking"]),
+        "trunc_streak": base.get("trunc_streak"),
     }
 
 
@@ -615,6 +630,7 @@ def _log_parsed_result(
     rc: int,
     stdout: str,
     label: str | None = None,
+    output_cap: int = 0,
 ) -> tuple[int, str]:
     tag = _log_label(label)
     payload = _extract_result_payload(stdout)
@@ -675,6 +691,22 @@ def _log_parsed_result(
         )
     if rc == 0 and is_error is True:
         return 1, result
+    if rc == 0 and not result.strip() and output_cap > 0:
+        try:
+            out_tok = int(usage.get("output_tokens") or 0)
+        except (TypeError, ValueError):
+            out_tok = 0
+        if out_tok >= int(output_cap * 0.95):
+            logger.warning(
+                "claude skill empty result at output cap label=%s skill=%s "
+                "output=%s cap=%s — promoting rc=0 to TRUNCATED_RC (%s)",
+                tag,
+                skill,
+                out_tok,
+                output_cap,
+                TRUNCATED_RC,
+            )
+            return TRUNCATED_RC, ""
     return rc, result
 
 
@@ -835,13 +867,14 @@ def _wait_claude_proc(
 
 
 def _apply_debug_request_env(env: dict[str, str]) -> None:
-    """When HTMLVIDEO_CLAUDE_DEBUG_REQUEST is on, dump full Anthropic request bodies.
+    """When HTMLVIDEO_CLAUDE_DEBUG_REQUEST is on (default ON; =0 disables), dump
+    full Anthropic request/response bodies to log/api-bodies and claude-debug.log.
 
     Claude Code is a Bun-compiled binary, so we set BUN_OPTIONS=--preload=...
     (equals form) rather than NODE_OPTIONS=--require.
     """
     raw = env.get("HTMLVIDEO_CLAUDE_DEBUG_REQUEST", "")
-    if raw.strip().lower() not in _DEBUG_REQUEST_TRUTHY:
+    if raw.strip().lower() in _DEBUG_REQUEST_FALSY:
         return
     env["ANTHROPIC_LOG"] = "debug"
     preload_flag = f"--preload={_INSPECT_PRELOAD}"
@@ -965,9 +998,15 @@ def _run_profile(
         try:
             config_dir = env.get("CLAUDE_CONFIG_DIR") or os.path.join(
                 os.path.expanduser("~"), ".claude")
+            # Zero-tool text-out calls cannot recover across turns when unsigned
+            # thinking is dropped, so default to streak=1 unless overridden.
+            # A profile may pin its own default via ``trunc_streak``.
+            default_streak = profile.get("trunc_streak") or (
+                1 if profile.get("tools") == "" else _DEFAULT_TRUNC_KILL_STREAK
+            )
             trunc_streak = _env_positive_int(
                 "HTMLVIDEO_CLAUDE_TRUNC_KILL_STREAK",
-                _DEFAULT_TRUNC_KILL_STREAK,
+                default_streak,
                 logger,
             )
             watcher = _TruncationWatcher(
@@ -1063,7 +1102,12 @@ def _run_profile(
         # (nothing parseable survives the kill).
         return 124, ""
     return _log_parsed_result(
-        logger, skill, proc.returncode or 0, stdout or "", label=label
+        logger,
+        skill,
+        proc.returncode or 0,
+        stdout or "",
+        label=label,
+        output_cap=_output_token_limit(env),
     )
 
 

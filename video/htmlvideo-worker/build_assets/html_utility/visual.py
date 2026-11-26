@@ -36,10 +36,20 @@ VISUAL_TRUNC_KILL_ENV = "HTMLVIDEO_FRAME_VISUAL_TRUNC_KILL"
 DEFAULT_MAX_WORKERS = 16
 MAX_RETRY_ROUNDS = 1
 DEFAULT_REPAIR_ROUNDS = 2
-# Design emits ~800–1100 tokens of creative direction + blueprint assignment;
-# 12000 keeps ~10x headroom while preventing 165s runaway thinking marathons.
-DEFAULT_DESIGN_THINKING_TOKENS = 12000
+# Design emits ~900–1300 tokens of creative direction + blueprint assignment +
+# shared-stage spec; 24000 avoids Turn-1 cap hits on adaptive-thinking Qianfan.
+DEFAULT_DESIGN_THINKING_TOKENS = 24000
 DEFAULT_BLUEPRINT_MAX_CHARS = 5000
+DEFAULT_PREFIX_WARMUP_SECONDS = 5.0
+# Blueprints built exclusively for multi-pane software/UI screencasts: Phase A
+# must not assign them to conceptual/checklist/editorial frames.
+UI_ONLY_BLUEPRINTS = frozenset({"panel-edit-live-sync", "cursor-ui-demo"})
+SHARED_STAGE_LAYOUTS = frozenset({
+    "top-stepper-center-card",
+    "left-rail-right-card",
+    "center-scorecard",
+    "none",
+})
 
 VISUAL_DIR = os.path.join(".hyperframes", "visual")
 DESIGN_FILE = os.path.join(VISUAL_DIR, "_design.md")
@@ -76,6 +86,10 @@ _DONE_RE = re.compile(r"\bdone\s+OK\s+(\d+)\b")
 _ASSIGN_LINE_RE = re.compile(r"^F(\d+)\s*=\s*([\w-]+)(.*)$", re.M)
 _BP_ASSIGN_HEAD_RE = re.compile(
     r"^[ \t]*(?:#{1,6}[ \t]*|\*\*[ \t]*)?Blueprint\s+assignment(?:[ \t]*\*\*)?[ \t]*[:：.]?[ \t]*$",
+    re.I | re.M,
+)
+_SHARED_STAGE_HEAD_RE = re.compile(
+    r"^[ \t]*(?:#{1,6}[ \t]*|\*\*[ \t]*)?Shared\s+stage\s+spec(?:[ \t]*\*\*)?[ \t]*[:：.]?[ \t]*$",
     re.I | re.M,
 )
 _BP_INTENT_RE = re.compile(r"^\*\*intent\*\*:?[ \t]*(.+)$", re.I | re.M)
@@ -317,7 +331,13 @@ def _catalog_prompt_block(
     ]
     for i in ids:
         desc = desc_map.get(i, "")
-        lines.append(f"- {i} — {desc}" if desc else f"- {i}")
+        ui_tag = (
+            " [UI-screencast only — do NOT assign to conceptual/checklist/editorial "
+            "frames; use card-morph-anchor, kinetic-type-beats, grid-card-assemble, "
+            "fixed-anchor-cycle, or compose]"
+            if i in UI_ONLY_BLUEPRINTS else ""
+        )
+        lines.append(f"- {i} — {desc}{ui_tag}" if desc else f"- {i}{ui_tag}")
     lines.append(f"- {COMPOSE_BLUEPRINT} — custom shot shape when no catalog shape fits")
     banned = [t for t in (banned_tokens or []) if t and t not in catalog and t != COMPOSE_BLUEPRINT]
     if banned:
@@ -471,7 +491,7 @@ def _build_design_prompt(
         "contract (everything you need is inlined here — do not invoke any skill). "
         + intro + "\n"
         + (f"{tokens}\n" if tokens else "")
-        + "Produce ONLY two sections in this exact order:\n\n"
+        + "Produce ONLY three sections in this exact order:\n\n"
         "1. **Video direction — creative body** (plain prose with **bold** labels, NOT "
         "`##` headings — it joins the pre-written palette/type under the existing "
         "`## Video direction` heading): color role-mapping (which candy = which "
@@ -485,11 +505,15 @@ def _build_design_prompt(
         "**Locked transitions** (one line, every frame in order, e.g. "
         "`F1 cut → F2 push-slide RIGHT → …` — copy each frame's existing "
         "`transition_in` verbatim, never rename it; the shot sequences land them), and "
-        "**Shared stage** (which adjacent frames share one stage, locking the exact "
-        "container width — e.g. `56cqw` card — title text, Flex/Grid slot layout, and "
-        "the COMPLETE numbered list of short slot labels that stay identical across "
-        "every shared frame so inactive slots dim rather than turn blank/`—`/renamed; "
-        "`none` if none — the per-frame summary below flags candidates).\n\n"
+        "**Shared stage** (which adjacent frames share one stage, the title text, "
+        "and the COMPLETE numbered list of short slot labels that stay identical "
+        "across every shared frame so inactive slots dim rather than turn "
+        "blank/`—`/renamed; describe ONLY semantics and slot-state progression — "
+        "NEVER invent card widths (`cqw`), column counts, single-vs-double card "
+        "structure or Flex/Grid geometry here: `## Shared stage spec` below is the "
+        "single source of truth for stage geometry and `frame-packets` builds it "
+        "from the chosen `layout` preset; `none` if none — the per-frame summary "
+        "below flags candidates).\n\n"
         "2. **Exact H2 parser-anchor heading `## Blueprint assignment` on its own line** "
         "(REQUIRED literal `## Blueprint assignment` — do NOT replace `##` with bold "
         "and do NOT omit it, the harness splits on this exact H2 line):\n\n"
@@ -499,6 +523,20 @@ def _build_design_prompt(
         f"`{COMPOSE_BLUEPRINT}`>\n\n"
         + catalog_block
         + "\n"
+        "3. **Exact H2 `## Shared stage spec` at the very end** (structured companion to "
+        "**Shared stage** above so `frame-packets` stamps collision-free shared DOM into "
+        "each frame's skeleton; emit `layout: none` when no frames share a stage). Pick "
+        "`layout:` ONLY from `top-stepper-center-card`, `left-rail-right-card`, "
+        "`center-scorecard`, or `none` (never invent other layout names):\n\n"
+        "## Shared stage spec\n"
+        "layout: <top-stepper-center-card | left-rail-right-card | center-scorecard | none>\n"
+        "title: <SHORT STAGE TITLE, or none>\n"
+        "slots: <01 Label A | 02 Label B | 03 Label C — each label ≤ 20 characters "
+        "including its number (2–4 short words, e.g. `01 One-line test`)>\n"
+        "<one line per frame `F<num>: none` or `F<num>: [state1, state2, ...]` (optional "
+        "`center-scorecard` prefix on a summary frame), where each slot state is `dim`, "
+        "`active:<palette_accent>`, or `done:<palette_accent>` — once a slot finishes on "
+        "an earlier frame, keep it `done:<accent>` on later frames instead of resetting to `dim`>\n\n"
         "Output this as your FINAL message text (no tools, no Write, no per-frame Scene "
         "lines — the per-frame workers do those). Keep thinking tight and decisive — "
         "pick one clear catalog shape per frame without enumerating every candidate. "
@@ -522,6 +560,8 @@ def _normalize_design_contract(design_text: str) -> str:
     text = (design_text or "").strip()
     if not text:
         return ""
+    if _SHARED_STAGE_HEAD_RE.search(text):
+        text = _SHARED_STAGE_HEAD_RE.sub("## Shared stage spec", text, count=1)
     if _BP_ASSIGN_HEAD_RE.search(text):
         return _BP_ASSIGN_HEAD_RE.sub("## Blueprint assignment", text, count=1)
     if "## Blueprint assignment" in text:
@@ -536,13 +576,69 @@ def _normalize_design_contract(design_text: str) -> str:
     return text
 
 
+def _extract_shared_stage_spec(design: str) -> str:
+    """Return the `## Shared stage spec` block (heading included), or empty string."""
+    norm = _normalize_design_contract(design)
+    idx = norm.find("## Shared stage spec")
+    if idx == -1:
+        return ""
+    rest = norm[idx:].strip()
+    nxt = re.search(r"\n## (?!Shared stage spec\b)", rest)
+    return (rest[: nxt.start()] if nxt else rest).strip()
+
+
+def _frame_shared_stage_note(stage_spec: str, frame_num: str) -> str:
+    """Short per-frame reminder of its pre-locked shared-stage layout & slot states."""
+    if not stage_spec:
+        return ""
+    layout_m = re.search(r"^layout:\s*([\w-]+)", stage_spec, re.I | re.M)
+    base_layout = (layout_m.group(1).strip().lower() if layout_m else "none")
+    if base_layout not in SHARED_STAGE_LAYOUTS:
+        base_layout = "none"
+    title_m = re.search(r"^title:\s*(.+)$", stage_spec, re.I | re.M)
+    slots_m = re.search(r"^slots:\s*(.+)$", stage_spec, re.I | re.M)
+    line_m = re.search(rf"^F{re.escape(frame_num)}\s*:\s*(.+)$", stage_spec, re.I | re.M)
+    if not line_m:
+        return ""
+    spec_val = line_m.group(1).strip()
+    if spec_val.lower().startswith("none"):
+        return ""
+    override_m = re.match(r"^([a-z][\w-]*)\s+(\[.+\])$", spec_val, re.I)
+    eff_layout = base_layout
+    states = spec_val
+    if override_m and override_m.group(1).lower() in SHARED_STAGE_LAYOUTS:
+        eff_layout = override_m.group(1).lower()
+        states = override_m.group(2).strip()
+    if eff_layout == "none":
+        return ""
+    title = title_m.group(1).strip() if title_m else ""
+    slots = slots_m.group(1).strip() if slots_m else ""
+    return (
+        f"Shared stage scaffold locked for Frame {frame_num}: layout=`{eff_layout}`"
+        + (f', title="{title}"' if title and title.lower() != "none" else "")
+        + (f', slots="{slots}"' if slots else "")
+        + f", slot_states={states} (`frame-packets` pre-builds the pinned rail/stepper "
+        "and `#stage-card`; design your Scenes to animate the hero content inside "
+        "`#stage-card` and keep completed `done` slots checked).\n"
+    )
+
+
 def _split_design(design: str):
-    """Split the Phase-A contract on `## Blueprint assignment` → (direction, assignment)."""
+    """Split the Phase-A contract on `## Blueprint assignment` → (direction, assignment).
+
+    `assignment` stops before `## Shared stage spec` when present so assignment
+    repairs and per-frame workers receive clean `F<n> = ...` lines.
+    """
     norm = design if "## Blueprint assignment" in (design or "") else _normalize_design_contract(design)
     idx = norm.find("## Blueprint assignment")
     if idx == -1:
-        return norm, ""
-    return norm[:idx].strip(), norm[idx:].strip()
+        stage_idx = norm.find("## Shared stage spec")
+        return (norm[:stage_idx].strip() if stage_idx != -1 else norm), ""
+    direction = norm[:idx].strip()
+    rest = norm[idx:].strip()
+    stage_idx = rest.find("## Shared stage spec")
+    assignment = rest[:stage_idx].strip() if stage_idx != -1 else rest
+    return direction, assignment
 
 
 def _frame_blueprint(assignment: str, frame_num: str) -> str:
@@ -702,7 +798,8 @@ def _build_assignment_rewrite_prompt(
 
 
 def _splice_assignment(design: str, rewrite_text: str) -> str:
-    """Replace the design's `## Blueprint assignment` section with the rewrite's."""
+    """Replace the design's `## Blueprint assignment` section with the rewrite's,
+    preserving any `## Shared stage spec` suffix."""
     new_assign = rewrite_text.strip()
     idx = new_assign.find("## Blueprint assignment")
     if idx != -1:
@@ -711,10 +808,13 @@ def _splice_assignment(design: str, rewrite_text: str) -> str:
         new_assign = "## Blueprint assignment\n\n" + new_assign
     else:
         return design  # unusable rewrite — keep prior
+    stage_in_new = new_assign.find("## Shared stage spec")
+    if stage_in_new != -1:
+        new_assign = new_assign[:stage_in_new].strip()
     direction, _old = _split_design(design)
-    if not direction:
-        return new_assign
-    return direction + "\n\n" + new_assign
+    stage_spec = _extract_shared_stage_spec(design)
+    parts = [p for p in (direction, new_assign, stage_spec) if p]
+    return "\n\n".join(parts)
 
 
 _BP_SECTION_RE = re.compile(r"^(?=#|\*\*[^*\n]+\*\*)", re.M)
@@ -815,6 +915,7 @@ def _build_worker_prompt(
     assigned_blueprint: str = "",
     require_ledger: bool = False,
     color_catalog: frozenset[str] | None = None,
+    shared_stage_note: str = "",
 ) -> str:
     bp_section = (
         "\n[SELECTED BLUEPRINT — instantiate this shape, keep its signature move]\n"
@@ -858,11 +959,11 @@ def _build_worker_prompt(
         "FRAME] at the end and output ONLY the lines to APPEND after that frame's "
         "existing block — never re-type any existing field.\n\n"
         "Your inputs are FULLY inlined below — the design contract, your blueprint, "
-        "and your frame block. Do NOT read the SKILL reference files (visual-design.md / "
-        "motion-language.md / blueprints-index.md / rules-index.md), do NOT search the "
-        "filesystem (no `ls` / `find` / `grep`), and do NOT run any script or gate. If a "
-        "motion you cite needs its mechanics, open the ONE file at "
-        f"`{rules_dir}/<id>.md` only, then keep going.\n\n"
+        "and your frame block. Tools are disabled in this session: do NOT read the SKILL "
+        "reference files (visual-design.md / motion-language.md / blueprints-index.md / "
+        "rules-index.md), do NOT search the filesystem, do NOT run any script or gate, "
+        f"and do NOT open `{rules_dir}/<id>.md` (valid stems under `{rules_dir}/` are "
+        "listed below and `frame-packets` inlines the selected rule recipes downstream).\n\n"
         "Output, in this exact order, as your FINAL message text (lines start at "
         "column 0; no bullet or bold before `Scene`):\n"
         "done OK <frame number>\n"
@@ -870,11 +971,12 @@ def _build_worker_prompt(
         "- focal: <the invented focal element>\n"
         "- roles: <focal = foreground · ... · ... = background wallpaper>\n"
         "- sfx: <soft sfx names, comma-separated>\n"
-        "- rules: <comma-separated rule ids from hyperframes-animation/rules>\n"
+        "- rules: <comma-separated rule ids from hyperframes-animation/rules>   (1–3 ids max)\n"
         "<an 'Adapt:'/'Reproduce:' line only when the blueprint needs instantiation>\n"
         "Scene 1 (0.0–Xs): <layout + motion, inline vocab + `rule-id`, from-state-to-reveal>\n"
-        "Scene 2 (...): ...  (≥2 Scenes, monotonic non-overlapping windows, coverage "
-        "≥90% of duration, first starts at 0.0 — voiceover-paced, never front-loaded)\n\n"
+        "Scene 2 (...): ...  (2–3 Scenes for frames ≤9s — never >3 micro-scenes — monotonic "
+        "non-overlapping windows, coverage ≥90% of duration, first starts at 0.0 — "
+        "voiceover-paced, never front-loaded)\n\n"
         "BLUEPRINT AUTHORITY: your `F<n> = <id> (Adapt|Reproduce)` line under `## Blueprint "
         "assignment` is FINAL — copy its id and mode into `- blueprint:`. Any other "
         "blueprint id in the frame CONTEXT is a superseded outline leftover: ignore it, and do "
@@ -894,11 +996,12 @@ def _build_worker_prompt(
         "render blank slots, `—` dashes, or renamed labels). (4) Text on white/cream "
         "surfaces MUST use `ink`; light candies (`yellow`/`lime`/`mint`/`peach`) are "
         "pill fills only, never text on light surfaces.\n\n"
-        "`- rules:` is REQUIRED (a reply without it is rejected and re-dispatched): ≥1, "
-        "ideally 2–4 ids, plain comma-separated, each an exact rule id from the list "
-        "below. Pick the ids for the motions your Scenes actually use — from the "
-        "SELECTED BLUEPRINT's rule mapping / candidate list when present; for `compose`, "
-        "from the common entrance/reveal rules. Every Scene that names a concrete motion "
+        "`- rules:` is REQUIRED (a reply without it is rejected and re-dispatched): 1–3 "
+        "ids MAX (never >3; extra rule recipes bloat the HTML worker prompt), plain "
+        "comma-separated, each an exact rule id from the list below. Pick ONLY the "
+        "primary motions your Scenes actually use — from the SELECTED BLUEPRINT's rule "
+        "mapping / candidate list when present; for `compose`, from the common "
+        "entrance/reveal rules. Every Scene that names a concrete motion "
         "cites its rule id in backticks right beside it (e.g. \"… types on with a trailing "
         "caret `discrete-text-sequence` + `context-sensitive-cursor` …\") — a motion named "
         "only in plain words (\"types on\", \"pop-stagger\", \"hard-cut\") is not a "
@@ -922,6 +1025,7 @@ def _build_worker_prompt(
         f"`done OK {frame_num}`.\n"
         + (f"Your blueprint line is exactly: `- blueprint: {assigned_blueprint}`.\n"
            if assigned_blueprint else "")
+        + shared_stage_note
     )
 
 
@@ -1295,6 +1399,7 @@ def _run_frame_workers(
     # Video direction + ITS OWN blueprint assignment line (drop the other frames'
     # lines), and inline its blueprint body so it does not Read the blueprint file.
     direction, assignment = _split_design(design)
+    stage_spec = _extract_shared_stage_spec(design)
     rule_catalog = _rule_catalog()
     if not rule_catalog:
         raise RuntimeError(
@@ -1316,11 +1421,13 @@ def _run_frame_workers(
         bp_body = _blueprint_body(bp, logger)
         line = _frame_assignment_line(assignment, fn) or f"F{fn} = {COMPOSE_BLUEPRINT}"
         trimmed = f"{direction}\n\n## Blueprint assignment\n{line}"
+        stage_note = _frame_shared_stage_note(stage_spec, fn)
         prompt = _build_worker_prompt(
             fn, contexts[fn], trimmed, bp_body,
             _blueprint_rule_ids(bp, rule_catalog), rule_catalog,
             _assigned_blueprint_field(bp, _frame_blueprint_mode(assignment, fn)),
-            require_ledger=require_ledger, color_catalog=color_catalog)
+            require_ledger=require_ledger, color_catalog=color_catalog,
+            shared_stage_note=stage_note)
         if note:
             prompt += f"\n[RE-DISPATCH] {note} — output the additions now."
         t0 = time.monotonic()
@@ -1338,9 +1445,9 @@ def _run_frame_workers(
     failed: list[str] = []
     raw_warmup = os.environ.get("HTMLVIDEO_PREFIX_WARMUP_SECONDS", "").strip()
     try:
-        warmup_s = float(raw_warmup) if raw_warmup else 1.8
+        warmup_s = float(raw_warmup) if raw_warmup else DEFAULT_PREFIX_WARMUP_SECONDS
     except ValueError:
-        warmup_s = 1.8
+        warmup_s = DEFAULT_PREFIX_WARMUP_SECONDS
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         running: dict = {}
         for idx, fn in enumerate(order):
