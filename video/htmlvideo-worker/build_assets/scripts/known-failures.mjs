@@ -337,6 +337,7 @@ function unownedCheckErrors(ctx) {
       c === "text_occluded"
       || c === "text_not_painted"
       || c === "contrast_aa_failure"
+      || c === "canvas_overflow"
       || c === "text_box_overflow"
     );
   };
@@ -569,6 +570,17 @@ export const KNOWN_FAILURES = [
       `Illegible foreground/background text contrast (${where(hits)}): set the text \`color\` on light/white/cream surfaces to dark \`ink\` (\`#1A1A1A\`), or on dark surfaces to \`#FFFFFF\` (keep candy hues like yellow/lime/mint/peach on the pill \`background\`, NEVER as text color on light surfaces). Apply the edit in ONE pass and reply \`fixed <n>\`.`,
     reason:
       "2026-11-25 (6b06dfa0a2a2d105 F5): `.f5-slot-live { color: #F2D160 }` on `#FFFFFF` rendered at 1.44:1 contrast (unreadable). Held or severe (<2.5:1) contrast failures now gate and route here.",
+  },
+
+  {
+    id: "canvas-overflow",
+    title: "canvas_overflow",
+    match: byCode("canvas_overflow"),
+    mode: "model",
+    prompt: (_ctx, hits) =>
+      `Text extends outside the 1920x1080 composition canvas and is clipped (${where(hits)}): remove \`white-space: nowrap\` from the multi-word sentence/headline container (allow natural wrapping), constrain its \`max-width\` (e.g. \`<= 84cqw\`), and tighten \`font-size\` / horizontal padding so every word fits comfortably inside the canvas. Apply the edit in ONE pass and reply \`fixed <n>\`.`,
+    reason:
+      "2026-11-26 (6b082a5be89ed160 F2): `.sentence { white-space: nowrap; font-size: 3.6cqw }` pushed `span.tail` to right=2032px (>1920px), clipping 'all align'. Promoted from info to blocking error.",
   },
 
   {
