@@ -23,6 +23,8 @@ import {
   transitionWindows,
   isSharedStageCrossfadeOverlap,
   splitSharedStageCrossfade,
+  isBlockingCanvasOverflow,
+  splitCanvasOverflow,
 } from "../scripts/lib/verify-check-parse.mjs";
 
 const LAYOUT_AUDIT_JS = "/app/hyperframes/packages/cli/dist/commands/layout-audit.browser.js";
@@ -560,6 +562,62 @@ function testSharedStageCrossfade() {
   const parsedLocal = parseCheckJson(localJson, { frameStarts: starts });
   assert.ok(parsedLocal.errors[0].msg.includes("(frame t=1.5-5.0s)"), parsedLocal.errors[0].msg);
   assert.ok(parsedLocal.errors[0].msg.includes("box(1008,495,83x28) vs box(1000,510,200x50)"), parsedLocal.errors[0].msg);
+
+  // P0-1 (6b082a5b F2): canvas_overflow promotion with transition/caption/bleed guards
+  const overflowJson = {
+    layout: {
+      findings: [
+        // Real F2 off-canvas text clipping (right=2031.69 > 1920, t=8.8s outside transition)
+        {
+          code: "canvas_overflow", severity: "info", time: 8.816,
+          selector: "span.tail", text: "all align",
+          sourceFile: "compositions/frames/02.html",
+          rect: { left: 1761.03, top: 434.59, right: 2031.69, bottom: 540.59, width: 270.66, height: 106 },
+          message: "Text extends outside the composition canvas.",
+        },
+        // Transition window push-slide edge crossing (t=26.4s inside [26.16, 26.86]) — must stay info
+        {
+          code: "canvas_overflow", severity: "info", time: 26.4,
+          selector: "h1.slide", sourceFile: "compositions/frames/05.html",
+          rect: { left: 1850, top: 200, right: 2200, bottom: 260, width: 350, height: 60 },
+          message: "Text extends outside the composition canvas.",
+        },
+        // Subpixel <8px bleed — must stay info
+        {
+          code: "canvas_overflow", severity: "info", time: 10.0,
+          selector: "span.edge", sourceFile: "compositions/frames/02.html",
+          rect: { left: 1700, top: 200, right: 1924, bottom: 240, width: 224, height: 40 },
+          message: "Text extends outside the composition canvas.",
+        },
+        // Caption node — must stay info
+        {
+          code: "canvas_overflow", severity: "info", time: 10.0,
+          selector: "#caption-word", sourceFile: "compositions/captions.html",
+          rect: { left: 1800, top: 960, right: 1960, bottom: 1000, width: 160, height: 40 },
+          message: "Text extends outside the composition canvas.",
+        },
+        // text_box_overflow — must NEVER be promoted by splitCanvasOverflow
+        {
+          code: "text_box_overflow", severity: "info", time: 8.816,
+          selector: "span.word", sourceFile: "compositions/frames/02.html",
+          rect: { left: 645, top: 434, right: 1092, bottom: 540, width: 447, height: 106 },
+          message: "Text extends outside its nearest visual/container box.",
+        },
+      ],
+    },
+  };
+  const parsedOv = parseCheckJson(overflowJson, { frameStarts: starts });
+  assert.equal(parsedOv.infos.length, 5);
+  assert.ok(parsedOv.infos[0].msg.includes("box(1761,435,271x106)"), parsedOv.infos[0].msg);
+  assert.equal(isBlockingCanvasOverflow(parsedOv.infos[0], wins, { width: 1920, height: 1080 }), true);
+  assert.equal(isBlockingCanvasOverflow(parsedOv.infos[1], wins, { width: 1920, height: 1080 }), false);
+  assert.equal(isBlockingCanvasOverflow(parsedOv.infos[2], wins, { width: 1920, height: 1080 }), false);
+  assert.equal(isBlockingCanvasOverflow(parsedOv.infos[3], wins, { width: 1920, height: 1080 }), false);
+  assert.equal(isBlockingCanvasOverflow(parsedOv.infos[4], wins, { width: 1920, height: 1080 }), false);
+  const ovSplit = splitCanvasOverflow(parsedOv.infos, wins, { width: 1920, height: 1080 });
+  assert.equal(ovSplit.promoted.length, 1);
+  assert.equal(ovSplit.kept.length, 4);
+  assert.equal(ovSplit.promoted[0].mark, "✗");
 }
 
 console.log("all verify-check-parse tests passed");
