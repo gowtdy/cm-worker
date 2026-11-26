@@ -640,6 +640,15 @@ export function frameMdExcerpt(frameMd, maxFallbackBytes = 12000) {
     const rest = frameMd.slice(start + h.length);
     const endM = rest.search(nextHeading);
     let body = (endM === -1 ? rest : rest.slice(0, endM)).trim();
+    if (h === "## Approved Entities" || h === "## Approved Real Entities") {
+      // Capsule preset's deck rule tells authors to render off-topic English
+      // atmosphere words ("VISION", "FUTURE", "NEXT") inside floating pills
+      // (6b07fd3a F7). Autonomous videos use textless geometric pills instead.
+      body = body.replace(
+        /Floating-pill words are neutral atmospheres[^.\n]*\.?/gi,
+        "Background floating pills are textless solid-color geometric shapes only — NEVER render off-topic atmosphere words (\"VISION\", \"FUTURE\", \"NEXT\", \"FLOW\", \"PACE\", \"SIGNAL\") inside decorative pills.",
+      );
+    }
     if (h === "## Numerals & Claims (hard rule)") {
       // Deck presets tell slide authors to emit literal `— figure —` / `{metric}`
       // placeholders; autonomous videos render directly to MP4 and must NEVER
@@ -1205,17 +1214,23 @@ function buildSharedStageMarkupAndCss(stageSpec, entry, tokens, dur) {
   const shadow = c.shadow || c.outline;
   const resolveAccent = (name, fallback) => (name && c[name]) || fallback || c.sky || "#8BB4F7";
   // Pre-render BOTH `.hf-stage-dot` and `.hf-stage-check` in every slot and
-  // toggle visibility via `[data-state="done"]` CSS so workers can transition
-  // an `active` slot to checked without rewriting `.hf-stage-slot` DOM (6b07a9c1 F5).
+  // toggle visibility via `[data-state="done"]` CSS; drive slot fill via
+  // `data-accent` CSS rules (no inline `style="background:..."`) so workers can
+  // animate or switch states without fighting inline styles (6b07a9c1 F5, 6b07fd3a F7).
+  const accentKeys = Object.keys(c).filter(
+    (k) => typeof c[k] === "string" && c[k].trim() && !["shadow", "cream", "canvas", "ink", "outline"].includes(k),
+  );
+  const accentCss = accentKeys
+    .map((k) => `.hf-stage-slot[data-accent="${k}"]:not([data-state="dim"]) { background: ${c[k]}; }`)
+    .join("\n");
   const slotHtml = stageSpec.slots.map((label, idx) => {
     const st = entry.states[idx] ?? { status: "dim", color: "" };
-    const fill = st.status === "dim"
-      ? c.white
-      : resolveAccent(st.color, st.status === "done" ? c.mint : c.sky);
+    const accentName = (st.color && c[st.color]) ? st.color : "";
+    const accentAttr = accentName ? ` data-accent="${escapeHtml(accentName)}"` : "";
     const icons =
       `<span class="hf-stage-dot" data-skeleton="stage"></span>` +
       `<svg class="hf-stage-check" data-skeleton="stage" viewBox="0 0 16 16" aria-hidden="true"><path data-skeleton="stage" d="M3 8.5L6.5 12L13 4.5" fill="none" stroke="${c.ink}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-    return `      <div class="hf-stage-slot" data-skeleton="stage" data-slot-index="${idx + 1}" data-state="${st.status}" style="background:${fill};">${icons}<span class="hf-stage-label" data-skeleton="stage">${escapeHtml(label)}</span></div>`;
+    return `      <div class="hf-stage-slot" data-skeleton="stage" data-slot-index="${idx + 1}" data-state="${st.status}"${accentAttr}>${icons}<span class="hf-stage-label" data-skeleton="stage">${escapeHtml(label)}</span></div>`;
   }).join("\n");
   // The title is the lockup's only title node, so it can never collide inside
   // its own frame — but pixel-locked sibling frames make it overlap itself
@@ -1250,9 +1265,10 @@ function buildSharedStageMarkupAndCss(stageSpec, entry, tokens, dur) {
 .bg { position: absolute; inset: 0; background: ${ground}; }
 .hf-stage-title { font-size: 1.05cqw; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: ${c.ink}; white-space: nowrap; }
 .hf-stage-slot { display: flex; align-items: center; gap: 0.65cqw; padding: 0.7cqh 0.95cqw; border: 2px solid ${c.outline}; border-radius: 0.6cqw; font-size: 1.12cqw; font-weight: 700; line-height: 1.2; color: ${c.ink}; box-sizing: border-box; min-width: 0; }
-.hf-stage-slot[data-state="dim"] { opacity: 0.46; }
-.hf-stage-slot[data-state="active"] { box-shadow: 3px 3px 0 ${shadow}; opacity: 1; }
-.hf-stage-slot[data-state="done"] { opacity: 0.92; }
+.hf-stage-slot[data-state="dim"] { background: ${c.white}; opacity: 0.46; }
+.hf-stage-slot[data-state="active"] { background: ${resolveAccent("", c.sky)}; box-shadow: 3px 3px 0 ${shadow}; opacity: 1; }
+.hf-stage-slot[data-state="done"] { background: ${resolveAccent("", c.mint)}; opacity: 0.92; }
+${accentCss}
 .hf-stage-check { width: 1.1cqw; height: 1.1cqw; flex-shrink: 0; display: none; }
 .hf-stage-dot { width: 0.65cqw; height: 0.65cqw; border-radius: 50%; border: 2px solid ${c.outline}; flex-shrink: 0; }
 .hf-stage-slot[data-state="done"] .hf-stage-check { display: block; }

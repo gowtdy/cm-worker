@@ -260,7 +260,7 @@ on tighter ratios so they stay wallpaper, not clutter.
 ## Approved Entities
 
 No real customers, logos, or vendors are defined in the source — render any such mark as a
-placeholder. Floating-pill words are neutral atmospheres ("VISION", "FUTURE", "NEXT"), never content-specific.
+placeholder. Background floating pills are textless solid-color geometric shapes only — never render off-topic English atmosphere words ("VISION", "FUTURE", "NEXT", "FLOW", "PACE", "SIGNAL") inside decorative pills.
 
 ## Numerals & Claims (hard rule)
 
