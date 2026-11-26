@@ -45,7 +45,7 @@ function buildExtras({ projectDir, storyboardPath, outDir, frames }) {
   if (switchOn("HTMLVIDEO_FRAME_HTML_SKELETON")) {
     const m = /^\s*-?\s*format:\s*(.+)$/m.exec(storyboard);
     const skeletons = core.buildSkeletons({
-      projectDir, frames, canvas: m ? parseFormat(m[1]) : undefined,
+      projectDir, frames, canvas: m ? parseFormat(m[1]) : undefined, storyboard,
     });
     console.log(`✓ skeletons: ${skeletons.length} pre-built frame file(s)`);
   }

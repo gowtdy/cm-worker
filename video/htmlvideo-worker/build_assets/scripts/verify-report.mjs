@@ -38,6 +38,8 @@ import {
   jsonLintErrorCount,
   findingsPayload,
   FINDINGS_JSON_PREFIX,
+  transitionWindows,
+  splitSharedStageCrossfade,
 } from "./lib/verify-check-parse.mjs";
 import { matchKnownFailures, renderPrompt } from "./known-failures.mjs";
 
@@ -189,6 +191,7 @@ let chk = { errors: [], warns: [], infos: [] };
 let checkParseMode = "none";
 let checkContradiction = false;
 let checkMismatch = null;
+let stageXfadeDemoted = 0;
 if (check.error) {
   say(`  ⚠ cannot run check: ${check.error}`);
 } else {
@@ -237,6 +240,24 @@ if (check.error) {
       }
     }
     chk.warns = keptWarns;
+  }
+  // Shared-stage crossfade self-overlaps are unfixable in any single frame
+  // (see verify-check-parse.mjs) — demote to info AFTER errorCount accounting.
+  const stageXfadeFlag = (process.env.HTMLVIDEO_VERIFY_STAGE_XFADE_FILTER || "1").trim().toLowerCase();
+  if (!["0", "false", "off", "no"].includes(stageXfadeFlag) && chk.errors.length) {
+    const indexPath = path.join(videodir, "index.html");
+    const windows = fs.existsSync(indexPath)
+      ? transitionWindows(fs.readFileSync(indexPath, "utf8"))
+      : [];
+    const { kept, demoted } = splitSharedStageCrossfade(chk.errors, windows);
+    if (demoted.length) {
+      stageXfadeDemoted = demoted.length;
+      chk.errors = kept;
+      for (const d of demoted) {
+        chk.infos.push({ ...d, mark: "ℹ", msg: `${d.msg} (shared-stage crossfade self-overlap — expected)` });
+      }
+      say(`  ℹ demoted ${demoted.length} shared-stage crossfade self-overlap(s) to info`);
+    }
   }
   const isCaptionFP = (c) =>
     c.code === "text_box_overflow" && /#caption-word|\.caption-line/.test(c.msg);
@@ -308,7 +329,10 @@ for (const { entry, hits } of matchKnownFailures(ctx)) {
   for (const line of rest) say(`     ${line}`);
 }
 const realErrors = chk.errors.length + lintErrors.length + self.digit.length;
-const gate = (lintOk === true) && checkOk && chk.errors.length === 0 && self.digit.length === 0 && !tv.error && tv.status === 0;
+// check exits non-zero for the demoted crossfade rows too; when they were the
+// only errors the CLI exit no longer reflects a real finding.
+const checkGateOk = checkOk || (stageXfadeDemoted > 0 && chk.errors.length === 0 && !checkContradiction);
+const gate = (lintOk === true) && checkGateOk && chk.errors.length === 0 && self.digit.length === 0 && !tv.error && tv.status === 0;
 say("");
 say(`GATE: ${gate ? "PASS ✓ (lint+check+structural+transitions — go to snapshot)" : `FAIL ✗ (lint ok=${lintOk}, check exit=${check.status === null ? "n/a" : check.status}, digit-led selectors=${self.digit.length}, transitions=${tv.error ? "n/a" : tv.status === 0 ? "ok" : tv.status}, ${realErrors} error finding(s))`}`);
 if (!gate) {
