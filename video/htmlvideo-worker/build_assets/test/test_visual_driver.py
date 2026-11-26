@@ -1222,6 +1222,15 @@ class SharedStageAndHedgeOptimizationTest(unittest.TestCase):
         note = vis._frame_shared_stage_note(spec, "7")
         self.assertIn("recap sweep", note)
         self.assertIn("never fade `#stage-card` out to empty canvas", note)
+        self.assertIn("do NOT mark any `.hf-stage-slot` as `done`", note)
+        self.assertIn("NEVER dim or reset them", note)
+
+        frame_prompt = vis._build_worker_prompt(
+            "4", "block", "design", assigned_blueprint="kinetic-type-beats (Adapt)",
+            rule_catalog=frozenset(["spring-pop-entrance"]),
+        )
+        self.assertIn("NEVER fabricate quantitative figures", frame_prompt)
+        self.assertIn("Bind at most 1–2 micro-interactions", frame_prompt)
 
     def test_frame_html_hedge_defaults_and_hard_noops(self):
         from html_utility import frame_html as fh
@@ -1233,6 +1242,31 @@ class SharedStageAndHedgeOptimizationTest(unittest.TestCase):
         )
         self.assertIn("NO manual `onUpdate` / `gsap.ticker`", prompt)
         self.assertIn("NO inline `<svg><feTurbulence>`", prompt)
+        self.assertIn("NEVER set `white-space: nowrap` on multi-word sentences", prompt)
+        self.assertIn("never ghost side-by-side", prompt)
+        self.assertIn('<svg preserveAspectRatio="none">', prompt)
+
+        # P1-4: _minimal_dispatch_text keeps compact snippets by default, strips full & blueprint
+        snip_dispatch = (
+            "Shared prefix\n# Dispatch: 01-hook\n\n"
+            "## Selected blueprint\nLong blueprint prose\n\n"
+            "## Rule index\n- rules/a.md\n\n"
+            "## Rule recipes (snippets)\n```js\ntl.fromTo('.x', {y:10}, {y:0});\n```\n"
+        )
+        kept = fh._minimal_dispatch_text(snip_dispatch, keep_snippets=True)
+        self.assertNotIn("Long blueprint prose", kept)
+        self.assertIn("tl.fromTo('.x'", kept)
+        stripped = fh._minimal_dispatch_text(snip_dispatch, keep_snippets=False)
+        self.assertNotIn("tl.fromTo('.x'", stripped)
+        self.assertIn("Omitted in minimal-motion fallback", stripped)
+
+        full_dispatch = (
+            "Shared prefix\n# Dispatch: 01-hook\n\n"
+            "## Rule recipes (full)\nHuge full recipe text\n"
+        )
+        kept_full = fh._minimal_dispatch_text(full_dispatch, keep_snippets=True)
+        self.assertNotIn("Huge full recipe text", kept_full)
+        self.assertIn("Omitted in minimal-motion fallback", kept_full)
 
 
 if __name__ == "__main__":
