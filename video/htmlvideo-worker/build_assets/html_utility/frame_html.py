@@ -347,7 +347,7 @@ HEDGE_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE"
 HEDGE_AFTER_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_AFTER"
 MAX_HEDGES_ENV = "HTMLVIDEO_FRAME_HTML_MAX_HEDGES"
 SLIM_FALLBACK_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_FALLBACK"
-DEFAULT_HEDGE_AFTER = 210
+DEFAULT_HEDGE_AFTER = 150
 DEFAULT_MAX_HEDGES = 2
 HEDGE_POLL_SECONDS = 5
 HEDGE_DIR = os.path.join(".hyperframes", "hedge")
@@ -356,12 +356,11 @@ HEDGE_DIR = os.path.join(".hyperframes", "hedge")
 PREFIX_WARMUP_ENV = "HTMLVIDEO_PREFIX_WARMUP_SECONDS"
 DEFAULT_PREFIX_WARMUP_SECONDS = 5.0
 # A hedge races a stripped minimal-motion fallback (blueprint + recipes stripped),
-# bounded to 1 turn / 24000 cap / 240s so it returns in ~60-110s without stalling.
-# 2026-11-26 (6b0795df): a 360s hedge that never lands just pins one of the
-# MAX_HEDGES slots (F2 hedge timed out at 360s while F7 waited until 562s).
+# bounded to 1 turn / 24000 cap / 150s so it returns in ~30-90s without stalling
+# or burning 240s on the same deadlock (2026-11-26, 6b07a9c1).
 HEDGE_MAX_OUTPUT = "24000"
 HEDGE_MAX_TURNS = 30
-HEDGE_TIMEOUT = 240
+HEDGE_TIMEOUT = 150
 # P2-5: retries started with < DEGRADE_WINDOW s left before the stage deadline
 # use the minimal-motion prompt.
 DEGRADE_ENV = "HTMLVIDEO_FRAME_HTML_DEGRADE"
@@ -625,15 +624,18 @@ def _worker_prompt(
         )
         if has_stage_card:
             rich_note += (
-                "\n- Shared-stage scaffold: the pinned stage lockup/slots and "
+                "\n- Shared-stage scaffold: the pinned `.hf-stage-lockup` and "
                 "`#stage-card` are ALREADY built with collision-free cross-frame CSS "
-                "— KEEP `.hf-stage-*` styles and DOM intact (never move, resize, or "
-                "re-label the stage slots), drop `data-skeleton` from `#stage-card`, "
-                "and author this frame's hero content INSIDE `#stage-card`. When the "
-                "storyboard prose describes a different card width, column count or "
-                "single-card layout than this scaffold, the SCAFFOLD GEOMETRY WINS — "
-                "do not try to reconcile or redesign it; map the prose's content "
-                "onto the existing lockup slots + `#stage-card`."
+                "— KEEP `.hf-stage-*` styles and DOM intact (never move, resize, "
+                "re-label, or animate `.hf-stage-lockup` scale/position; every slot "
+                "already contains both `.hf-stage-dot` and `.hf-stage-check`, so "
+                "checking off a slot only toggles their display/color or calls "
+                "`__hf.draw` on the existing `.hf-stage-check path`), drop "
+                "`data-skeleton` from `#stage-card`, and author this frame's hero "
+                "content INSIDE `#stage-card`. When the storyboard prose describes "
+                "a different card width, column count, single-card layout, or "
+                "lockup title/slot DOM rewrite, the SCAFFOLD GEOMETRY WINS — do not "
+                "reconcile or redesign it; map the prose's content onto `#stage-card`."
             )
         if has_hf_runtime:
             rich_note += (
@@ -1016,7 +1018,14 @@ def _hedge_suffix(text_out=False):
         "possible: every Scene as one timeline phase, at most 1–2 simple tweens "
         "per element (rise/fade/scale-pop), static per-Scene layout, no 3D, no "
         "particles, no counters. Priority: a valid file with every Scene present "
-        f"> visual richness. {end}\n"
+        "> visual richness. Hard guardrails: (1) any `left: 50%` centered element "
+        "MUST include `transform: translateX(-50%)` (or flex centering on its "
+        "container); (2) quote every CSS-unit value in GSAP tweens (e.g. "
+        "`y: \"2cqh\"`, never bare `y: 2cqh`); (3) NEVER render literal "
+        "placeholders (`— figure —`, `{metric}`, `N%`) — use short qualitative "
+        "labels when no number exists; (4) on shared-stage frames keep "
+        "`.hf-stage-lockup` completely static/untouched and only fill `#stage-card`. "
+        f"{end}\n"
     )
 
 
