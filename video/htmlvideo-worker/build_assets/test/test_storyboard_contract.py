@@ -285,9 +285,10 @@ class ProfileDenyTest(unittest.TestCase):
         from html_utility.claude_cli import _PROFILES
 
         deny = set(_PROFILES["visual"].get("deny_tools") or [])
-        for name in ("Bash", "Glob", "Grep", "Write", "Edit", "Skill"):
+        for name in ("Bash", "Glob", "Grep", "Write", "Edit", "Read", "Skill"):
             self.assertIn(name, deny)
-        self.assertNotIn("Read", deny)  # optional rules escape hatch
+        self.assertEqual(_PROFILES["visual"].get("tools"), "")
+        self.assertEqual(_PROFILES["visual"].get("max_turns"), 1)
 
     def test_verify_denies_explore_keeps_edit(self):
         from html_utility.claude_cli import _PROFILES

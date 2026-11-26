@@ -21,12 +21,12 @@ CWD = "/tmp/htmlvideo-proj"
 _PROFILES = {
     "intent": ("medium", "12000", "4", 1800, True, "12000", ""),
     "storyboard": ("high", "16000", "8", 1800, True, "16000", "Write"),
-    "visual_design": ("medium", "12000", "4", 1800, True, "12000", ""),
-    "visual": ("medium", "16000", "12", 1800, True, "16000", "Read"),
+    "visual_design": ("medium", "24000", "1", 1800, True, "24000", ""),
+    "visual": ("medium", "20000", "1", 1800, True, "20000", ""),
     "visual_legacy": ("high", "64000", "100", 1800, True, "32000", None),
-    "frame_html": ("medium", "28000", "30", 1500, True, "28000", "Read,Write,Edit"),
+    "frame_html": ("medium", "48000", "30", 1500, True, "48000", "Read,Write,Edit"),
     "repair": ("high", "40000", "40", 600, True, "16000", None),
-    "verify": ("medium", "32000", "40", 1800, True, "16000", "Read,Write,Edit"),
+    "verify": ("medium", "32000", "40", 1800, True, "32000", "Read,Write,Edit"),
 }
 _AGENT_DENY = ["Agent", "Task"]
 _FORBIDDEN = [
@@ -225,22 +225,26 @@ class RunClaudeTests(unittest.TestCase):
         logger = logging.getLogger("t")
         # frame_html default cap reaches the child env
         prof = _resolve_profile("frame_html", logger)
-        self.assertEqual(prof["max_output"], "28000")
+        self.assertEqual(prof["max_output"], "48000")
         # per-stage override beats the default
         with mock.patch.dict(os.environ, {"HTMLVIDEO_CLAUDE_FRAME_HTML_MAX_OUTPUT_TOKENS": "128000"}):
             prof = _resolve_profile("frame_html", logger)
             self.assertEqual(prof["max_output"], "128000")
         self.assertEqual(_resolve_profile("intent", logger)["max_output"], "12000")
-        for skill in ("storyboard", "visual", "verify"):
-            self.assertEqual(_resolve_profile(skill, logger)["max_output"], "16000")
+        self.assertEqual(_resolve_profile("visual_design", logger)["max_output"], "24000")
+        self.assertEqual(_resolve_profile("visual", logger)["max_output"], "20000")
+        self.assertEqual(_resolve_profile("storyboard", logger)["max_output"], "16000")
+        # 2026-11-26 (6b0795df): verify cap aligned with its 32000 thinking budget
+        self.assertEqual(_resolve_profile("verify", logger)["max_output"], "32000")
 
     def test_visual_thinking_default_per_call_and_env_rollback(self):
         from html_utility.claude_cli import _PROFILES as REAL, _resolve_profile
         logger = logging.getLogger("t")
-        self.assertEqual(_resolve_profile("visual", logger)["thinking"], "16000")
+        self.assertEqual(_resolve_profile("visual", logger)["thinking"], "20000")
         self.assertEqual(
             _resolve_profile("visual", logger, "32000")["thinking"], "32000")
         self.assertIn("Skill", REAL["visual"]["deny_tools"])
+        self.assertIn("Read", REAL["visual"]["deny_tools"])
         self.assertIn("Skill", REAL["intent"]["deny_tools"])
         self.assertEqual(
             REAL["frame_html"]["deny_tools"], ["Bash", "Glob", "Grep", "Skill"])
@@ -294,13 +298,66 @@ class RunClaudeTests(unittest.TestCase):
             env["BUN_OPTIONS"], f"--smol --preload={_INSPECT_PRELOAD}"
         )
 
-    def test_debug_request_off_by_default(self) -> None:
+    def test_debug_request_on_by_default_and_zero_disables(self) -> None:
+        # Default ON: unset HTMLVIDEO_CLAUDE_DEBUG_REQUEST enables ANTHROPIC_LOG + preload
+        _, _, _, kwargs_on = self._invoke(skill="intent")
+        env_on = kwargs_on["env"]
+        self.assertEqual(env_on["ANTHROPIC_LOG"], "debug")
+        self.assertEqual(env_on["BUN_OPTIONS"], f"--preload={_INSPECT_PRELOAD}")
+        # Explicit =0 disables and strips inherited ANTHROPIC_LOG + preload
+        self.popen_mock.reset_mock()
         os.environ["ANTHROPIC_LOG"] = "debug"
         os.environ["BUN_OPTIONS"] = f"--smol --preload={_INSPECT_PRELOAD}"
-        _, _, _, kwargs = self._invoke(skill="intent")
-        env = kwargs["env"]
-        self.assertNotIn("ANTHROPIC_LOG", env)
-        self.assertEqual(env.get("BUN_OPTIONS"), "--smol")
+        os.environ["HTMLVIDEO_CLAUDE_DEBUG_REQUEST"] = "0"
+        _, _, _, kwargs_off = self._invoke(skill="intent")
+        env_off = kwargs_off["env"]
+        self.assertNotIn("ANTHROPIC_LOG", env_off)
+        self.assertEqual(env_off.get("BUN_OPTIONS"), "--smol")
+
+    def test_empty_result_at_output_cap_promotes_to_truncated_rc(self) -> None:
+        from html_utility.claude_cli import TRUNCATED_RC, run_claude_result
+        self._completed_popen(
+            stdout=_result_json(
+                result="",
+                num_turns=1,
+                usage={"input_tokens": 100, "output_tokens": 48000},
+            ),
+            rc=0,
+        )
+        with self.assertLogs("test.claude_cli", level="INFO") as logs:
+            rc, text = run_claude_result(CWD, PROMPT, self.logger, skill="frame_html")
+        self.assertEqual((rc, text), (TRUNCATED_RC, ""))
+        self.assertIn("promoting rc=0 to TRUNCATED_RC", "\n".join(logs.output))
+
+    def test_zero_tool_profile_defaults_trunc_streak_to_one(self) -> None:
+        from html_utility import claude_cli
+        self._completed_popen(stdout=_result_json())
+        captured = {}
+
+        class SpyWatcher(claude_cli._TruncationWatcher):
+            def __init__(self, *a, **kw):
+                captured["max_streak"] = kw.get("max_streak")
+                super().__init__(*a, **kw)
+
+        with mock.patch.object(claude_cli, "_TruncationWatcher", SpyWatcher), \
+             self.assertLogs("test.claude_cli", level="INFO"):
+            claude_cli.run_claude_result(
+                CWD, PROMPT, self.logger, skill="visual_design", trunc_kill=True
+            )
+            self.assertEqual(captured["max_streak"], 1)
+            self.popen_mock.reset_mock()
+            self._completed_popen(stdout=_result_json())
+            claude_cli.run_claude_result(
+                CWD, PROMPT, self.logger, skill="verify", trunc_kill=True
+            )
+            # verify pins trunc_streak=1 (no amnesiac auto-resume re-think)
+            self.assertEqual(captured["max_streak"], 1)
+            self.popen_mock.reset_mock()
+            self._completed_popen(stdout=_result_json())
+            claude_cli.run_claude_result(
+                CWD, PROMPT, self.logger, skill="repair", trunc_kill=True
+            )
+            self.assertEqual(captured["max_streak"], 2)
 
     def test_intent_self_contained_prompt_disables_slash_and_hooks(self) -> None:
         from html_utility import intent as intent_mod
@@ -859,6 +916,15 @@ class TruncationWatcherTests(unittest.TestCase):
         with open(path, "a") as f:
             f.write(json.dumps(self._asst("m2", ["thinking"], 16000, stop="max_tokens")) + "\n")
         # Kills immediately on m2 without waiting for a 3rd message.
+        self.assertIn("output cap", w.poll() or "")
+
+    def test_qianfan_end_turn_at_cap_counts_immediately(self):
+        # Qianfan gateway reports stop_reason="end_turn" even when output_tokens
+        # hits max_tokens with zero visible blocks; streak=1 must catch it on m1
+        # without waiting for a follow-up user message.
+        w, _ = self._watcher([
+            self._asst("m1", ["thinking"], 28000, stop="end_turn"),
+        ], cap=28000, max_streak=1)
         self.assertIn("output cap", w.poll() or "")
 
     def test_flushed_chunk_with_truncation_and_recovery_never_retroactively_kills(self):

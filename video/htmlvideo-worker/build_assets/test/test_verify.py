@@ -1051,11 +1051,55 @@ class FixPromptTest(unittest.TestCase):
         rescan.assert_called_once()
         self.assertTrue(any("after writing edits" in m for m in logs.output))
 
-        # Without edits, TRUNCATED_RC still raises.
-        with mock.patch.object(v, "_run_fix_worker", return_value=v.TRUNCATED_RC):
+        # Without edits, TRUNCATED_RC is retried once at a raised cap, then raises.
+        with mock.patch.object(v, "_run_fix_worker", return_value=v.TRUNCATED_RC) as w:
             with self.assertRaises(RuntimeError) as ctx:
                 v._apply_model_fix(d, scan, 1, logger)
         self.assertIn("truncated", str(ctx.exception))
+        self.assertEqual(w.call_count, 2)
+        self.assertEqual(w.call_args.kwargs.get("max_output"), v._TRUNC_RETRY_MAX_OUTPUT)
+
+    def test_truncated_zero_edit_retry_lands_edit_and_rescans(self):
+        d = tempfile.mkdtemp(prefix="verify-trunc-retry-")
+        self.addCleanup(shutil.rmtree, d, True)
+        frames = os.path.join(d, "compositions", "frames")
+        os.makedirs(frames)
+        target = os.path.join(frames, "01-hook.html")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write("<template>before</template>\n")
+        logger = logging.getLogger("test.verify.trunc_retry")
+        calls = []
+
+        def worker(project_dir, prompt, log, label, max_output=None):
+            calls.append(max_output)
+            if max_output is None:
+                return v.TRUNCATED_RC
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("<template>after</template>\n")
+            return 0
+
+        scan = (
+            "── check ──\n"
+            "  ✗ [Layout] content_overlap in compositions/frames/01-hook.html — x\n"
+            "── actionable summary ──\n"
+            "  1) content_overlap — reposition\n"
+            "GATE: FAIL ✗ (1 error finding(s))\n"
+        )
+        with mock.patch.object(v, "_run_fix_worker", side_effect=worker), \
+             mock.patch.object(v, "_run_verify", return_value=(0, "GATE: PASS ✓\n")) as rescan:
+            rc, _ = v._apply_model_fix(d, scan, 1, logger)
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, [None, v._TRUNC_RETRY_MAX_OUTPUT])
+        rescan.assert_called_once()
+
+        # HTMLVIDEO_VERIFY_TRUNC_RETRY_MAX_OUTPUT=0 restores fail-fast (no retry).
+        with open(target, "w", encoding="utf-8") as f:
+            f.write("<template>before</template>\n")
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_TRUNC_RETRY_MAX_OUTPUT": "0"}), \
+             mock.patch.object(v, "_run_fix_worker", return_value=v.TRUNCATED_RC) as w:
+            with self.assertRaises(RuntimeError):
+                v._apply_model_fix(d, scan, 1, logger)
+        self.assertEqual(w.call_count, 1)
 
     def test_run_verify_phase_logs_findings_on_failure(self):
         d = tempfile.mkdtemp(prefix="verify-log-")

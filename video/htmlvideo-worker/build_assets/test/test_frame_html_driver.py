@@ -523,9 +523,9 @@ class HardeningP1P2Test(unittest.TestCase):
             self.assertNotIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS", c[1])
         start = [m for m in logs.output if "driver start" in m][0]
         self.assertIn("two_phase=False", start)
-        self.assertIn("worker_cap=64000", start)
+        self.assertIn("worker_cap=48000", start)
         from html_utility.claude_cli import _resolve_profile
-        self.assertEqual(_resolve_profile("frame_html", logger)["max_output"], "64000")
+        self.assertEqual(_resolve_profile("frame_html", logger)["max_output"], "48000")
 
     def test_two_phase_opt_in_and_hedge_default_on(self):
         os.environ.pop(fh.TWO_PHASE_ENV, None)
@@ -841,3 +841,97 @@ class TextOutAndPrefixCacheTest(unittest.TestCase):
         self.addCleanup(__import__("shutil").rmtree, work, True)
         self.assertFalse(os.path.exists(os.path.join(work, "CLAUDE.md")))
         self.assertTrue(os.path.isfile(os.path.join(work, "frame.md")))
+
+    def test_minimal_dispatch_preserves_shared_prefix_and_strips_blueprint_recipes(self):
+        self.assertEqual(fh.TEXT_OUT_MAX_TURNS, 1)
+        self.assertEqual(fh.DEFAULT_PREFIX_WARMUP_SECONDS, 5.0)
+        shared = "## Project inputs\n- Project: /x\n\n## Role\nCARD\n\n## Design contract\nDIR\n"
+        full = (
+            shared
+            + "\n# Dispatch: 05-sell\n\n## Assigned storyboard block\n\nScene 1 (0.0–4.0s): x\n"
+            + "\n## Selected blueprint: panel-edit-live-sync (mode: Adapt)\n\nBIG-BP-BODY\n"
+            + "\n## Rule index (recipes summarized below)\n\n- `a` → /rules/a.md\n"
+            + "\n## Rule recipes (snippets)\n\n### a\n\nBIG-RECIPE-JS\n"
+            + "\n## Resolved conflicts\n\n1. **ruling**\n"
+        )
+        slim = fh._minimal_dispatch_text(full)
+        self.assertNotIn("BIG-BP-BODY", slim)
+        self.assertNotIn("BIG-RECIPE-JS", slim)
+        self.assertNotIn("## Selected blueprint", slim)
+        self.assertNotIn("## Rule index", slim)
+        self.assertIn("## Assigned storyboard block", slim)
+        self.assertIn("## Rule recipes (snippets)", slim)
+        self.assertIn("## Resolved conflicts", slim)
+        p_full = fh._worker_prompt("05-sell", True, dispatch_text=full, text_out=True)
+        p_slim = fh._worker_prompt("05-sell", True, dispatch_text=slim, text_out=True)
+        cut = p_full.index("# Dispatch: 05-sell")
+        self.assertEqual(p_full[:cut], p_slim[:cut], "shared KV cache prefix must stay identical")
+
+    def test_hedge_fires_with_multiple_live_frames_and_keeps_project_cwd_in_text_out(self):
+        import logging
+        import threading
+        d = make_project(skeleton=True)
+        for fid in ("01-hook", "02-answer"):
+            with open(os.path.join(d, ".hyperframes", "frame-packets", f"{fid}.dispatch.md"), "w") as f:
+                f.write(
+                    f"## Role\ncard\n\n# Dispatch: {fid}\n\n## Assigned storyboard block\nScene 1 (0–4s): x\n"
+                    f"\n## Selected blueprint: k\nHEAVY-BLUEPRINT\n\n{fh.RECIPES_SNIPPET_HEADING}\n### r\nHEAVY-RECIPE\n"
+                )
+        os.environ[fh.HEDGE_ENV] = "1"
+        os.environ[fh.HEDGE_AFTER_ENV] = "1"
+        os.environ[fh.PREFIX_WARMUP_ENV] = "0"
+        both_primaries_live = threading.Barrier(2, timeout=5)
+        hedge_cwds = []
+        hedge_prompts = []
+
+        def fake(cwd, prompt, logger, extra_env=None, skill=None, label=None, **kw):
+            fid = "01-hook" if "01-hook.html" in prompt else "02-answer"
+            if label and label.endswith("-hedge"):
+                hedge_cwds.append(cwd)
+                hedge_prompts.append(prompt)
+                return 0, self._tpl(fid)
+            # Both primaries stall simultaneously (len(live) == 2): previously
+            # maybe_hedge() waited for len(live) == 1 and deadlocked until timeout.
+            both_primaries_live.wait()
+            kw["cancel_event"].wait(timeout=10)
+            return fh.CANCELLED_RC, ""
+
+        logger = logging.getLogger("test.fh.multihedge")
+        with mock.patch.object(fh, "HEDGE_POLL_SECONDS", 0.05), \
+             mock.patch.object(fh, "run_claude_result", side_effect=fake), \
+             mock.patch.object(fh, "build_index_html", return_value=(0, "")), \
+             mock.patch.object(fh, "_run_frame_selfcheck", return_value=(True, "PASS")):
+            fh.build_frame_html(d, logger)
+        self.assertEqual(len(hedge_cwds), 2)
+        for cwd in hedge_cwds:
+            self.assertEqual(cwd, d, "text-out hedge must keep project_dir cwd for prefix cache")
+        for hp in hedge_prompts:
+            self.assertNotIn("HEAVY-BLUEPRINT", hp)
+            self.assertNotIn("HEAVY-RECIPE", hp)
+
+    def test_second_truncation_forces_slim_degraded_retry(self):
+        d = make_project(skeleton=True)
+        for fid in ("01-hook", "02-answer"):
+            with open(os.path.join(d, ".hyperframes", "frame-packets", f"{fid}.dispatch.md"), "w") as f:
+                f.write(
+                    f"# Dispatch: {fid}\n\n## Selected blueprint: b\nHEAVY-BP\n\n{fh.RECIPES_SNIPPET_HEADING}\n### x\n"
+                )
+        calls = []
+
+        def fake(cwd, prompt, logger, extra_env=None, skill=None, label=None, **kw):
+            fid = "01-hook" if "01-hook.html" in prompt else "02-answer"
+            if fid == "01-hook":
+                return 0, self._tpl(fid)
+            calls.append((label, prompt, dict(extra_env or {})))
+            if len(calls) <= 2:
+                return fh.TRUNCATED_RC, ""
+            return 0, self._tpl(fid)
+
+        with mock.patch.object(fh, "run_claude_result", side_effect=fake), \
+             mock.patch.object(fh, "build_index_html", return_value=(0, "")), \
+             mock.patch.object(fh, "_run_frame_selfcheck", return_value=(True, "PASS")):
+            fh.build_frame_html(d, None)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[1][2].get("CLAUDE_CODE_MAX_OUTPUT_TOKENS"), "64000")
+        self.assertTrue(calls[2][0].endswith("-degraded"), calls[2][0])
+        self.assertNotIn("HEAVY-BP", calls[2][1])
