@@ -404,6 +404,13 @@ def _build_fix_prompt(scan_output: str, project_dir: str = "") -> str:
     else:
         scan_text, label = _trim_scan_for_fix(scan_output), "scan findings"
         target_file = _single_target_frame(scan_text)
+        if target_file:
+            idx = scan_text.find(_ACTIONABLE_HEADER)
+            if idx >= 0:
+                scan_text = (
+                    scan_text[:idx]
+                    + _filter_summary_for_file(scan_text[idx:], target_file)
+                )
     return _build_fix_prompt_from_fragment(
         scan_text, project_dir, label, target_file=target_file
     )
@@ -788,10 +795,16 @@ def _apply_model_fix(
                     truncated_labels.append(rel)
     else:
         prompt = _build_fix_prompt(scan_output, project_dir)
-        prompts["-"] = (prompt, None)
-        rc = _dispatch_fix(project_dir, prompt, round_no, logger, None)
+        target_label = (
+            None
+            if _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN")
+            else _single_target_frame(_trim_scan_for_fix(scan_output))
+        )
+        key = target_label or "-"
+        prompts[key] = (prompt, target_label)
+        rc = _dispatch_fix(project_dir, prompt, round_no, logger, target_label)
         if rc == TRUNCATED_RC:
-            truncated_labels.append("-")
+            truncated_labels.append(key)
     truncated_labels = _retry_truncated(
         project_dir, before_digest, prompts, truncated_labels, round_no, logger
     )
