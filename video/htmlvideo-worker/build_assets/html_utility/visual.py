@@ -512,11 +512,14 @@ def _build_design_prompt(
         "NEVER invent card widths (`cqw`), column counts, single-vs-double card "
         "structure or Flex/Grid geometry here: `## Shared stage spec` below is the "
         "single source of truth for stage geometry and `frame-packets` builds it "
-        "from the chosen `layout` preset; `none` if none — the per-frame summary "
-        "below flags candidates).\n\n"
+        "as a two-part scaffold — a static pinned `.hf-stage-lockup` status rail "
+        "+ a separate `#stage-card` hero content card; `none` if none — the "
+        "per-frame summary below flags candidates).\n\n"
         "2. **Exact H2 parser-anchor heading `## Blueprint assignment` on its own line** "
         "(REQUIRED literal `## Blueprint assignment` — do NOT replace `##` with bold "
-        "and do NOT omit it, the harness splits on this exact H2 line):\n\n"
+        "and do NOT omit it, the harness splits on this exact H2 line; when a frame's "
+        "voiceover carries no concrete numbers, keep comparisons qualitative — never "
+        "plan literal `— figure —` / `{metric}` placeholders):\n\n"
         "## Blueprint assignment\n"
         f"<one line per frame, frames are: {joined}. Format: `F<num> = <blueprint> "
         "(Adapt|Reproduce)` — `<blueprint>` MUST be a valid catalog id or "
@@ -617,9 +620,13 @@ def _frame_shared_stage_note(stage_spec: str, frame_num: str) -> str:
         f"Shared stage scaffold locked for Frame {frame_num}: layout=`{eff_layout}`"
         + (f', title="{title}"' if title and title.lower() != "none" else "")
         + (f', slots="{slots}"' if slots else "")
-        + f", slot_states={states} (`frame-packets` pre-builds the pinned rail/stepper "
-        "and `#stage-card`; design your Scenes to animate the hero content inside "
-        "`#stage-card` and keep completed `done` slots checked).\n"
+        + f", slot_states={states} (`frame-packets` pre-builds a two-part scaffold: "
+        "the pixel-locked static `.hf-stage-lockup` progress rail with both dot and "
+        "check icons pre-built in every slot, PLUS a separate `#stage-card` hero "
+        "container below/beside it. Keep `.hf-stage-lockup` static — do NOT design "
+        "lockup scale/drift, title typewriter, or slot DOM rewrites; focus your "
+        "Scenes on rich hero content inside `#stage-card` so it never looks sparse, "
+        "and keep completed `done` slots checked).\n"
     )
 
 
@@ -1247,6 +1254,29 @@ def _frame_duration(block: str) -> float | None:
     return dur if dur > 0 else None
 
 
+# P2-1 (2026-11-26, 6b07a9c1 F5): Phase B occasionally writes low-contrast
+# text/fill pairings like "violet text on a sky pill fill" (1.72:1) that violate
+# Phase A Color roles and trigger verify contrast_aa_failure. Deterministically
+# rewrite known illegible pairings to `ink` before merging STORYBOARD.md.
+_LOW_CONTRAST_LIGHT_ON_ANY_RE = re.compile(
+    r"\b(?:yellow|lime|mint|peach|lavender|sky)\b(?=\s+(?:text|word|label|type|copy|numeral)s?\s+on\s+(?:a\s+|an\s+|the\s+)?(?:white|cream|light|sky|lavender|mint|peach|yellow|lime)\b)",
+    re.I,
+)
+_LOW_CONTRAST_ACCENT_ON_CANDY_RE = re.compile(
+    r"\b(?:violet|coral)\b(?=\s+(?:text|word|label|type|copy|numeral)s?\s+on\s+(?:a\s+|an\s+|the\s+)?(?:sky|lavender|mint|peach|yellow|lime)\b)",
+    re.I,
+)
+
+
+def _sanitize_low_contrast_prose(text: str) -> tuple[str, int]:
+    """Rewrite known illegible candy-on-light/candy text pairings to ``ink``."""
+    if not text:
+        return text, 0
+    out, n1 = _LOW_CONTRAST_LIGHT_ON_ANY_RE.subn("ink", text)
+    out, n2 = _LOW_CONTRAST_ACCENT_ON_CANDY_RE.subn("ink", out)
+    return out, n1 + n2
+
+
 def _normalize_scene_windows(
     text: str, duration: float | None = None
 ) -> tuple[str, list[str]]:
@@ -1465,6 +1495,10 @@ def _run_frame_workers(
                         addition, _frame_duration(blocks[fn]))
                     if fixes:
                         log("visual F%s scene windows fixed: %s", fn, "; ".join(fixes))
+                    addition, contrast_fixes = _sanitize_low_contrast_prose(addition)
+                    if contrast_fixes:
+                        log("visual F%s low-contrast text pairings rewritten to ink: %d",
+                            fn, contrast_fixes)
                     additions[fn] = addition
                     _write_fragment(visual_dir, fn, addition)
                     log("worker ok F%s (attempt %s)", fn, attempt)

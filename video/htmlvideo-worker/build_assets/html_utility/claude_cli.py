@@ -553,7 +553,7 @@ def _profile_cmd(
         cmd.extend([
             "--disable-slash-commands",
             "--settings",
-            '{"disableAllHooks":true}',
+            '{"disableAllHooks":true,"enabledPlugins":{"superpowers@claude-plugins-official":false}}',
         ])
     if tools is not None:
         cmd.extend(["--tools", tools])

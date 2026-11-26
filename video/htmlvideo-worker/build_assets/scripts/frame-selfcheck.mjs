@@ -39,6 +39,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import vm from "node:vm";
 import {
   GENERIC_FAMILIES,
   extractDeclaredFamilies,
@@ -219,6 +220,37 @@ for (const m of masked.matchAll(digitSelRe)) {
   fail(`digit-led selector "${m[1]}" at line ${lineNo} col ${colNo} — CSS drops the whole rule / querySelectorAll throws SyntaxError; convert to [id="…"] or [class~="…"], leave getElementById alone (id_requires_css_escape)`);
 }
 
+// --- inline JS syntax check (invalid_inline_script_syntax) ------------------
+// Catch syntax errors like unquoted CSS units (`y: 2.2cqh`) in 0.1s locally
+// instead of paying a full verify round (6b07a9c1 F4).
+for (const b of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  const code = b[1];
+  try {
+    new vm.Script(code, { filename: `${frameId}.inline.js` });
+  } catch (err) {
+    fail(`invalid inline script syntax: ${err.message} (invalid_inline_script_syntax)`);
+  }
+}
+
+// --- visible literal placeholder check (literal_placeholder) ----------------
+// Autonomous videos render directly to MP4 — never let deck placeholders like
+// `— figure —` or `{metric}` reach the screen.
+{
+  const bodyOnly = (tplOpen !== -1 && tplClose !== -1 ? html.slice(tplOpen, tplClose) : html)
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]+>/g, " ");
+  const phRe = /(?:—|--)\s*(?:figure|metric|value|number|placeholder|stat)\s*(?:—|--)|\{\s*(?:metric|figure|value|number|placeholder|stat)\s*\}/gi;
+  const seenPh = new Set();
+  for (const m of bodyOnly.matchAll(phRe)) {
+    const hit = m[0].trim();
+    if (seenPh.has(hit.toLowerCase())) continue;
+    seenPh.add(hit.toLowerCase());
+    fail(`literal placeholder "${hit}" in visible text — replace with real copy or qualitative label (literal_placeholder)`);
+  }
+}
+
 // --- infinite GSAP repeat: -1 (gsap_infinite_repeat) ------------------------
 for (const b of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
   const cleanScript = b[1]
@@ -228,6 +260,34 @@ for (const b of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script
     const idx = b.index + b[0].indexOf(b[1]) + rep.index;
     const lineNo = html.slice(0, idx).split("\n").length;
     fail(`infinite GSAP \`repeat: -1\` at line ${lineNo} — renderer seeks deterministically; use a finite tween bounded by data-duration (gsap_infinite_repeat)`);
+  }
+}
+
+// --- uncentered left: 50% check (uncentered_left_50) ------------------------
+// Catch `left: 50%` missing `translateX(-50%)` / `xPercent: -50` (6b07a9c1 F1).
+// Skip thin dividers, explicit right-anchored/half-width panes, and rules that
+// already center via transform, negative margin-left, or GSAP xPercent: -50.
+{
+  const allJs = [...html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
+    .map((b) => b[1]).join("\n");
+  const hasJsXPercent = /\bxPercent\s*:\s*-50\b/.test(allJs);
+  const allCss = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)]
+    .map((b) => b[1].replace(/\/\*[\s\S]*?\*\//g, " ")).join("\n");
+  for (const m of allCss.matchAll(/([^{}@]+)\{([^{}]+)\}/g)) {
+    const sel = m[1].trim();
+    const decls = m[2];
+    if (!/\bleft\s*:\s*50%/.test(decls)) continue;
+    if (/\bright\s*:/.test(decls)) continue;
+    if (/translate(?:X|3d)?\s*\(\s*-50%/.test(decls)) continue;
+    if (/\bmargin-left\s*:\s*-/.test(decls)) continue;
+    if (/\bwidth\s*:\s*(?:[0-4](?:\.\d+)?px|0?\.\d+cqw|50%|[4-5]\dcqw)\b/i.test(decls)) continue;
+    if (hasJsXPercent) continue;
+    if (/(?:right|col-?2|pane-?2|divider|axis|line|rule|caret|cursor)/i.test(sel)) continue;
+    if (/(?:card|pill|cta|lockup|modal|headline|title)/i.test(sel)) {
+      fail(`uncentered \`left: 50%\` on "${sel}" without translateX(-50%) / xPercent: -50 — element will sit off-center to the right (uncentered_left_50)`);
+    } else {
+      warn(`uncentered \`left: 50%\` on "${sel}" without translateX(-50%) / xPercent: -50 (uncentered_left_50)`);
+    }
   }
 }
 

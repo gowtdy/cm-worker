@@ -38,6 +38,7 @@ import {
   jsonLintErrorCount,
   findingsPayload,
   FINDINGS_JSON_PREFIX,
+  frameStartTimes,
   transitionWindows,
   splitSharedStageCrossfade,
 } from "./lib/verify-check-parse.mjs";
@@ -195,10 +196,13 @@ let stageXfadeDemoted = 0;
 if (check.error) {
   say(`  ⚠ cannot run check: ${check.error}`);
 } else {
+  const indexPath = path.join(videodir, "index.html");
+  const indexHtml = fs.existsSync(indexPath) ? fs.readFileSync(indexPath, "utf8") : "";
+  const frameStarts = indexHtml ? frameStartTimes(indexHtml) : new Map();
   const json = extractJsonObject(check.stdout);
   const contradictionOpts = {};
   if (json) {
-    chk = parseCheckJson(json, { root: videodir });
+    chk = parseCheckJson(json, { root: videodir, frameStarts });
     checkParseMode = "json";
     contradictionOpts.declaredErrorCount = jsonDeclaredErrorCount(json);
     contradictionOpts.lintErrorCount = jsonLintErrorCount(json);
@@ -245,10 +249,7 @@ if (check.error) {
   // (see verify-check-parse.mjs) — demote to info AFTER errorCount accounting.
   const stageXfadeFlag = (process.env.HTMLVIDEO_VERIFY_STAGE_XFADE_FILTER || "1").trim().toLowerCase();
   if (!["0", "false", "off", "no"].includes(stageXfadeFlag) && chk.errors.length) {
-    const indexPath = path.join(videodir, "index.html");
-    const windows = fs.existsSync(indexPath)
-      ? transitionWindows(fs.readFileSync(indexPath, "utf8"))
-      : [];
+    const windows = indexHtml ? transitionWindows(indexHtml) : [];
     const { kept, demoted } = splitSharedStageCrossfade(chk.errors, windows);
     if (demoted.length) {
       stageXfadeDemoted = demoted.length;
