@@ -704,12 +704,12 @@ class DriverFanOutTest(unittest.TestCase):
         log = logging.getLogger("test.visual.driver")
         with mock.patch.object(vis, "run_claude_result", side_effect=fake_result), \
                 mock.patch.object(vis.subprocess, "run", return_value=gate), \
-                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}):
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1", "HTMLVIDEO_PREFIX_WARMUP_SECONDS": "0"}):
             vis.build_frame_visual(self.tmp, log)
 
         design_kw = next(kw for label, _, kw in calls if label == "design")
         self.assertEqual(design_kw["skill"], "visual_design")
-        self.assertEqual(design_kw["thinking_default"], "12000")
+        self.assertEqual(design_kw["thinking_default"], str(vis.DEFAULT_DESIGN_THINKING_TOKENS))
         self.assertTrue(design_kw.get("trunc_kill"))
         retry_prompt = next(p for label, p, _ in calls
                             if label == "F2" and "[RE-DISPATCH]" in p)
@@ -884,6 +884,15 @@ class DriverFanOutTest(unittest.TestCase):
         f2 = [p for label, p in seen if label == "F2"]
         self.assertEqual(len(f2), 1 + vis.MAX_RETRY_ROUNDS)
         self.assertIn("`- rules:", f2[-1].split("[RE-DISPATCH]", 1)[1])
+
+    def test_sanitize_low_contrast_prose(self):
+        out, n = vis._sanitize_low_contrast_prose(
+            "violet text on a sky pill fill; yellow word on cream; coral word on the white pill"
+        )
+        self.assertEqual(n, 2)
+        self.assertIn("ink text on a sky pill fill", out)
+        self.assertIn("ink word on cream", out)
+        self.assertIn("coral word on the white pill", out)
 
     def test_frame_failing_twice_raises(self):
         import os

@@ -19,6 +19,7 @@ import {
   findingsPayload,
   FINDINGS_JSON_PREFIX,
   relPath,
+  frameStartTimes,
   transitionWindows,
   isSharedStageCrossfadeOverlap,
   splitSharedStageCrossfade,
@@ -536,6 +537,29 @@ function testSharedStageCrossfade() {
   const { kept, demoted } = splitSharedStageCrossfade(errors, wins);
   assert.equal(demoted.length, 1);
   assert.equal(kept.length, 2);
+
+  // P1-2: frameStartTimes + frame-local timestamp & dual-box formatting
+  const starts = frameStartTimes(index);
+  assert.equal(starts.get("compositions/frames/01.html"), 0);
+  assert.equal(starts.get("compositions/frames/05.html"), 26.262);
+  const localJson = {
+    layout: {
+      findings: [
+        {
+          code: "content_overlap", severity: "error",
+          firstSeen: 27.762, lastSeen: 31.262,
+          selector: "span.pane-kicker", containerSelector: "div.pane-num",
+          text: "VALUE", sourceFile: "compositions/frames/05.html",
+          rect: { left: 1008, top: 495, width: 83, height: 28 },
+          containerRect: { left: 1000, top: 510, width: 200, height: 50 },
+          message: "Two text blocks overlap.",
+        },
+      ],
+    },
+  };
+  const parsedLocal = parseCheckJson(localJson, { frameStarts: starts });
+  assert.ok(parsedLocal.errors[0].msg.includes("(frame t=1.5-5.0s)"), parsedLocal.errors[0].msg);
+  assert.ok(parsedLocal.errors[0].msg.includes("box(1008,495,83x28) vs box(1000,510,200x50)"), parsedLocal.errors[0].msg);
 }
 
 console.log("all verify-check-parse tests passed");

@@ -1064,7 +1064,41 @@ Scene 1 (0.0–5.0s): scorecard.
   const ruleIds = core.knownRuleIds(ANIM);
   const many = core.frameRules("- rules: discrete-text-sequence, context-sensitive-cursor, spring-pop-entrance, svg-path-draw, particle-burst\n", ruleIds);
   assert.strictEqual(many.rules.length, 3);
-  console.log("shared stage skeletons + __hf runtime + repeat:-1 gate OK");
+
+  // Dual-state slot icons (both dot + check SVG pre-rendered) & shadow token
+  assert.ok(f2.includes('class="hf-stage-dot"') && f2.includes('class="hf-stage-check"'),
+    "every shared-stage slot must pre-render both dot and check icons");
+  assert.ok(f2.includes('.hf-stage-slot[data-state="done"] .hf-stage-check { display: block; }'));
+
+  // P0-1: frameMdExcerpt overrides deck placeholder rule (`— figure —`)
+  const excerpt = core.frameMdExcerpt(
+    '---\ncolors:\n  shadow: "rgba(26,26,26,0.08)"\n---\n\n## Numerals & Claims (hard rule)\n\nNever invent figures. Render slots as `— figure —`, `{metric}`, `N%`.\n',
+  );
+  assert.ok(excerpt.includes("Autonomous-video override"), excerpt);
+  assert.ok(!/Render slots as/.test(excerpt), excerpt);
+
+  // P0-1 & P0-3: frame-selfcheck catches inline JS syntax error, literal placeholder, and uncentered left:50% card
+  const synPath = join(dir, "compositions", "frames", "02-rail.html");
+  writeFileSync(synPath, filledF2.replace(/<\/script>\s*<\/template>/, 'tl.to(".hero-line", { y: 2.2cqh, duration: 0.5 }, 0);\n</script>\n</template>'));
+  const synRun = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(synRun.status, 1, "unquoted CSS unit in JS must fail selfcheck");
+  assert.ok(`${synRun.stdout}${synRun.stderr}`.includes("invalid_inline_script_syntax"));
+
+  writeFileSync(synPath, filledF2.replace("Understand It", "— figure —"));
+  const phRun = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(phRun.status, 1, "literal placeholder must fail selfcheck");
+  assert.ok(`${phRun.stdout}${phRun.stderr}`.includes("literal_placeholder"));
+
+  writeFileSync(synPath, filledF2.replace("</style>", ".pill-card { position: absolute; left: 50%; top: 42cqh; min-width: 30cqw; }\n</style>"));
+  const uncRun = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(uncRun.status, 1, "uncentered left:50% pill-card must fail selfcheck");
+  assert.ok(`${uncRun.stdout}${uncRun.stderr}`.includes("uncentered_left_50"));
+
+  writeFileSync(synPath, filledF2.replace("</style>", ".pill-card { position: absolute; left: 50%; top: 42cqh; transform: translateX(-50%); }\n.right-col { position: absolute; left: 50%; width: 45cqw; }\n</style>"));
+  const cenRun = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(cenRun.status, 0, `centered pill-card + right-col must pass:\n${cenRun.stdout}${cenRun.stderr}`);
+
+  console.log("shared stage skeletons + __hf runtime + selfcheck syntax/placeholder/center gates OK");
 }
 
 if (process.argv[1] && process.argv[1].endsWith("test_frame_packets.mjs")) {
