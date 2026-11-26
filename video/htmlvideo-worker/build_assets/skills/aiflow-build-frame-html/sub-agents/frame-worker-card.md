@@ -16,7 +16,7 @@
 - `timeline_track_too_dense` — same-`data-track-index` clips never overlap in time (touching OK).
 - `timeline_not_paused` / `timeline_not_registered` — exactly one `gsap.timeline({ paused: true })` at `window.__timelines["<frame_id>"]`.
 - `id_requires_css_escape` — no digit-led selectors (`#07-…`, `.01-…`) in CSS/JS selector strings (CSS drops the rule; `querySelector(All)` throws) → `[id="…"]`/`[class~="…"]`; `getElementById` fine.
-- No CSS `transition`, repeat / yoyo, non-deterministic logic — the renderer seeks frame-by-frame (`css_transition_used` is script-gate warning-level; a real rule regardless).
+- No CSS `transition`, infinite `repeat: -1`, or non-deterministic logic — the renderer seeks frame-by-frame (`css_transition_used` is script-gate warning-level; finite bounded pulses fit inside `data-duration`).
 
 ## Ruled conventions (do not re-derive)
 

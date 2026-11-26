@@ -346,8 +346,10 @@ function narrowMapping(lines, blockIndex, shotIndex, budget = 2000) {
 export const NARROWED_BLUEPRINT_NOTE = "> Packet-time narrowed blueprint — do not re-expand OR branches; pick one option and build.";
 
 // Deterministic, structure-based trim of a blueprint body for one frame. Small
-// blueprints (≤ minBytes) and bodies without the standard sections pass through.
-export function narrowBlueprint(md, { block = "", role = frameRole(block), minBytes = 8000 } = {}) {
+// blueprints (≤ minBytes, lowered from 8000 → 3500 so medium blueprints like
+// panel-edit-live-sync / card-morph-anchor also shed irrelevant role variants)
+// and bodies without the standard sections pass through.
+export function narrowBlueprint(md, { block = "", role = frameRole(block), minBytes = 3500 } = {}) {
   const text = String(md ?? "").trim();
   if (Buffer.byteLength(text) <= minBytes) return { text, narrowed: false };
   const sections = blueprintSections(text);
@@ -433,14 +435,21 @@ export function inferCitedRules(block, ruleIds, { blueprintText = "", exclude = 
   return out;
 }
 
-const MAX_RULES = 5;
+const MAX_RULES = 3;
+
+function maxRulesCap() {
+  const raw = String(process.env.HTMLVIDEO_FRAME_PACKETS_MAX_RULES ?? "").trim();
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : MAX_RULES;
+}
 
 // citedRules + (HTMLVIDEO_FRAME_PACKETS_INFER_RULES, default ON) inferred ids
-// topping the list up to MAX_RULES.
+// topping the list up to MAX_RULES (capped so excess recipes do not bloat dispatch).
 export function frameRules(block, ruleIds, { blueprintText = "", infer = envSwitch("HTMLVIDEO_FRAME_PACKETS_INFER_RULES", true) } = {}) {
-  const cited = citedRules(block, ruleIds);
-  const inferred = infer && cited.length < MAX_RULES
-    ? inferCitedRules(block, ruleIds, { blueprintText, exclude: cited, max: MAX_RULES - cited.length })
+  const cap = maxRulesCap();
+  const cited = citedRules(block, ruleIds).slice(0, cap);
+  const inferred = infer && cited.length < cap
+    ? inferCitedRules(block, ruleIds, { blueprintText, exclude: cited, max: cap - cited.length })
     : [];
   return { rules: [...cited, ...inferred], cited, inferred };
 }
@@ -1032,10 +1041,220 @@ function htmlCommentSafe(text) {
   return String(text).replace(/--+/g, "—").replace(/\s+/g, " ").trim();
 }
 
+function escapeHtml(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// Approved collision-free shared-stage presets ONLY (no ad-hoc layout names).
+export const SHARED_STAGE_LAYOUTS = new Set([
+  "top-stepper-center-card",
+  "left-rail-right-card",
+  "center-scorecard",
+  "none",
+]);
+
+function parseSlotStates(raw) {
+  const inside = /\[([^\]]*)\]/.exec(String(raw ?? ""))?.[1] ?? "";
+  if (!inside.trim()) return [];
+  return inside.split(",").map((tok) => {
+    const clean = tok.trim();
+    const [statusRaw, colorRaw] = clean.split(":").map((s) => s.trim());
+    const st = (statusRaw || "dim").toLowerCase();
+    const status = st === "done" || st === "active" ? st : "dim";
+    return { status, color: colorRaw ? colorRaw.toLowerCase() : "" };
+  });
+}
+
+// Parse `## Shared stage spec` from `_design.md` or `STORYBOARD.md`.
+export function parseSharedStageSpec(text) {
+  const sec = /^[ \t]*(?:#{1,6}[ \t]*|\*\*[ \t]*)?Shared\s+stage\s+spec(?:[ \t]*\*\*)?[ \t]*[:：.]?[ \t]*$([\s\S]*?)(?=^## |(?![\s\S]))/im.exec(text ?? "");
+  if (!sec) return null;
+  const body = sec[1];
+  const rawLayout = (/^\s*layout\s*:\s*([\w-]+)/im.exec(body)?.[1] ?? "none").trim().toLowerCase();
+  const baseLayout = SHARED_STAGE_LAYOUTS.has(rawLayout) ? rawLayout : "none";
+  const rawTitle = (/^\s*title\s*:\s*(.+)$/im.exec(body)?.[1] ?? "").trim();
+  const title = /^none$/i.test(rawTitle) ? "" : rawTitle;
+  const rawSlots = (/^\s*slots\s*:\s*(.+)$/im.exec(body)?.[1] ?? "").trim();
+  const slots = rawSlots && !/^none$/i.test(rawSlots)
+    ? rawSlots.split("|").map((s) => s.trim()).filter(Boolean)
+    : [];
+  const frames = new Map();
+  for (const m of body.matchAll(/^\s*[-*]?\s*F(\d+)\s*:\s*(.+)$/gim)) {
+    const fn = Number(m[1]);
+    const val = m[2].trim();
+    if (!val || /^none\b/i.test(val)) {
+      frames.set(fn, { layout: "none", states: [] });
+      continue;
+    }
+    const over = /^([a-z][\w-]*)\s+(\[[^\]]*\])/i.exec(val);
+    let layout = baseLayout;
+    let statePart = val;
+    if (over) {
+      const cand = over[1].toLowerCase();
+      layout = SHARED_STAGE_LAYOUTS.has(cand) ? cand : baseLayout;
+      statePart = over[2];
+    }
+    if (layout === "none") {
+      frames.set(fn, { layout: "none", states: [] });
+      continue;
+    }
+    frames.set(fn, { layout, states: parseSlotStates(statePart) });
+  }
+  return { layout: baseLayout, title, slots, frames };
+}
+
+export function parseFrameStageTokens(frameMd) {
+  const defaults = {
+    colors: {
+      cream: "#F5F5F0",
+      canvas: "#F5F5F0",
+      ink: "#1A1A1A",
+      outline: "#1E1E1E",
+      white: "#FFFFFF",
+      sky: "#8BB4F7",
+      coral: "#E85D4E",
+      mint: "#A8E6CF",
+      yellow: "#F6D365",
+      lavender: "#C9B6F2",
+      peach: "#F7B79C",
+      lime: "#C8E870",
+    },
+    bodyFont: "Space Grotesk",
+    displayFont: "Bodoni Moda",
+  };
+  if (!frameMd) return defaults;
+  const fm = frameMdFrontmatter(frameMd);
+  const colorBlock = frontmatterBlock(fm, "colors");
+  for (const m of colorBlock.matchAll(/^\s+([\w-]+)\s*:\s*["']?(#[0-9A-Fa-f]{3,8})["']?/gm)) {
+    defaults.colors[m[1].toLowerCase()] = m[2];
+  }
+  const typeBlock = frontmatterBlock(fm, "typography");
+  const bodyFam = /^\s+body\s*:[^\n]*fontFamily\s*:\s*["']([^"']+)["']/m.exec(typeBlock)?.[1]
+    ?? /fontFamily\s*:\s*["']([^"']+)["']/.exec(typeBlock)?.[1];
+  const dispFam = /^\s+(?:display|headline)\s*:[^\n]*fontFamily\s*:\s*["']([^"']+)["']/m.exec(typeBlock)?.[1];
+  if (bodyFam) defaults.bodyFont = bodyFam;
+  if (dispFam) defaults.displayFont = dispFam;
+  return defaults;
+}
+
+const HF_MICRO_RUNTIME = `/* hf-runtime-start */
+const __hf = {
+  type(tl, textEl, caretEl, str, at, dur) {
+    const s = String(str ?? "");
+    const el = typeof textEl === "string" ? document.querySelector(textEl) : textEl;
+    const caret = caretEl ? (typeof caretEl === "string" ? document.querySelector(caretEl) : caretEl) : null;
+    if (!el) return tl;
+    const d = Math.max(0.05, Number(dur) || 0.6);
+    const proxy = { n: 0 };
+    tl.set(el, { textContent: "" }, at);
+    if (caret) tl.set(caret, { autoAlpha: 1 }, at);
+    tl.fromTo(proxy, { n: 0 }, {
+      n: s.length,
+      duration: d,
+      ease: "none",
+      immediateRender: false,
+      onUpdate() { el.textContent = s.slice(0, Math.round(proxy.n)); },
+      onComplete() { el.textContent = s; },
+    }, at);
+    return tl;
+  },
+  draw(tl, target, at, dur, ease = "power2.out") {
+    const els = typeof target === "string" ? [...document.querySelectorAll(target)] : [target].filter(Boolean);
+    for (const el of els) {
+      const len = typeof el.getTotalLength === "function" ? Math.ceil(el.getTotalLength()) : 600;
+      tl.set(el, { strokeDasharray: len, strokeDashoffset: len }, 0);
+      tl.fromTo(el, { strokeDashoffset: len }, { strokeDashoffset: 0, duration: Math.max(0.05, Number(dur) || 0.5), ease, immediateRender: false }, at);
+    }
+    return tl;
+  },
+};
+/* hf-runtime-end */`;
+
+/** Grid columns for the center-scorecard slot rail: one row up to 3 slots, else 2 columns. */
+export function centerScorecardColumns(slotCount) {
+  const n = Math.max(1, Number(slotCount) || 1);
+  return n <= 3 ? n : 2;
+}
+
+function buildSharedStageMarkupAndCss(stageSpec, entry, tokens, dur) {
+  if (!stageSpec || !entry || !entry.layout || entry.layout === "none" || !stageSpec.slots.length) {
+    return null;
+  }
+  const c = tokens.colors;
+  const ground = c.cream || c.canvas || "#F5F5F0";
+  const resolveAccent = (name, fallback) => (name && c[name]) || fallback || c.sky || "#8BB4F7";
+  const slotHtml = stageSpec.slots.map((label, idx) => {
+    const st = entry.states[idx] ?? { status: "dim", color: "" };
+    const fill = st.status === "dim"
+      ? c.white
+      : resolveAccent(st.color, st.status === "done" ? c.mint : c.sky);
+    const checkSvg = st.status === "done"
+      ? `<svg class="hf-stage-check" data-skeleton="stage" viewBox="0 0 16 16" aria-hidden="true"><path data-skeleton="stage" d="M3 8.5L6.5 12L13 4.5" fill="none" stroke="${c.ink}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+      : `<span class="hf-stage-dot" data-skeleton="stage"></span>`;
+    return `      <div class="hf-stage-slot" data-skeleton="stage" data-slot-index="${idx + 1}" data-state="${st.status}" style="background:${fill};">${checkSvg}<span class="hf-stage-label" data-skeleton="stage">${escapeHtml(label)}</span></div>`;
+  }).join("\n");
+  // The title is the lockup's only title node, so it can never collide inside
+  // its own frame — but pixel-locked sibling frames make it overlap itself
+  // during every crossfade (6b0795df: t=26.6s F4→F5, t=41.5s F7→F8), which
+  // `hyperframes check` mis-attributes to the first frame carrying the class.
+  const titleHtml = stageSpec.title
+    ? `    <div class="hf-stage-title" data-skeleton="stage" data-layout-allow-overlap="true">${escapeHtml(stageSpec.title)}</div>\n`
+    : "";
+  let layoutCss = "";
+  if (entry.layout === "left-rail-right-card") {
+    layoutCss = `
+.hf-stage-lockup { position: absolute; left: 5cqw; top: 15cqh; width: 25cqw; display: flex; flex-direction: column; gap: 1.4cqh; padding: 2.2cqh 1.6cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1cqw; box-shadow: 6px 6px 0 ${c.outline}; box-sizing: border-box; z-index: 2; }
+.hf-stage-slots { display: flex; flex-direction: column; gap: 1.1cqh; }
+#stage-card { position: absolute; left: 34cqw; top: 14cqh; width: 60cqw; min-height: 48cqh; max-height: 64cqh; padding: 3cqh 2.8cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1.1cqw; box-shadow: 8px 8px 0 ${c.outline}; display: flex; flex-direction: column; justify-content: center; gap: 2cqh; box-sizing: border-box; overflow: hidden; z-index: 2; }`;
+  } else if (entry.layout === "top-stepper-center-card") {
+    layoutCss = `
+.hf-stage-lockup { position: absolute; left: 10cqw; top: 5cqh; width: 80cqw; display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 1.4cqw; padding: 1.2cqh 1.8cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 0.9cqw; box-shadow: 5px 5px 0 ${c.outline}; box-sizing: border-box; z-index: 2; }
+.hf-stage-slots { display: flex; flex-direction: row; flex: 1; justify-content: flex-end; gap: 1cqw; min-width: 0; }
+#stage-card { position: absolute; left: 18cqw; top: 19cqh; width: 64cqw; min-height: 46cqh; max-height: 59cqh; padding: 3cqh 3cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1.1cqw; box-shadow: 8px 8px 0 ${c.outline}; display: flex; flex-direction: column; justify-content: center; gap: 2cqh; box-sizing: border-box; overflow: hidden; z-index: 2; }`;
+  } else if (entry.layout === "center-scorecard") {
+    // ≥4 slots in one row leave ~250px per cell; 30–37 char labels (6b0795df
+    // F2) then collide. Wrap to a 2-column grid (~520px per cell) and lift the
+    // lockup to 8cqh so up to 8 slots (4 rows) still clear #stage-card at 38cqh.
+    layoutCss = `
+.hf-stage-lockup { position: absolute; left: 20cqw; top: 8cqh; width: 60cqw; display: flex; flex-direction: column; gap: 1.2cqh; padding: 2cqh 2.4cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1cqw; box-shadow: 6px 6px 0 ${c.outline}; box-sizing: border-box; z-index: 2; }
+.hf-stage-slots { display: grid; grid-template-columns: repeat(${centerScorecardColumns(stageSpec.slots.length)}, minmax(0, 1fr)); gap: 1cqh 1cqw; }
+#stage-card { position: absolute; left: 20cqw; top: 38cqh; width: 60cqw; min-height: 28cqh; max-height: 40cqh; padding: 2.6cqh 2.8cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1.1cqw; box-shadow: 8px 8px 0 ${c.outline}; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 1.6cqh; box-sizing: border-box; overflow: hidden; z-index: 2; }`;
+  } else {
+    return null;
+  }
+  const css = `#root { position: relative; width: 100cqw; height: 100cqh; overflow: hidden; font-family: "${tokens.bodyFont}", sans-serif; color: ${c.ink}; }
+.bg { position: absolute; inset: 0; background: ${ground}; }
+.hf-stage-title { font-size: 1.05cqw; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: ${c.ink}; white-space: nowrap; }
+.hf-stage-slot { display: flex; align-items: center; gap: 0.65cqw; padding: 0.7cqh 0.95cqw; border: 2px solid ${c.outline}; border-radius: 0.6cqw; font-size: 1.12cqw; font-weight: 700; line-height: 1.2; color: ${c.ink}; box-sizing: border-box; min-width: 0; }
+.hf-stage-slot[data-state="dim"] { opacity: 0.46; }
+.hf-stage-slot[data-state="active"] { box-shadow: 3px 3px 0 ${c.outline}; opacity: 1; }
+.hf-stage-slot[data-state="done"] { opacity: 0.92; }
+.hf-stage-check { width: 1.1cqw; height: 1.1cqw; flex-shrink: 0; }
+.hf-stage-dot { width: 0.65cqw; height: 0.65cqw; border-radius: 50%; border: 2px solid ${c.outline}; flex-shrink: 0; }
+.hf-stage-label { overflow: hidden; text-overflow: ellipsis; }${layoutCss}
+/* Add this frame's hero styles for children inside #stage-card below: */`;
+  const dom = `  <!-- Shared stage lockup (${entry.layout}): pixel-locked across sibling frames — KEEP intact, do not move or rename slots. -->
+  <div class="clip hf-stage-lockup" data-skeleton="stage" data-stage-layout="${entry.layout}" data-start="0" data-duration="${dur}" data-track-index="1">
+${titleHtml}    <div class="hf-stage-slots" data-skeleton="stage">
+${slotHtml}
+    </div>
+  </div>
+  <!-- Hero stage card (track 2): drop data-skeleton from #stage-card and place this frame's hero content inside it. -->
+  <div id="stage-card" class="clip hf-stage-card" data-skeleton="card" data-start="0" data-duration="${dur}" data-track-index="2">
+    <!-- FILL THIS FRAME'S HERO CONTENT HERE -->
+  </div>`;
+  return { css, dom };
+}
+
 // HTMLVIDEO_FRAME_HTML_RICH_SKELETON (default ON; set 0 to disable): full-duration
 // ground clip (tagged data-skeleton so frame-selfcheck still sees the file as
-// unfilled), per-Scene placeholder comments and Scene labels on the registered timeline.
-function richSkeleton(frame, dims, dur) {
+// unfilled), optional shared-stage scaffold, __hf micro-helpers, per-Scene
+// placeholder comments and Scene labels on the registered timeline.
+function richSkeleton(frame, dims, dur, { stageSpec = null, stageEntry = null, tokens = null } = {}) {
   const scenes = [...String(frame.block).matchAll(SCENE_WINDOW_RE)].map((m, i) => {
     const lineEnd = frame.block.indexOf("\n", m.index);
     const line = frame.block.slice(m.index, lineEnd === -1 ? undefined : lineEnd);
@@ -1054,28 +1273,44 @@ function richSkeleton(frame, dims, dur) {
   const sceneComments = scenes.map((s) => `  <!-- ${s.head}: ${s.desc}${s.desc.length >= 100 ? "…" : ""} -->`).join("\n");
   const labels = scenes.map((s) => `tl.addLabel("scene${s.n}", ${s.a});`).join("\n");
   const sceneTodos = scenes.map((s) => `// ${s.head} — tweens at "scene${s.n}" (${s.a}s) … ${s.b}s`).join("\n");
+  const shared = buildSharedStageMarkupAndCss(stageSpec, stageEntry, tokens ?? parseFrameStageTokens(""), dur);
+  const styleBody = shared
+    ? `\n${shared.css}\n`
+    : "/* fill: frame styles — .bg is the full-bleed ground (position:absolute; inset:0) */";
+  const stageDom = shared ? `\n${shared.dom}\n` : "\n";
   return `<!-- skeleton-v1 (rich): fill style/body/script per .hyperframes/frame-packets/${frame.frameId}.dispatch.md — last write wins -->
 <template>
 <div id="root" data-composition-id="${frame.frameId}"${dims} data-duration="${dur}">
   <!-- Ground layer (track 0, full duration): style it as the frame's background and drop data-skeleton; keep other clips off track 0 or end-to-end. -->
-  <div class="clip bg" data-skeleton="bg" data-start="0" data-duration="${dur}" data-track-index="0"></div>
-${sceneComments ? `${sceneComments}\n` : ""}</div>
-<style>/* fill: frame styles — .bg is the full-bleed ground (position:absolute; inset:0) */</style>
+  <div class="clip bg" data-skeleton="bg" data-start="0" data-duration="${dur}" data-track-index="0"></div>${stageDom}${sceneComments ? `${sceneComments}\n` : ""}</div>
+<style>${styleBody}</style>
 <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
 <script>
 window.__timelines = window.__timelines || {};
 const tl = gsap.timeline({ paused: true });
 window.__timelines["${frame.frameId}"] = tl;
+${HF_MICRO_RUNTIME}
 ${labels ? `${labels}\n` : ""}${sceneTodos ? `${sceneTodos}\n` : ""}</script>
 </template>
 `;
 }
 
-export function buildSkeletons({ projectDir, frames, canvas, rich = envSwitch("HTMLVIDEO_FRAME_HTML_RICH_SKELETON", true) }) {
+export function buildSkeletons({ projectDir, frames, canvas, rich = envSwitch("HTMLVIDEO_FRAME_HTML_RICH_SKELETON", true), storyboard = "" }) {
   const framesDir = resolve(projectDir, "compositions", "frames");
   mkdirSync(framesDir, { recursive: true });
   const dims = canvas && canvas.width && canvas.height
     ? ` data-width="${canvas.width}" data-height="${canvas.height}"` : "";
+  const designMdPath = join(projectDir, ".hyperframes", "visual", "_design.md");
+  const designMd = existsSync(designMdPath) ? readFileSync(designMdPath, "utf8") : "";
+  const sbPath = join(projectDir, "STORYBOARD.md");
+  const sbText = storyboard || (existsSync(sbPath) ? readFileSync(sbPath, "utf8") : "");
+  const stageSpec = rich
+    ? (parseSharedStageSpec(designMd) ?? parseSharedStageSpec(sbText))
+    : null;
+  const frameMdPath = join(projectDir, "frame.md");
+  const tokens = stageSpec && existsSync(frameMdPath)
+    ? parseFrameStageTokens(readFileSync(frameMdPath, "utf8"))
+    : parseFrameStageTokens("");
   return frames.map((frame) => {
     const rawDur = field(frame.block, "duration") ?? field(frame.block, "durationSeconds");
     if (!rawDur) throw new Error(`${frame.frameId}: skeleton needs a - duration field on the storyboard block`);
@@ -1087,7 +1322,9 @@ export function buildSkeletons({ projectDir, frames, canvas, rich = envSwitch("H
       );
     }
     const dur = durMatch[1];
-    const skeleton = rich ? richSkeleton(frame, dims, dur) : `<!-- skeleton-v1: fill style/body/script per .hyperframes/frame-packets/${frame.frameId}.dispatch.md — last write wins -->
+    const fn = frameNumber(frame.heading);
+    const stageEntry = stageSpec && fn != null ? stageSpec.frames.get(fn) ?? null : null;
+    const skeleton = rich ? richSkeleton(frame, dims, dur, { stageSpec, stageEntry, tokens }) : `<!-- skeleton-v1: fill style/body/script per .hyperframes/frame-packets/${frame.frameId}.dispatch.md — last write wins -->
 <template>
 <div id="root" data-composition-id="${frame.frameId}"${dims} data-duration="${dur}"></div>
 <style>/* fill: frame styles */</style>
