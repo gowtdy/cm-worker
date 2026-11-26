@@ -399,6 +399,12 @@ _STAGE_STOPWORDS = frozenset(
 )
 _SAME_STAGE_CUE_RE = re.compile(
     r"\b(same|continu(?:es|ing|ed)|stays on|remains|carried over)\b", re.I)
+_SAME_CANVAS_ONLY_RE = re.compile(
+    r"\bsame\s+(?:(?:flat|planted|warm|cool|dark|light|soft|sun-bleached|plain|clean)\s+)*"
+    r"(?:cream|white|black|dark|light|paper|ivory|beige|off-white|slate|navy|canvas|background|backdrop|field|ground)"
+    r"(?:\s+(?:stage|canvas|background|backdrop|field|ground))?\b",
+    re.I,
+)
 
 
 def _stage_words(text: str) -> set[str]:
@@ -420,8 +426,12 @@ def _shared_stage_pairs(summaries: list[dict[str, str]]) -> list[tuple[str, str,
     match within 10%). A hint for the design phase, never a hard rule."""
     pairs: list[tuple[str, str, str]] = []
     for prev, cur in zip(summaries, summaries[1:]):
-        cue = _SAME_STAGE_CUE_RE.search(cur.get("scene", ""))
-        if cue:
+        scene_text = cur.get("scene", "")
+        cue = _SAME_STAGE_CUE_RE.search(scene_text)
+        if cue and not (
+            cue.group(1).lower() == "same"
+            and _SAME_CANVAS_ONLY_RE.search(scene_text)
+        ):
             pairs.append((prev["num"], cur["num"], f'scene says "{cue.group(1).lower()}"'))
             continue
         a, b = _stage_words(prev.get("scene", "")), _stage_words(cur.get("scene", ""))
@@ -494,7 +504,8 @@ def _build_design_prompt(
         + "Produce ONLY three sections in this exact order:\n\n"
         "1. **Video direction — creative body** (plain prose with **bold** labels, NOT "
         "`##` headings — it joins the pre-written palette/type under the existing "
-        "`## Video direction` heading): color role-mapping (which candy = which "
+        "`## Video direction` heading; keep each bold item concise at 1–2 sentences, "
+        "≤ 250 words total across Section 1): color role-mapping (which candy = which "
         "emphasis; text on white/cream surfaces MUST use `ink` — light/warm candies "
         "like `yellow`, `lime`, `mint`, `peach`, `lavender`, `sky` are for pill/badge "
         "FILLS only, NEVER text color on light surfaces), motion grammar, "
@@ -513,8 +524,11 @@ def _build_design_prompt(
         "structure or Flex/Grid geometry here: `## Shared stage spec` below is the "
         "single source of truth for stage geometry and `frame-packets` builds it "
         "as a two-part scaffold — a static pinned `.hf-stage-lockup` status rail "
-        "+ a separate `#stage-card` hero content card; `none` if none — the "
-        "per-frame summary below flags candidates).\n\n"
+        "+ a separate `#stage-card` hero content card; on summary/CTA frames where "
+        "all slots are already `done`, keep `.hf-stage-slots` static in their "
+        "completed `done` state — NEVER design an in-frame recap sweep that resets "
+        "completed slots back to `dim`; `none` if none — the per-frame summary "
+        "below flags candidates).\n\n"
         "2. **Exact H2 parser-anchor heading `## Blueprint assignment` on its own line** "
         "(REQUIRED literal `## Blueprint assignment` — do NOT replace `##` with bold "
         "and do NOT omit it, the harness splits on this exact H2 line; when a frame's "
@@ -530,7 +544,9 @@ def _build_design_prompt(
         "**Shared stage** above so `frame-packets` stamps collision-free shared DOM into "
         "each frame's skeleton; emit `layout: none` when no frames share a stage). Pick "
         "`layout:` ONLY from `top-stepper-center-card`, `left-rail-right-card`, "
-        "`center-scorecard`, or `none` (never invent other layout names):\n\n"
+        "`center-scorecard`, or `none` (never invent other layout names; default "
+        "directly to `top-stepper-center-card` whenever frames share a checklist/"
+        "stepper rail plus per-frame detail content — do not debate alternatives):\n\n"
         "## Shared stage spec\n"
         "layout: <top-stepper-center-card | left-rail-right-card | center-scorecard | none>\n"
         "title: <SHORT STAGE TITLE, or none>\n"
@@ -538,8 +554,10 @@ def _build_design_prompt(
         "including its number (2–4 short words, e.g. `01 One-line test`)>\n"
         "<one line per frame `F<num>: none` or `F<num>: [state1, state2, ...]` (optional "
         "`center-scorecard` prefix on a summary frame), where each slot state is `dim`, "
-        "`active:<palette_accent>`, or `done:<palette_accent>` — once a slot finishes on "
-        "an earlier frame, keep it `done:<accent>` on later frames instead of resetting to `dim`>\n\n"
+        "`active:<palette_accent>`, or `done:<palette_accent>` — overview/intro shared-"
+        "stage frames with no single focused item ALWAYS use `[dim, dim, ...]`; once a "
+        "slot finishes on an earlier frame, keep it `done:<accent>` on later frames "
+        "instead of resetting to `dim`>\n\n"
         "Output this as your FINAL message text (no tools, no Write, no per-frame Scene "
         "lines — the per-frame workers do those). Keep thinking tight and decisive — "
         "pick one clear catalog shape per frame without enumerating every candidate. "
@@ -624,9 +642,12 @@ def _frame_shared_stage_note(stage_spec: str, frame_num: str) -> str:
         "the pixel-locked static `.hf-stage-lockup` progress rail with both dot and "
         "check icons pre-built in every slot, PLUS a separate `#stage-card` hero "
         "container below/beside it. Keep `.hf-stage-lockup` static — do NOT design "
-        "lockup scale/drift, title typewriter, or slot DOM rewrites; focus your "
-        "Scenes on rich hero content inside `#stage-card` so it never looks sparse, "
-        "and keep completed `done` slots checked).\n"
+        "lockup scale/drift, title typewriter, slot DOM rewrites, or an in-frame "
+        "recap sweep that resets `done` slots back to `dim`; focus your Scenes on "
+        "rich hero content inside `#stage-card` so it never looks sparse, keep "
+        "`#stage-card` visible with a closing summary/lockup in the final Scene "
+        "(never fade `#stage-card` out to empty canvas), and keep completed `done` "
+        "slots checked).\n"
     )
 
 
