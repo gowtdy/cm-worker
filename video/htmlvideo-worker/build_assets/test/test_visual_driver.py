@@ -1193,5 +1193,47 @@ class LedgerPromptTest(unittest.TestCase):
         self.assertNotIn("## Motion ledger", p)
 
 
+class SharedStageAndHedgeOptimizationTest(unittest.TestCase):
+    def test_shared_stage_pairs_ignores_canvas_only_same_phrase(self):
+        summaries = [
+            {"num": "1", "scene": "Flat sun-bleached cream canvas, one pill card.", "duration": "9s"},
+            {"num": "2", "scene": "Same cream stage. Three empty outline pill cards slide into a row.", "duration": "8s"},
+            {"num": "3", "scene": "Same three-gate stage. The first card fills with checked rows.", "duration": "8s"},
+        ]
+        pairs = vis._shared_stage_pairs(summaries)
+        pair_ids = [(a, b) for a, b, _ in pairs]
+        self.assertNotIn(("1", "2"), pair_ids)
+        self.assertIn(("2", "3"), pair_ids)
+
+    def test_design_prompt_and_stage_note_ban_recap_sweep_and_empty_closer(self):
+        prompt = vis._build_design_prompt("preamble", ["1", "2", "3"], tokens=_TOKENS)
+        self.assertIn("≤ 250 words total", prompt)
+        self.assertIn("default directly to `top-stepper-center-card`", prompt)
+        self.assertIn("ALWAYS use `[dim, dim, ...]`", prompt)
+        self.assertIn("NEVER design an in-frame recap sweep", prompt)
+
+        spec = (
+            "## Shared stage spec\n"
+            "layout: top-stepper-center-card\n"
+            "title: The three gates\n"
+            "slots: 01 Fundamentals | 02 Valuation | 03 Exit Plan\n"
+            "F7: [done:lime, done:lime, done:lime]\n"
+        )
+        note = vis._frame_shared_stage_note(spec, "7")
+        self.assertIn("recap sweep", note)
+        self.assertIn("never fade `#stage-card` out to empty canvas", note)
+
+    def test_frame_html_hedge_defaults_and_hard_noops(self):
+        from html_utility import frame_html as fh
+        self.assertEqual(fh.DEFAULT_HEDGE_EFFORT, "low")
+        self.assertEqual(fh.DEFAULT_MAX_HEDGES, 3)
+        self.assertEqual(fh.HEDGE_TIMEOUT, 180)
+        prompt = fh._worker_prompt(
+            "01-hook", skeleton_mode=False, dispatch_text="# Dispatch: 01-hook\n", text_out=True
+        )
+        self.assertIn("NO manual `onUpdate` / `gsap.ticker`", prompt)
+        self.assertIn("NO inline `<svg><feTurbulence>`", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

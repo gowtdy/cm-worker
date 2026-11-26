@@ -346,21 +346,23 @@ TWO_PHASE_A_MAX_TURNS = 20
 HEDGE_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE"
 HEDGE_AFTER_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_AFTER"
 MAX_HEDGES_ENV = "HTMLVIDEO_FRAME_HTML_MAX_HEDGES"
+HEDGE_EFFORT_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_EFFORT"
 SLIM_FALLBACK_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_FALLBACK"
 DEFAULT_HEDGE_AFTER = 150
-DEFAULT_MAX_HEDGES = 2
+DEFAULT_MAX_HEDGES = 3
+DEFAULT_HEDGE_EFFORT = "low"
 HEDGE_POLL_SECONDS = 5
 HEDGE_DIR = os.path.join(".hyperframes", "hedge")
 # Cross-frame prefix KV cache warm-up: give frame #1 a 5s head-start so the
 # gateway finishes prefill of the shared ~14k-token prefix before siblings fan out.
 PREFIX_WARMUP_ENV = "HTMLVIDEO_PREFIX_WARMUP_SECONDS"
 DEFAULT_PREFIX_WARMUP_SECONDS = 5.0
-# A hedge races a stripped minimal-motion fallback (blueprint + recipes stripped),
-# bounded to 1 turn / 24000 cap / 150s so it returns in ~30-90s without stalling
-# or burning 240s on the same deadlock (2026-11-26, 6b07a9c1).
+# A hedge races a stripped minimal-motion fallback (blueprint + recipes stripped)
+# at low effort (verified 2026-11-26 on deepseek-v4-pro-0813: 54s, 0 thinking,
+# valid selfcheck), bounded to 1 turn / 24000 cap / 180s (6b07fd3a).
 HEDGE_MAX_OUTPUT = "24000"
 HEDGE_MAX_TURNS = 30
-HEDGE_TIMEOUT = 150
+HEDGE_TIMEOUT = 180
 # P2-5: retries started with < DEGRADE_WINDOW s left before the stage deadline
 # use the minimal-motion prompt.
 DEGRADE_ENV = "HTMLVIDEO_FRAME_HTML_DEGRADE"
@@ -635,7 +637,10 @@ def _worker_prompt(
                 "content INSIDE `#stage-card`. When the storyboard prose describes "
                 "a different card width, column count, single-card layout, or "
                 "lockup title/slot DOM rewrite, the SCAFFOLD GEOMETRY WINS — do not "
-                "reconcile or redesign it; map the prose's content onto `#stage-card`."
+                "reconcile or redesign it; map the prose's content onto `#stage-card`. "
+                "Do NOT duplicate the `.hf-stage-lockup` slot pills as another identical "
+                "row inside `#stage-card`, and NEVER fade `#stage-card` to `autoAlpha: 0` "
+                "in the closing Scene (keep `#stage-card` visible with a summary/lockup)."
             )
         if has_hf_runtime:
             rich_note += (
@@ -713,6 +718,11 @@ If the block lists several `- blueprint:` lines, the one under
   side-by-side panels instead of raw `position: absolute` row/column offsets;
   keep text on white/cream surfaces in dark `ink` (never yellow/lime/mint/peach
   text on white); fade outgoing morph/swap elements to `autoAlpha: 0`.
+- NO manual `onUpdate` / `gsap.ticker` master time loops to drive text, glitch
+  ghosts, or state machines — always use declarative `tl.set` / `tl.to` /
+  `tl.fromTo` and the pre-injected `__hf.type` / `__hf.draw` helpers.
+- NO inline `<svg><feTurbulence>` noise filters or URL-encoded SVG data-URI
+  grain textures — use flat colors and lightweight CSS `radial-gradient` only.
 {draft_line}
 
 ## Dispatch (authoritative — already complete)
@@ -1145,6 +1155,17 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
     hedge_on = _env_on(HEDGE_ENV, default=True)
     hedge_after = _env_positive_int(HEDGE_AFTER_ENV, DEFAULT_HEDGE_AFTER, env_logger)
     max_hedges = _env_positive_int(MAX_HEDGES_ENV, DEFAULT_MAX_HEDGES, env_logger)
+    raw_hedge_effort = os.environ.get(HEDGE_EFFORT_ENV, "").strip()
+    if raw_hedge_effort and raw_hedge_effort in _ALLOWED_EFFORTS:
+        hedge_effort = raw_hedge_effort
+    else:
+        if raw_hedge_effort:
+            env_logger.warning(
+                "invalid %s=%r ignored (allowed: %s); using %s",
+                HEDGE_EFFORT_ENV, raw_hedge_effort, sorted(_ALLOWED_EFFORTS),
+                DEFAULT_HEDGE_EFFORT,
+            )
+        hedge_effort = DEFAULT_HEDGE_EFFORT
     slim_fallback = _env_on(SLIM_FALLBACK_ENV, default=True)
     degrade_on = _env_on(DEGRADE_ENV)
     degrade_window = _env_positive_int(
@@ -1157,11 +1178,11 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
     log(
         "frame-html driver start mode=pipeline frames=%s skeleton=%s "
         "text_out=%s max_attempts=%s deadline=%ss trunc_kill=%s salvage=%s "
-        "two_phase=%s worker_cap=%s hedge=%s(after=%ss) degrade=%s(window=%ss) "
+        "two_phase=%s worker_cap=%s hedge=%s(after=%ss,max=%s,effort=%s,timeout=%ss) degrade=%s(window=%ss) "
         "env_override=%s",
         len(frame_ids), skeleton_mode, text_out_on, max_attempts, deadline_s,
         trunc_kill, salvage_on, two_phase, worker_cap, hedge_on, hedge_after,
-        degrade_on, degrade_window,
+        max_hedges, hedge_effort, HEDGE_TIMEOUT, degrade_on, degrade_window,
         {k: v for k, v in base_env.items() if k != "CLAUDE_CODE_SUBAGENT_EFFORT"} or "-",
     )
 
@@ -1217,6 +1238,7 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
             elif mode == "hedge":
                 prompt += _hedge_suffix(text_out=use_text_out)
                 extra_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = HEDGE_MAX_OUTPUT
+                extra_env["CLAUDE_CODE_EFFORT_LEVEL"] = hedge_effort
                 if not use_text_out:
                     kw["max_turns"] = HEDGE_MAX_TURNS
                 kw["timeout"] = HEDGE_TIMEOUT
