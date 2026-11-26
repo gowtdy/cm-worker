@@ -1065,17 +1065,23 @@ Scene 1 (0.0–5.0s): scorecard.
   const many = core.frameRules("- rules: discrete-text-sequence, context-sensitive-cursor, spring-pop-entrance, svg-path-draw, particle-burst\n", ruleIds);
   assert.strictEqual(many.rules.length, 3);
 
-  // Dual-state slot icons (both dot + check SVG pre-rendered) & shadow token
+  // Dual-state slot icons (both dot + check SVG pre-rendered), data-accent CSS (no inline style="background:..."), & shadow token
   assert.ok(f2.includes('class="hf-stage-dot"') && f2.includes('class="hf-stage-check"'),
     "every shared-stage slot must pre-render both dot and check icons");
   assert.ok(f2.includes('.hf-stage-slot[data-state="done"] .hf-stage-check { display: block; }'));
+  assert.ok(!/class="hf-stage-slot"[^>]*style="background:/i.test(f2),
+    "shared-stage slots must use data-accent CSS instead of inline background styles");
+  assert.ok(f2.includes('data-accent="coral"') && f2.includes('.hf-stage-slot[data-accent="coral"]:not([data-state="dim"])'),
+    "shared-stage slots must preserve arbitrary palette accent via data-accent CSS");
 
-  // P0-1: frameMdExcerpt overrides deck placeholder rule (`— figure —`)
+  // P0-1 & P1-2: frameMdExcerpt overrides deck placeholder rule (`— figure —`) and floating-pill atmosphere words (`VISION`, `FUTURE`)
   const excerpt = core.frameMdExcerpt(
-    '---\ncolors:\n  shadow: "rgba(26,26,26,0.08)"\n---\n\n## Numerals & Claims (hard rule)\n\nNever invent figures. Render slots as `— figure —`, `{metric}`, `N%`.\n',
+    '---\ncolors:\n  shadow: "rgba(26,26,26,0.08)"\n---\n\n## Approved Entities\n\nNo real logos. Floating-pill words are neutral atmospheres ("VISION", "FUTURE", "NEXT"), never content-specific.\n\n## Numerals & Claims (hard rule)\n\nNever invent figures. Render slots as `— figure —`, `{metric}`, `N%`.\n',
   );
   assert.ok(excerpt.includes("Autonomous-video override"), excerpt);
   assert.ok(!/Render slots as/.test(excerpt), excerpt);
+  assert.ok(excerpt.includes("textless solid-color geometric shapes"), excerpt);
+  assert.ok(!/Floating-pill words are neutral atmospheres/.test(excerpt), excerpt);
 
   // P0-1 & P0-3: frame-selfcheck catches inline JS syntax error, literal placeholder, and uncentered left:50% card
   const synPath = join(dir, "compositions", "frames", "02-rail.html");
