@@ -639,7 +639,23 @@ export function frameMdExcerpt(frameMd, maxFallbackBytes = 12000) {
   for (const { h, start } of bounds) {
     const rest = frameMd.slice(start + h.length);
     const endM = rest.search(nextHeading);
-    out += `\n${h}\n\n${(endM === -1 ? rest : rest.slice(0, endM)).trim()}\n`;
+    let body = (endM === -1 ? rest : rest.slice(0, endM)).trim();
+    if (h === "## Numerals & Claims (hard rule)") {
+      // Deck presets tell slide authors to emit literal `— figure —` / `{metric}`
+      // placeholders; autonomous videos render directly to MP4 and must NEVER
+      // put literal placeholders on screen (6b07a9c1 F4).
+      body = body
+        .replace(/Render slots as[^\n]*(?:\n[^\n]*placeholders[^\n]*)?/gi, "")
+        .replace(/[^\n]*carry placeholders until the script supplies values\.?/gi, "")
+        .trim();
+      const override =
+        "Autonomous-video override: NEVER render literal placeholders (`— figure —`, " +
+        "`{metric}`, `N%`, `TBD`) on screen. When the script supplies no concrete number, " +
+        "use short qualitative labels (e.g. `Low` vs `Intrinsic`, `Cheaper` vs `Worth more`) " +
+        "or visual bar/scale proportions instead.";
+      body = body ? `${body}\n\n${override}` : override;
+    }
+    out += `\n${h}\n\n${body}\n`;
   }
   return out.trim();
 }
@@ -1129,7 +1145,7 @@ export function parseFrameStageTokens(frameMd) {
   if (!frameMd) return defaults;
   const fm = frameMdFrontmatter(frameMd);
   const colorBlock = frontmatterBlock(fm, "colors");
-  for (const m of colorBlock.matchAll(/^\s+([\w-]+)\s*:\s*["']?(#[0-9A-Fa-f]{3,8})["']?/gm)) {
+  for (const m of colorBlock.matchAll(/^\s+([\w-]+)\s*:\s*["']?(#[0-9A-Fa-f]{3,8}|rgba?\([^)]+\))["']?/gm)) {
     defaults.colors[m[1].toLowerCase()] = m[2];
   }
   const typeBlock = frontmatterBlock(fm, "typography");
@@ -1186,16 +1202,20 @@ function buildSharedStageMarkupAndCss(stageSpec, entry, tokens, dur) {
   }
   const c = tokens.colors;
   const ground = c.cream || c.canvas || "#F5F5F0";
+  const shadow = c.shadow || c.outline;
   const resolveAccent = (name, fallback) => (name && c[name]) || fallback || c.sky || "#8BB4F7";
+  // Pre-render BOTH `.hf-stage-dot` and `.hf-stage-check` in every slot and
+  // toggle visibility via `[data-state="done"]` CSS so workers can transition
+  // an `active` slot to checked without rewriting `.hf-stage-slot` DOM (6b07a9c1 F5).
   const slotHtml = stageSpec.slots.map((label, idx) => {
     const st = entry.states[idx] ?? { status: "dim", color: "" };
     const fill = st.status === "dim"
       ? c.white
       : resolveAccent(st.color, st.status === "done" ? c.mint : c.sky);
-    const checkSvg = st.status === "done"
-      ? `<svg class="hf-stage-check" data-skeleton="stage" viewBox="0 0 16 16" aria-hidden="true"><path data-skeleton="stage" d="M3 8.5L6.5 12L13 4.5" fill="none" stroke="${c.ink}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`
-      : `<span class="hf-stage-dot" data-skeleton="stage"></span>`;
-    return `      <div class="hf-stage-slot" data-skeleton="stage" data-slot-index="${idx + 1}" data-state="${st.status}" style="background:${fill};">${checkSvg}<span class="hf-stage-label" data-skeleton="stage">${escapeHtml(label)}</span></div>`;
+    const icons =
+      `<span class="hf-stage-dot" data-skeleton="stage"></span>` +
+      `<svg class="hf-stage-check" data-skeleton="stage" viewBox="0 0 16 16" aria-hidden="true"><path data-skeleton="stage" d="M3 8.5L6.5 12L13 4.5" fill="none" stroke="${c.ink}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    return `      <div class="hf-stage-slot" data-skeleton="stage" data-slot-index="${idx + 1}" data-state="${st.status}" style="background:${fill};">${icons}<span class="hf-stage-label" data-skeleton="stage">${escapeHtml(label)}</span></div>`;
   }).join("\n");
   // The title is the lockup's only title node, so it can never collide inside
   // its own frame — but pixel-locked sibling frames make it overlap itself
@@ -1207,22 +1227,22 @@ function buildSharedStageMarkupAndCss(stageSpec, entry, tokens, dur) {
   let layoutCss = "";
   if (entry.layout === "left-rail-right-card") {
     layoutCss = `
-.hf-stage-lockup { position: absolute; left: 5cqw; top: 15cqh; width: 25cqw; display: flex; flex-direction: column; gap: 1.4cqh; padding: 2.2cqh 1.6cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1cqw; box-shadow: 6px 6px 0 ${c.outline}; box-sizing: border-box; z-index: 2; }
+.hf-stage-lockup { position: absolute; left: 5cqw; top: 15cqh; width: 25cqw; display: flex; flex-direction: column; gap: 1.4cqh; padding: 2.2cqh 1.6cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1cqw; box-shadow: 6px 6px 0 ${shadow}; box-sizing: border-box; z-index: 2; }
 .hf-stage-slots { display: flex; flex-direction: column; gap: 1.1cqh; }
-#stage-card { position: absolute; left: 34cqw; top: 14cqh; width: 60cqw; min-height: 48cqh; max-height: 64cqh; padding: 3cqh 2.8cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1.1cqw; box-shadow: 8px 8px 0 ${c.outline}; display: flex; flex-direction: column; justify-content: center; gap: 2cqh; box-sizing: border-box; overflow: hidden; z-index: 2; }`;
+#stage-card { position: absolute; left: 34cqw; top: 14cqh; width: 60cqw; min-height: 48cqh; max-height: 64cqh; padding: 3cqh 2.8cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1.1cqw; box-shadow: 8px 8px 0 ${shadow}; display: flex; flex-direction: column; justify-content: center; gap: 2cqh; box-sizing: border-box; overflow: hidden; z-index: 2; }`;
   } else if (entry.layout === "top-stepper-center-card") {
     layoutCss = `
-.hf-stage-lockup { position: absolute; left: 10cqw; top: 5cqh; width: 80cqw; display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 1.4cqw; padding: 1.2cqh 1.8cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 0.9cqw; box-shadow: 5px 5px 0 ${c.outline}; box-sizing: border-box; z-index: 2; }
+.hf-stage-lockup { position: absolute; left: 10cqw; top: 5cqh; width: 80cqw; display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 1.4cqw; padding: 1.2cqh 1.8cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 0.9cqw; box-shadow: 5px 5px 0 ${shadow}; box-sizing: border-box; z-index: 2; }
 .hf-stage-slots { display: flex; flex-direction: row; flex: 1; justify-content: flex-end; gap: 1cqw; min-width: 0; }
-#stage-card { position: absolute; left: 18cqw; top: 19cqh; width: 64cqw; min-height: 46cqh; max-height: 59cqh; padding: 3cqh 3cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1.1cqw; box-shadow: 8px 8px 0 ${c.outline}; display: flex; flex-direction: column; justify-content: center; gap: 2cqh; box-sizing: border-box; overflow: hidden; z-index: 2; }`;
+#stage-card { position: absolute; left: 18cqw; top: 19cqh; width: 64cqw; min-height: 46cqh; max-height: 59cqh; padding: 3cqh 3cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1.1cqw; box-shadow: 8px 8px 0 ${shadow}; display: flex; flex-direction: column; justify-content: center; gap: 2cqh; box-sizing: border-box; overflow: hidden; z-index: 2; }`;
   } else if (entry.layout === "center-scorecard") {
     // ≥4 slots in one row leave ~250px per cell; 30–37 char labels (6b0795df
     // F2) then collide. Wrap to a 2-column grid (~520px per cell) and lift the
     // lockup to 8cqh so up to 8 slots (4 rows) still clear #stage-card at 38cqh.
     layoutCss = `
-.hf-stage-lockup { position: absolute; left: 20cqw; top: 8cqh; width: 60cqw; display: flex; flex-direction: column; gap: 1.2cqh; padding: 2cqh 2.4cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1cqw; box-shadow: 6px 6px 0 ${c.outline}; box-sizing: border-box; z-index: 2; }
+.hf-stage-lockup { position: absolute; left: 20cqw; top: 8cqh; width: 60cqw; display: flex; flex-direction: column; gap: 1.2cqh; padding: 2cqh 2.4cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1cqw; box-shadow: 6px 6px 0 ${shadow}; box-sizing: border-box; z-index: 2; }
 .hf-stage-slots { display: grid; grid-template-columns: repeat(${centerScorecardColumns(stageSpec.slots.length)}, minmax(0, 1fr)); gap: 1cqh 1cqw; }
-#stage-card { position: absolute; left: 20cqw; top: 38cqh; width: 60cqw; min-height: 28cqh; max-height: 40cqh; padding: 2.6cqh 2.8cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1.1cqw; box-shadow: 8px 8px 0 ${c.outline}; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 1.6cqh; box-sizing: border-box; overflow: hidden; z-index: 2; }`;
+#stage-card { position: absolute; left: 20cqw; top: 38cqh; width: 60cqw; min-height: 28cqh; max-height: 40cqh; padding: 2.6cqh 2.8cqw; background: ${c.white}; border: 3px solid ${c.outline}; border-radius: 1.1cqw; box-shadow: 8px 8px 0 ${shadow}; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 1.6cqh; box-sizing: border-box; overflow: hidden; z-index: 2; }`;
   } else {
     return null;
   }
@@ -1231,13 +1251,15 @@ function buildSharedStageMarkupAndCss(stageSpec, entry, tokens, dur) {
 .hf-stage-title { font-size: 1.05cqw; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: ${c.ink}; white-space: nowrap; }
 .hf-stage-slot { display: flex; align-items: center; gap: 0.65cqw; padding: 0.7cqh 0.95cqw; border: 2px solid ${c.outline}; border-radius: 0.6cqw; font-size: 1.12cqw; font-weight: 700; line-height: 1.2; color: ${c.ink}; box-sizing: border-box; min-width: 0; }
 .hf-stage-slot[data-state="dim"] { opacity: 0.46; }
-.hf-stage-slot[data-state="active"] { box-shadow: 3px 3px 0 ${c.outline}; opacity: 1; }
+.hf-stage-slot[data-state="active"] { box-shadow: 3px 3px 0 ${shadow}; opacity: 1; }
 .hf-stage-slot[data-state="done"] { opacity: 0.92; }
-.hf-stage-check { width: 1.1cqw; height: 1.1cqw; flex-shrink: 0; }
+.hf-stage-check { width: 1.1cqw; height: 1.1cqw; flex-shrink: 0; display: none; }
 .hf-stage-dot { width: 0.65cqw; height: 0.65cqw; border-radius: 50%; border: 2px solid ${c.outline}; flex-shrink: 0; }
+.hf-stage-slot[data-state="done"] .hf-stage-check { display: block; }
+.hf-stage-slot[data-state="done"] .hf-stage-dot { display: none; }
 .hf-stage-label { overflow: hidden; text-overflow: ellipsis; }${layoutCss}
 /* Add this frame's hero styles for children inside #stage-card below: */`;
-  const dom = `  <!-- Shared stage lockup (${entry.layout}): pixel-locked across sibling frames — KEEP intact, do not move or rename slots. -->
+  const dom = `  <!-- Shared stage lockup (${entry.layout}): pixel-locked across sibling frames — KEEP intact, do not animate lockup scale/position or rewrite slot DOM (both .hf-stage-dot and .hf-stage-check are pre-built). -->
   <div class="clip hf-stage-lockup" data-skeleton="stage" data-stage-layout="${entry.layout}" data-start="0" data-duration="${dur}" data-track-index="1">
 ${titleHtml}    <div class="hf-stage-slots" data-skeleton="stage">
 ${slotHtml}
