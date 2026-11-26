@@ -60,22 +60,39 @@ export function parseCheckJson(json, opts = {}) {
       const code = String(f.code || "unknown");
       const isOverlap = code.includes("overlap");
       const relation = isOverlap ? "overlaps" : "inside";
+      const file = relPath(f.sourceFile || "", root);
       let geo = "";
       if (isOverlap) {
         const parts = [];
+        const frameStart = opts.frameStarts instanceof Map ? opts.frameStarts.get(file) : undefined;
+        const hasLocal = typeof frameStart === "number" && Number.isFinite(frameStart) && frameStart > 0;
         if (typeof f.firstSeen === "number" && typeof f.lastSeen === "number" && f.lastSeen > f.firstSeen) {
-          parts.push(`t=${f.firstSeen.toFixed(1)}-${f.lastSeen.toFixed(1)}s`);
+          let tStr = `t=${f.firstSeen.toFixed(1)}-${f.lastSeen.toFixed(1)}s`;
+          if (hasLocal) {
+            const lo = Math.max(0, f.firstSeen - frameStart);
+            const hi = Math.max(0, f.lastSeen - frameStart);
+            tStr += ` (frame t=${lo.toFixed(1)}-${hi.toFixed(1)}s)`;
+          }
+          parts.push(tStr);
         } else if (typeof f.time === "number") {
-          parts.push(`t=${f.time.toFixed(1)}s`);
+          let tStr = `t=${f.time.toFixed(1)}s`;
+          if (hasLocal) {
+            const loc = Math.max(0, f.time - frameStart);
+            tStr += ` (frame t=${loc.toFixed(1)}s)`;
+          }
+          parts.push(tStr);
         }
-        const r = f.rect || f.bbox;
-        if (r && typeof r.width === "number" && typeof r.height === "number") {
+        const fmtBox = (r) => {
+          if (!r || typeof r.width !== "number" || typeof r.height !== "number") return "";
           const x = typeof r.left === "number" ? r.left : r.x;
           const y = typeof r.top === "number" ? r.top : r.y;
-          if (typeof x === "number" && typeof y === "number") {
-            parts.push(`box(${Math.round(x)},${Math.round(y)},${Math.round(r.width)}x${Math.round(r.height)})`);
-          }
-        }
+          if (typeof x !== "number" || typeof y !== "number") return "";
+          return `box(${Math.round(x)},${Math.round(y)},${Math.round(r.width)}x${Math.round(r.height)})`;
+        };
+        const b1 = fmtBox(f.rect || f.bbox);
+        const b2 = fmtBox(f.containerRect || f.otherRect || f.targetRect);
+        if (b1 && b2) parts.push(`${b1} vs ${b2}`);
+        else if (b1) parts.push(b1);
         if (parts.length) geo = `[${parts.join(" ")}]`;
       }
       const head = [
@@ -84,13 +101,13 @@ export function parseCheckJson(json, opts = {}) {
         text ? `"${trunc(text, 40)}"` : "",
         geo,
       ].filter(Boolean).join(" ");
-      const msg = trunc([head, message].filter(Boolean).join(" — "), isOverlap ? Math.max(n, 180) : n);
+      const msg = trunc([head, message].filter(Boolean).join(" — "), isOverlap ? Math.max(n, 220) : n);
       const item = {
         mark,
         code,
         msg,
         section: titleCase(section),
-        file: relPath(f.sourceFile || "", root),
+        file,
         selector,
         container,
         text,
@@ -461,6 +478,26 @@ export const FINDINGS_JSON_PREFIX = "VERIFY_FINDINGS_JSON ";
 
 const TRANSITION_PRE_PAD = 0.1;
 const TRANSITION_POST_PAD = 0.6; // transitions.mjs injects 0.5s cross/push tweens
+
+/**
+ * Map each frame's relative path (`compositions/frames/<id>.html`) to its
+ * global `data-start` offset in the assembled `index.html`.
+ * @param {string} indexHtml
+ * @returns {Map<string, number>}
+ */
+export function frameStartTimes(indexHtml) {
+  const starts = new Map();
+  for (const m of String(indexHtml || "").matchAll(/<div\b[^>]*>/g)) {
+    const tag = m[0];
+    const srcM = /data-composition-src="([^"]*compositions\/frames\/[^"]+)"/.exec(tag);
+    if (!srcM) continue;
+    const start = Number(/data-start="([\d.]+)"/.exec(tag)?.[1]);
+    if (!Number.isFinite(start)) continue;
+    const rel = srcM[1].replace(/^\.\//, "");
+    starts.set(rel, start);
+  }
+  return starts;
+}
 
 /**
  * Frame boundary windows from the assembled root ``index.html``.
