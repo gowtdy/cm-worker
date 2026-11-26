@@ -1223,9 +1223,34 @@ function buildSharedStageMarkupAndCss(stageSpec, entry, tokens, dur) {
   const accentCss = accentKeys
     .map((k) => `.hf-stage-slot[data-accent="${k}"]:not([data-state="dim"]) { background: ${c[k]}; }`)
     .join("\n");
+  // Per-slot column accent inheritance across frames (6b082a5b F3): if a slot
+  // starts `dim` with no explicit `:color` on this frame, inherit the first
+  // valid `:color` declared for that same slot index on any sibling frame
+  // (falling back to a stage-wide single accent only when the column has none).
+  // CSS applies `[data-accent="..."]:not([data-state="dim"])`, so `dim` slots
+  // stay white/faded until switched to `active`/`done`, while preserving
+  // per-slot multi-color specs like `[done:coral, done:sky, done:lime]`.
+  const allStageFrames = stageSpec.frames instanceof Map ? [...stageSpec.frames.values()] : [];
+  const stageWideColors = new Set();
+  for (const fe of allStageFrames) {
+    for (const st of fe?.states || []) {
+      if (st?.color && c[st.color]) stageWideColors.add(st.color);
+    }
+  }
+  const singleStageAccent = stageWideColors.size === 1 ? [...stageWideColors][0] : "";
   const slotHtml = stageSpec.slots.map((label, idx) => {
     const st = entry.states[idx] ?? { status: "dim", color: "" };
-    const accentName = (st.color && c[st.color]) ? st.color : "";
+    let accentName = (st.color && c[st.color]) ? st.color : "";
+    if (!accentName) {
+      for (const fe of allStageFrames) {
+        const colColor = fe?.states?.[idx]?.color;
+        if (colColor && c[colColor]) {
+          accentName = colColor;
+          break;
+        }
+      }
+    }
+    if (!accentName && singleStageAccent) accentName = singleStageAccent;
     const accentAttr = accentName ? ` data-accent="${escapeHtml(accentName)}"` : "";
     const icons =
       `<span class="hf-stage-dot" data-skeleton="stage"></span>` +

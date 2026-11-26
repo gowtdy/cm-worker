@@ -348,6 +348,7 @@ HEDGE_AFTER_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_AFTER"
 MAX_HEDGES_ENV = "HTMLVIDEO_FRAME_HTML_MAX_HEDGES"
 HEDGE_EFFORT_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_EFFORT"
 SLIM_FALLBACK_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_FALLBACK"
+SLIM_KEEP_SNIPPETS_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_KEEP_SNIPPETS"
 DEFAULT_HEDGE_AFTER = 150
 DEFAULT_MAX_HEDGES = 3
 DEFAULT_HEDGE_EFFORT = "low"
@@ -420,15 +421,22 @@ _SLIM_DROP_SECTION_RE = re.compile(
 _SLIM_RECIPES_SECTION_RE = re.compile(
     r"\n(## Rule recipes \((?:snippets|full)\)[ \t]*)\n[\s\S]*?(?=\n## |\Z)"
 )
+_SLIM_FULL_RECIPES_SECTION_RE = re.compile(
+    r"\n(## Rule recipes \(full\)[ \t]*)\n[\s\S]*?(?=\n## |\Z)"
+)
 
 
-def _minimal_dispatch_text(dispatch_text: str) -> str:
+def _minimal_dispatch_text(dispatch_text: str, keep_snippets: bool = True) -> str:
     """Strip heavy per-frame blueprint + recipe sections for hedge/degraded fallbacks.
 
     Preserves the entire shared prefix before `# Dispatch: <fid>` AND keeps the
     `## Rule recipes (snippets|full)` heading as a 1-line stub so `_recipes_mode`
     (and therefore the prompt prefix before `## Dispatch`) stays 100% byte-identical
-    for KV prefix cache hits while shedding ~12-20KB of complex recipe/blueprint prose.
+    for KV prefix cache hits while shedding ~12-20KB of complex blueprint prose.
+    When ``keep_snippets`` is True (P1-4, default ON), compact `## Rule recipes
+    (snippets)` (~1.5-3KB of core GSAP/DOM patterns) are retained so low-effort
+    hedges do not invent broken DOM/GSAP syntax; only `## Rule recipes (full)` is
+    stubbed.
     """
     anchor = "\n# Dispatch:"
     idx = dispatch_text.find(anchor)
@@ -437,7 +445,8 @@ def _minimal_dispatch_text(dispatch_text: str) -> str:
     else:
         head, tail = dispatch_text[:idx], dispatch_text[idx:]
     tail = _SLIM_DROP_SECTION_RE.sub("", tail)
-    tail = _SLIM_RECIPES_SECTION_RE.sub(
+    recipe_re = _SLIM_FULL_RECIPES_SECTION_RE if keep_snippets else _SLIM_RECIPES_SECTION_RE
+    tail = recipe_re.sub(
         r"\n\1\n\n> (Omitted in minimal-motion fallback — use simple GSAP `fromTo` rise/fade/scale-pop tweens directly; do NOT Read any file.)\n",
         tail,
     )
@@ -717,7 +726,15 @@ If the block lists several `- blueprint:` lines, the one under
   `display: grid` (`padding`, `gap`, `box-sizing: border-box`) inside cards and
   side-by-side panels instead of raw `position: absolute` row/column offsets;
   keep text on white/cream surfaces in dark `ink` (never yellow/lime/mint/peach
-  text on white); fade outgoing morph/swap elements to `autoAlpha: 0`.
+  text on white); NEVER set `white-space: nowrap` on multi-word sentences or
+  headlines (>4 words — only short pill/badge labels may use `nowrap`), and keep
+  sentence containers within `max-width: 84cqw` with wrapping enabled so text
+  never clips off-canvas; when replacing or shrinking an element A into a new
+  badge/pill element B, set `autoAlpha: 0` on A at the exact handoff so A and B
+  never ghost side-by-side; NEVER place a wide (`>70cqw`) absolute-positioned
+  `<svg preserveAspectRatio="none">` bracket/frame directly on `#root` around a
+  narrower centered group (place brackets inside the tight flex/grid group
+  container or use CSS `border`).
 - NO manual `onUpdate` / `gsap.ticker` master time loops to drive text, glitch
   ghosts, or state machines — always use declarative `tl.set` / `tl.to` /
   `tl.fromTo` and the pre-injected `__hf.type` / `__hf.draw` helpers.
@@ -1167,6 +1184,7 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
             )
         hedge_effort = DEFAULT_HEDGE_EFFORT
     slim_fallback = _env_on(SLIM_FALLBACK_ENV, default=True)
+    slim_keep_snippets = _env_on(SLIM_KEEP_SNIPPETS_ENV, default=True)
     degrade_on = _env_on(DEGRADE_ENV)
     degrade_window = _env_positive_int(
         DEGRADE_WINDOW_ENV, DEFAULT_DEGRADE_WINDOW, env_logger)
@@ -1215,7 +1233,8 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
         else:
             dispatch_text = _load_dispatch_text(project_dir, fid)
             if slim_fallback and mode in ("degraded", "hedge"):
-                dispatch_text = _minimal_dispatch_text(dispatch_text)
+                dispatch_text = _minimal_dispatch_text(
+                    dispatch_text, keep_snippets=slim_keep_snippets)
             recipes_mode = _recipes_mode(dispatch_text)
             prompt = _worker_prompt(
                 fid, skeleton_mode, project_dir=project_dir,

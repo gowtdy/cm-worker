@@ -41,6 +41,7 @@ import {
   frameStartTimes,
   transitionWindows,
   splitSharedStageCrossfade,
+  splitCanvasOverflow,
 } from "./lib/verify-check-parse.mjs";
 import { matchKnownFailures, renderPrompt } from "./known-failures.mjs";
 
@@ -244,6 +245,23 @@ if (check.error) {
       }
     }
     chk.warns = keptWarns;
+  }
+  // Promote real off-canvas text clipping (`canvas_overflow`, e.g. 6b082a5b F2
+  // `span.tail` right=2032 > 1920) from info to blocking error AFTER
+  // checkParseMismatch/checkContradiction accounting. Skip captions,
+  // mid-transition push-slide frames, and <8px subpixel bleed; never promote
+  // noisy `text_box_overflow`.
+  const canvasOverflowFlag = (process.env.HTMLVIDEO_VERIFY_CANVAS_OVERFLOW || "1").trim().toLowerCase();
+  if (!["0", "false", "off", "no"].includes(canvasOverflowFlag) && chk.infos.length) {
+    const windows = indexHtml ? transitionWindows(indexHtml) : [];
+    const compW = Number(/\bdata-width="(\d+)"/.exec(indexHtml || "")?.[1]) || 1920;
+    const compH = Number(/\bdata-height="(\d+)"/.exec(indexHtml || "")?.[1]) || 1080;
+    const { kept, promoted } = splitCanvasOverflow(chk.infos, windows, { width: compW, height: compH });
+    if (promoted.length) {
+      chk.infos = kept;
+      chk.errors.push(...promoted);
+      say(`  ✗ promoted ${promoted.length} real canvas_overflow finding(s) from info to error`);
+    }
   }
   // Shared-stage crossfade self-overlaps are unfixable in any single frame
   // (see verify-check-parse.mjs) — demote to info AFTER errorCount accounting.

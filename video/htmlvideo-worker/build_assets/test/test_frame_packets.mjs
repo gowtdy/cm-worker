@@ -1104,7 +1104,41 @@ Scene 1 (0.0–5.0s): scorecard.
   const cenRun = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
   assert.strictEqual(cenRun.status, 0, `centered pill-card + right-col must pass:\n${cenRun.stdout}${cenRun.stderr}`);
 
-  console.log("shared stage skeletons + __hf runtime + selfcheck syntax/placeholder/center gates OK");
+  // P1-3 (6b082a5b F3): frame-selfcheck catches camelCase dataState in GSAP tween
+  writeFileSync(synPath, filledF2.replace(/<\/script>\s*<\/template>/, 'tl.set(".check-row[data-row=\'1\']", { dataState: "done", opacity: 1 }, 0);\n</script>\n</template>'));
+  const dpRun = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(dpRun.status, 1, "camelCase dataState in GSAP tween must fail selfcheck");
+  assert.ok(`${dpRun.stdout}${dpRun.stderr}`.includes("gsap_camelcase_data_prop"));
+
+  // P1-1 (6b082a5b F3): per-slot column data-accent inheritance for dim slots (both single-accent and multi-accent stages)
+  const dirCol = mkdtempSync(join(tmpdir(), "fp-col-accent-"));
+  const multiSb = [
+    "## Video direction",
+    "## Shared stage spec",
+    "layout: top-stepper-center-card",
+    "title: Three checks",
+    "slots: 01 Fundamentals | 02 Valuation | 03 Exit plan",
+    "F1: [dim, dim, dim]",
+    "F2: [done:coral, done:sky, done:lime]",
+    "## Frame 1 — Overview",
+    "- duration: 5s",
+    "- src: compositions/frames/01-overview.html",
+    "Scene 1 (0.0-5.0s): Intro.",
+    "## Frame 2 — Summary",
+    "- duration: 5s",
+    "- src: compositions/frames/02-summary.html",
+    "Scene 1 (0.0-5.0s): Summary.",
+  ].join("\n");
+  writeFileSync(join(dirCol, "STORYBOARD.md"), multiSb);
+  writeFileSync(join(dirCol, "frame.md"), '---\ncolors:\n  cream: "#F5F5F0"\n  ink: "#1A1A1A"\n  outline: "#1E1E1E"\n  white: "#FFFFFF"\n  coral: "#E85D4E"\n  sky: "#8BB4F7"\n  lime: "#C4D94E"\n  mint: "#A8E6CF"\n---\n');
+  const framesCol = core.splitFrames(multiSb).map((f) => ({ ...f, frameId: core.frameId(f) }));
+  const skelsCol = core.buildSkeletons({ projectDir: dirCol, frames: framesCol, canvas: { width: 1920, height: 1080 }, storyboard: multiSb });
+  const f1Skel = readFileSync(skelsCol[0].path, "utf8");
+  assert.ok(f1Skel.includes('data-slot-index="1" data-state="dim" data-accent="coral"'), "slot 1 dim must inherit column accent coral");
+  assert.ok(f1Skel.includes('data-slot-index="2" data-state="dim" data-accent="sky"'), "slot 2 dim must inherit column accent sky");
+  assert.ok(f1Skel.includes('data-slot-index="3" data-state="dim" data-accent="lime"'), "slot 3 dim must inherit column accent lime");
+
+  console.log("shared stage skeletons + __hf runtime + selfcheck syntax/placeholder/center/data-prop gates OK");
 }
 
 if (process.argv[1] && process.argv[1].endsWith("test_frame_packets.mjs")) {

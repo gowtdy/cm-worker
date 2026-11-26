@@ -59,10 +59,11 @@ export function parseCheckJson(json, opts = {}) {
       const message = f.message ? String(f.message) : "";
       const code = String(f.code || "unknown");
       const isOverlap = code.includes("overlap");
+      const isCanvasOverflow = code === "canvas_overflow";
       const relation = isOverlap ? "overlaps" : "inside";
       const file = relPath(f.sourceFile || "", root);
       let geo = "";
-      if (isOverlap) {
+      if (isOverlap || isCanvasOverflow) {
         const parts = [];
         const frameStart = opts.frameStarts instanceof Map ? opts.frameStarts.get(file) : undefined;
         const hasLocal = typeof frameStart === "number" && Number.isFinite(frameStart) && frameStart > 0;
@@ -90,7 +91,7 @@ export function parseCheckJson(json, opts = {}) {
           return `box(${Math.round(x)},${Math.round(y)},${Math.round(r.width)}x${Math.round(r.height)})`;
         };
         const b1 = fmtBox(f.rect || f.bbox);
-        const b2 = fmtBox(f.containerRect || f.otherRect || f.targetRect);
+        const b2 = isOverlap ? fmtBox(f.containerRect || f.otherRect || f.targetRect) : "";
         if (b1 && b2) parts.push(`${b1} vs ${b2}`);
         else if (b1) parts.push(b1);
         if (parts.length) geo = `[${parts.join(" ")}]`;
@@ -101,7 +102,7 @@ export function parseCheckJson(json, opts = {}) {
         text ? `"${trunc(text, 40)}"` : "",
         geo,
       ].filter(Boolean).join(" ");
-      const msg = trunc([head, message].filter(Boolean).join(" — "), isOverlap ? Math.max(n, 220) : n);
+      const msg = trunc([head, message].filter(Boolean).join(" — "), (isOverlap || isCanvasOverflow) ? Math.max(n, 220) : n);
       const item = {
         mark,
         code,
@@ -115,6 +116,8 @@ export function parseCheckJson(json, opts = {}) {
         dataAttributes:
           f.dataAttributes && typeof f.dataAttributes === "object" ? f.dataAttributes : {},
       };
+      if (f.rect && typeof f.rect === "object") item.rect = f.rect;
+      else if (f.bbox && typeof f.bbox === "object") item.rect = f.bbox;
       if (typeof f.ratio === "number" && Number.isFinite(f.ratio)) item.ratio = f.ratio;
       if (typeof f.requiredRatio === "number" && Number.isFinite(f.requiredRatio)) {
         item.requiredRatio = f.requiredRatio;
@@ -549,6 +552,67 @@ export function splitSharedStageCrossfade(errors, windows) {
     (isSharedStageCrossfadeOverlap(e, windows) ? demoted : kept).push(e);
   }
   return { kept, demoted };
+}
+
+/**
+ * True when a `canvas_overflow` info finding represents real off-canvas text
+ * clipping (not captions, not mid-transition push-slide motion, and exceeding
+ * the composition bounds by at least `minBleedPx`).
+ */
+export function isBlockingCanvasOverflow(item, windows = [], opts = {}) {
+  if (!item || String(item.code || "") !== "canvas_overflow") return false;
+  const targetText = `${item.selector || ""} ${item.msg || ""}`;
+  if (/#caption-word|\.caption-line/i.test(targetText)) return false;
+  if (Array.isArray(windows) && windows.length) {
+    const times = [item.firstSeen, item.lastSeen, item.time].filter((t) => typeof t === "number");
+    if (times.length && times.every((t) => windows.some(([lo, hi]) => t >= lo && t <= hi))) {
+      return false;
+    }
+  }
+  const width = Number(opts.width) || 1920;
+  const height = Number(opts.height) || 1080;
+  const minBleedPx = Number.isFinite(opts.minBleedPx) ? opts.minBleedPx : 8;
+  const r = item.rect;
+  if (r && typeof r === "object") {
+    const left = typeof r.left === "number" ? r.left : r.x;
+    const top = typeof r.top === "number" ? r.top : r.y;
+    const right = typeof r.right === "number"
+      ? r.right
+      : (typeof left === "number" && typeof r.width === "number" ? left + r.width : undefined);
+    const bottom = typeof r.bottom === "number"
+      ? r.bottom
+      : (typeof top === "number" && typeof r.height === "number" ? top + r.height : undefined);
+    const bleeds = [];
+    if (typeof left === "number") bleeds.push(-left);
+    if (typeof right === "number") bleeds.push(right - width);
+    if (typeof top === "number") bleeds.push(-top);
+    if (typeof bottom === "number") bleeds.push(bottom - height);
+    if (bleeds.length) {
+      const maxBleed = Math.max(0, ...bleeds);
+      if (maxBleed < minBleedPx) return false;
+    }
+  }
+  return true;
+}
+
+/** Split infos into kept vs promoted blocking `canvas_overflow` findings. */
+export function splitCanvasOverflow(infos, windows = [], opts = {}) {
+  const kept = [];
+  const promoted = [];
+  for (const info of infos || []) {
+    if (isBlockingCanvasOverflow(info, windows, opts)) {
+      promoted.push({
+        ...info,
+        mark: "✗",
+        fixHint:
+          info.fixHint
+          || "Remove `white-space: nowrap` from multi-word sentence/headline containers, constrain `max-width` (e.g. <= 84cqw), or reduce font-size so text stays fully inside the composition canvas.",
+      });
+    } else {
+      kept.push(info);
+    }
+  }
+  return { kept, promoted };
 }
 
 /**
