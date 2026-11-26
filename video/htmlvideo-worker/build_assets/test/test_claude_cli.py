@@ -367,7 +367,10 @@ class RunClaudeTests(unittest.TestCase):
         _, _, cmd, _ = self._invoke(skill="intent")
         self.assertIn("--disable-slash-commands", cmd)
         self.assertIn("--settings", cmd)
-        self.assertEqual(cmd[cmd.index("--settings") + 1], '{"disableAllHooks":true}')
+        self.assertEqual(
+            cmd[cmd.index("--settings") + 1],
+            '{"disableAllHooks":true,"enabledPlugins":{"superpowers@claude-plugins-official":false}}',
+        )
 
     def test_env_overrides_and_model_flag(self) -> None:
         os.environ["HTMLVIDEO_CLAUDE_VISUAL_EFFORT"] = "low"
@@ -841,7 +844,10 @@ class RunClaudeTests(unittest.TestCase):
         _, _, cmd, _ = self._invoke(skill="verify")
         self.assertIn("--disable-slash-commands", cmd)
         self.assertIn("--settings", cmd)
-        self.assertEqual(cmd[cmd.index("--settings") + 1], '{"disableAllHooks":true}')
+        self.assertEqual(
+            cmd[cmd.index("--settings") + 1],
+            '{"disableAllHooks":true,"enabledPlugins":{"superpowers@claude-plugins-official":false}}',
+        )
         for tool in ("Workflow", "ScheduleWakeup", "SendMessage", "CronCreate", "EnterWorktree"):
             self.assertIn(tool, cmd)
         # visual_legacy keeps Skill/hooks since it runs via slash command.
