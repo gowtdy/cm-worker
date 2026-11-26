@@ -98,6 +98,17 @@ export function parseCheckJson(json, opts = {}) {
         dataAttributes:
           f.dataAttributes && typeof f.dataAttributes === "object" ? f.dataAttributes : {},
       };
+      if (typeof f.ratio === "number" && Number.isFinite(f.ratio)) item.ratio = f.ratio;
+      if (typeof f.requiredRatio === "number" && Number.isFinite(f.requiredRatio)) {
+        item.requiredRatio = f.requiredRatio;
+      }
+      if (f.fg) item.fg = String(f.fg);
+      if (f.bg) item.bg = String(f.bg);
+      if (f.suggestedColor) item.suggestedColor = String(f.suggestedColor);
+      if (typeof f.time === "number") item.time = f.time;
+      if (typeof f.firstSeen === "number") item.firstSeen = f.firstSeen;
+      if (typeof f.lastSeen === "number") item.lastSeen = f.lastSeen;
+      if (typeof f.occurrences === "number") item.occurrences = f.occurrences;
       bucketFor(mark, buckets).push(item);
     }
   }
@@ -439,6 +450,69 @@ export function triageOcclusions(errors) {
 
 /** Line prefix the Python harness greps for (``html_utility/verify_overlap_autofix.py``). */
 export const FINDINGS_JSON_PREFIX = "VERIFY_FINDINGS_JSON ";
+
+/* ── shared-stage crossfade false positives ─────────────────────────────── */
+// The shared-stage scaffold (`.hf-stage-*`, frame-packets) is pixel-locked
+// across sibling frames, so while two frames are both on screen during a
+// transition the same stage node overlaps ITSELF. `hyperframes check` dedups
+// by selector and attributes the finding to the first frame that carries the
+// class (6b0795df: F2 blamed for F4→F5 / F7→F8 crossfades), making it
+// unfixable — verify then burns rounds editing the wrong file.
+
+const TRANSITION_PRE_PAD = 0.1;
+const TRANSITION_POST_PAD = 0.6; // transitions.mjs injects 0.5s cross/push tweens
+
+/**
+ * Frame boundary windows from the assembled root ``index.html``.
+ * @param {string} indexHtml
+ * @returns {Array<[number, number]>}
+ */
+export function transitionWindows(indexHtml) {
+  const wins = [];
+  for (const m of String(indexHtml || "").matchAll(/<div\b[^>]*>/g)) {
+    const tag = m[0];
+    if (!/data-composition-src="[^"]*compositions\/frames\//.test(tag)) continue;
+    const start = Number(/data-start="([\d.]+)"/.exec(tag)?.[1]);
+    if (!Number.isFinite(start) || start <= 0) continue;
+    wins.push([start - TRANSITION_PRE_PAD, start + TRANSITION_POST_PAD]);
+  }
+  return wins.sort((a, b) => a[0] - b[0]);
+}
+
+function stageClass(side) {
+  return /\.(hf-stage-[a-z-]+)/i.exec(String(side || ""))?.[1]?.toLowerCase() || "";
+}
+
+/**
+ * True when an overlap is a shared-stage node colliding with its own copy in
+ * the neighbouring frame during a transition: both sides carry the SAME
+ * `.hf-stage-*` class and every sampled time falls inside a transition window.
+ * A real in-frame collision (any sample outside a window) is never matched.
+ */
+export function isSharedStageCrossfadeOverlap(item, windows) {
+  if (!item || !String(item.code || "").includes("overlap")) return false;
+  if (!Array.isArray(windows) || !windows.length) return false;
+  const { selector, container } = overlapSides(item);
+  const a = stageClass(selector);
+  if (!a || a !== stageClass(container)) return false;
+  const times = [item.firstSeen, item.lastSeen, item.time].filter((t) => typeof t === "number");
+  if (!times.length) return false;
+  const inWin = (t) => windows.some(([lo, hi]) => t >= lo && t <= hi);
+  if (!times.every(inWin)) return false;
+  // first/last only bound the samples; a high count means in-frame hits too.
+  if (typeof item.occurrences === "number" && item.occurrences > windows.length * 2) return false;
+  return true;
+}
+
+/** Split errors into kept vs shared-stage crossfade false positives. */
+export function splitSharedStageCrossfade(errors, windows) {
+  const kept = [];
+  const demoted = [];
+  for (const e of errors || []) {
+    (isSharedStageCrossfadeOverlap(e, windows) ? demoted : kept).push(e);
+  }
+  return { kept, demoted };
+}
 
 /**
  * Machine-readable triage of check errors for deterministic auto-fixes.

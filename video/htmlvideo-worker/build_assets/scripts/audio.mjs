@@ -266,7 +266,7 @@ function runSyncDurations(argv) {
       blockStart = i;
       continue;
     }
-    if (/^#{1,2}\s/.test(lines[i])) {
+    if (/^#{1,2}\s/.test(lines[i]) && !/^##[ \t]+(?:Layout|Motion)\s+ledger\b/i.test(lines[i])) {
       closeBlock(i);
       curFrame = null;
       blockStart = -1;
@@ -306,14 +306,18 @@ function sceneScalingOn() {
 
 const SCENE_WINDOW_RE =
   /(Scene\s+\d+\s*\(\s*)(~?)(\d+(?:\.\d+)?)(\s*s?\s*)([–—-])(\s*~?)(\d+(?:\.\d+)?)(\s*s?\s*\))/gi;
+const MOTION_LEDGER_HEAD_RE = /^##[ \t]+Motion ledger\b/i;
+const NEXT_H2_RE = /^##[ \t]+/;
+const MOTION_DUR_CELL_RE =
+  /^(\|\s*scene\s*\d+\s*\|[^|]*\|[^|]*\|[^|]*\|\s*)(~?)(\d+(?:\.\d+)?)(\s*s\s*\|)\s*$/i;
 
 function fmtSeconds(x) {
   return (Math.round(x * 100) / 100).toFixed(2).replace(/0$/, "");
 }
 
-// Rescale every `Scene N (a–b s)` window in lines[start, end) by
-// duration / (last scene end) so the shot list ends exactly on the synced
-// duration. Returns true when any window changed.
+// Rescale every `Scene N (a–b s)` window (and any opt-in `## Motion ledger`
+// `dur` cells) in lines[start, end) by duration / (last scene end) so the shot
+// list and motion ledger stay aligned on the synced TTS duration.
 function scaleSceneWindows(lines, start, end, duration) {
   if (!(duration > 0)) return false;
   let lastEnd = 0;
@@ -324,12 +328,23 @@ function scaleSceneWindows(lines, start, end, duration) {
   const k = duration / lastEnd;
   const durText = String(Number(duration));
   let changed = false;
+  let inMotionLedger = false;
   for (let i = start; i < end; i++) {
-    const next = lines[i].replace(SCENE_WINDOW_RE, (_all, pre, tilde, a, mid, dash, sp, b, post) => {
+    if (MOTION_LEDGER_HEAD_RE.test(lines[i])) {
+      inMotionLedger = true;
+    } else if (inMotionLedger && NEXT_H2_RE.test(lines[i])) {
+      inMotionLedger = false;
+    }
+    let next = lines[i].replace(SCENE_WINDOW_RE, (_all, pre, tilde, a, mid, dash, sp, b, post) => {
       const bNum = Number(b);
       const newB = bNum === lastEnd ? durText : fmtSeconds(bNum * k);
       return `${pre}${tilde}${fmtSeconds(Number(a) * k)}${mid}${dash}${sp}${newB}${post}`;
     });
+    if (inMotionLedger) {
+      next = next.replace(MOTION_DUR_CELL_RE, (_all, pre, tilde, d, post) => {
+        return `${pre}${tilde}${fmtSeconds(Number(d) * k)}${post}`;
+      });
+    }
     if (next !== lines[i]) {
       lines[i] = next;
       changed = true;

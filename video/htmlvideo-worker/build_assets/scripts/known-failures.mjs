@@ -263,17 +263,82 @@ function where(list, cap = 4) {
 
 const byCode = (code) => (ctx) => (ctx.checkErrors || []).filter((e) => e.code === code);
 
+const IN_FRAME_CAPTION_MARKER = "/* aiflow:hide-in-frame-caption */";
+const IN_FRAME_CAPTION_CLASS_RE =
+  /^(?:[a-z]+\d*[-_])?(?:caption[-_](?:band|bar|strip|pill|box|wrap|row|footer)|cap[-_](?:band|bar|strip|sub|scrim)|bottom[-_]caption|footer[-_]caption)$|^f\d+[-_]caption$/i;
+
+/**
+ * Scan `compositions/frames/*.html` for redundant in-frame bottom caption strips
+ * when `compositions/captions.html` already renders the root karaoke captions
+ * (2026-11-25 6b06dfa0a2a2d105: F2 `.caption-band`, F5 `.f5-caption`, F6
+ * `.caption-band` all rendered duplicate bottom bars without colliding with
+ * `#caption-word-*` at check sample timestamps).
+ */
+function scanInFrameCaptionBands(ctx) {
+  if (!ctx?.videodir) return [];
+  const captionsTrack = path.join(ctx.videodir, "compositions", "captions.html");
+  if (!fs.existsSync(captionsTrack)) return [];
+  const framesDir = path.join(ctx.videodir, "compositions", "frames");
+  if (!fs.existsSync(framesDir)) return [];
+  const hits = [];
+  let names = [];
+  try {
+    names = fs.readdirSync(framesDir).filter((n) => n.endsWith(".html")).sort();
+  } catch {
+    return [];
+  }
+  for (const name of names) {
+    const abs = path.join(framesDir, name);
+    const text = fs.readFileSync(abs, "utf8");
+    if (text.includes(IN_FRAME_CAPTION_MARKER) || !text.includes("</style>")) continue;
+    const classes = new Set();
+    for (const m of text.matchAll(/\bclass\s*=\s*["']([^"']+)["']/gi)) {
+      const tokens = m[1].trim().split(/\s+/).filter(Boolean);
+      // Never hide a root or a multi-purpose `.clip` unless it is dedicated to the caption strip.
+      for (const tok of tokens) {
+        if (IN_FRAME_CAPTION_CLASS_RE.test(tok)) classes.add(tok);
+      }
+    }
+    if (classes.size) {
+      hits.push({
+        file: path.join("compositions", "frames", name),
+        classes: [...classes],
+      });
+    }
+  }
+  return hits;
+}
+
+function injectHideInFrameCaptionCss(source, classes) {
+  if (!classes?.length || source.includes(IN_FRAME_CAPTION_MARKER)) {
+    return { text: source, changed: false };
+  }
+  const idx = source.lastIndexOf("</style>");
+  if (idx < 0) return { text: source, changed: false };
+  const sel = classes.map((c) => `.${c}`).join(", ");
+  const rule = `  ${IN_FRAME_CAPTION_MARKER}\n  ${sel} { display: none !important; visibility: hidden !important; pointer-events: none !important; }\n`;
+  return {
+    text: source.slice(0, idx) + rule + source.slice(idx),
+    changed: true,
+  };
+}
+
 /**
  * checkErrors not claimed by a specific check entry above the catch-all.
  * Owned set lives here only: overlap substring (content-overlap), plus the
- * codes eaten by text-occluded / text-not-painted / the two text_box_overflow
- * entries (caption ignore + non-caption model).
+ * codes eaten by text-occluded / text-not-painted / contrast-aa-failure / the
+ * two text_box_overflow entries (caption ignore + non-caption model).
  */
 function unownedCheckErrors(ctx) {
   const owned = (code) => {
     const c = String(code || "");
     if (c.includes("overlap")) return true;
-    return c === "text_occluded" || c === "text_not_painted" || c === "text_box_overflow";
+    return (
+      c === "text_occluded"
+      || c === "text_not_painted"
+      || c === "contrast_aa_failure"
+      || c === "text_box_overflow"
+    );
   };
   return (ctx.checkErrors || []).filter((e) => !owned(e.code));
 }
@@ -325,6 +390,38 @@ export const KNOWN_FAILURES = [
     prompt:
       'Strip root/clip `data-duration="Ns"` to a plain number `data-duration="N"`. Do NOT diagnose transitions by reading scripts (the verify-all prepare phase strips this automatically).',
     reason: "STORYBOARD `duration: 6.664s` is copied verbatim into frame roots; the deployed transitions regex only matches a bare number (2026-11-21 regression).",
+  },
+
+  {
+    id: "in-frame-caption-band",
+    title: "redundant in-frame bottom caption strip",
+    match: (ctx) => scanInFrameCaptionBands(ctx),
+    mode: "autofix",
+    autofix: (ctx, hits) => {
+      let changed = false;
+      let hidden = 0;
+      for (const hit of hits) {
+        const abs = path.join(ctx.videodir, hit.file);
+        if (!fs.existsSync(abs)) continue;
+        const text = fs.readFileSync(abs, "utf8");
+        const res = injectHideInFrameCaptionCss(text, hit.classes);
+        if (res.changed) {
+          fs.writeFileSync(abs, res.text, "utf8");
+          changed = true;
+          hidden += hit.classes.length;
+        }
+      }
+      return {
+        changed,
+        note: changed
+          ? `hid ${hidden} redundant in-frame caption class(es) via CSS`
+          : "no redundant in-frame caption strips to hide",
+      };
+    },
+    prompt:
+      "Hide or remove redundant in-frame bottom `.caption-band` / `.fN-caption` strips when `compositions/captions.html` is active (verify-all prepare auto-hides them).",
+    reason:
+      "2026-11-25 (6b06dfa0a2a2d105): frames 02, 05, 06 drew their own bottom `.caption-band` / `.f5-caption` bars alongside `compositions/captions.html` without triggering `#caption-word` overlap at sampled timestamps. CSS `display: none !important` removes the visual collision without breaking DOM refs or GSAP selectors.",
   },
 
   {
@@ -461,6 +558,17 @@ export const KNOWN_FAILURES = [
     prompt:
       "The element's `color` / `-webkit-text-fill-color` resolves to transparent, so its glyphs are invisible. Set an opaque fill; only leave it if `background-clip: text` with a real gradient/image actually paints the glyphs. Fix the named element only.",
     reason: "-webkit-text-fill-color:transparent overrides color and inherits, silently blanking descendant text (seen 2026-11-22 #qmark).",
+  },
+
+  {
+    id: "contrast-aa-failure",
+    title: "contrast_aa_failure",
+    match: byCode("contrast_aa_failure"),
+    mode: "model",
+    prompt: (_ctx, hits) =>
+      `Illegible foreground/background text contrast (${where(hits)}): set the text \`color\` on light/white/cream surfaces to dark \`ink\` (\`#1A1A1A\`), or on dark surfaces to \`#FFFFFF\` (keep candy hues like yellow/lime/mint/peach on the pill \`background\`, NEVER as text color on light surfaces). Apply the edit in ONE pass and reply \`fixed <n>\`.`,
+    reason:
+      "2026-11-25 (6b06dfa0a2a2d105 F5): `.f5-slot-live { color: #F2D160 }` on `#FFFFFF` rendered at 1.44:1 contrast (unreadable). Held or severe (<2.5:1) contrast failures now gate and route here.",
   },
 
   {

@@ -52,6 +52,24 @@ _PREPARE_TIMEOUT_S = 300
 _VERIFY_TIMEOUT_S = 900
 _INLINE_FILE_MAX_BYTES = 16_384
 _SCAN_LOG_LIMIT = 2000
+# 2026-11-26 (6b0795df): one retry at a higher output cap when a fix worker hit
+# TRUNCATED_RC without landing any edit. HTMLVIDEO_VERIFY_TRUNC_RETRY_MAX_OUTPUT
+# overrides; 0 disables the retry (pre-2026-11-26 fail-fast behaviour).
+_TRUNC_RETRY_MAX_OUTPUT = 48000
+
+
+def _trunc_retry_max_output(logger: logging.Logger) -> int:
+    raw = os.environ.get("HTMLVIDEO_VERIFY_TRUNC_RETRY_MAX_OUTPUT", "").strip()
+    if not raw:
+        return _TRUNC_RETRY_MAX_OUTPUT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning(
+            "invalid HTMLVIDEO_VERIFY_TRUNC_RETRY_MAX_OUTPUT=%r; using %d",
+            raw, _TRUNC_RETRY_MAX_OUTPUT,
+        )
+        return _TRUNC_RETRY_MAX_OUTPUT
 
 
 def _run_verify_phase(project_dir: str, phase: str, timeout: int, logger: logging.Logger) -> tuple[int, str]:
@@ -473,7 +491,9 @@ def _build_visual_fix_prompt(scan_output: str, project_dir: str = "") -> str:
         "Fix the visual-gate pixels findings below in this HyperFrames project root. "
         "The mechanical gate (verify-report: lint, check, structural, transitions) "
         "already PASSED. verify-pixels then failed (VISUAL_GATE: FAIL).\n\n"
-        "collapse means layout collapse; empty means missing content. "
+        "collapse means layout collapse; empty means missing content (empty main stage "
+        "means the top 83% hero region above the caption band rendered blank at the "
+        "frame midpoint — ensure the hero is visible and scaled to 35–55% of canvas). "
         "Only edit frames a pixels FAIL line names. "
         "Map `snapshots/frame-NN.png` (or a `frame-NN.png` line) to "
         "`compositions/frames/NN-*.html`. Leave every other frame untouched.\n\n"
@@ -657,6 +677,7 @@ def _run_fix_worker(
     prompt: str,
     logger: logging.Logger,
     label: str | None,
+    max_output: int | None = None,
 ) -> int:
     """Dispatch one fix turn with the truncation watcher armed (P0 fail-fast).
 
@@ -664,9 +685,14 @@ def _run_fix_worker(
     (rc 125) instead of letting the model re-think into the cap for minutes and
     return with zero edits — the 2026-11-23 runaway (2× 16000-token thinking-only
     turns, no Edit). Kept as a thin, easily-mocked seam for the unit tests.
+    ``max_output`` raises the output cap for the one truncation retry.
     """
+    extra_env = (
+        {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(max_output)} if max_output else None
+    )
     fix_rc, _result = run_claude_result(
-        project_dir, prompt, logger, skill="verify", label=label, trunc_kill=True
+        project_dir, prompt, logger, skill="verify", label=label, trunc_kill=True,
+        extra_env=extra_env,
     )
     return fix_rc
 
@@ -677,16 +703,51 @@ def _dispatch_fix(
     round_no: int,
     logger: logging.Logger,
     label: str | None,
+    max_output: int | None = None,
 ) -> int:
     """One batched model turn, raising on non-truncation non-zero exit.
 
     Returns ``fix_rc`` (``0`` or ``TRUNCATED_RC``) so callers can check whether
     edits already landed on disk before raising on truncation.
     """
-    fix_rc = _run_fix_worker(project_dir, prompt, logger, label)
+    if max_output:
+        fix_rc = _run_fix_worker(project_dir, prompt, logger, label, max_output=max_output)
+    else:
+        fix_rc = _run_fix_worker(project_dir, prompt, logger, label)
     if fix_rc not in (0, TRUNCATED_RC):
         raise RuntimeError(f"claude verify fix failed rc:{fix_rc} [{label or '-'}]")
     return fix_rc
+
+
+def _retry_truncated(
+    project_dir: str,
+    before_digest: str,
+    prompts: dict[str, tuple[str, str | None]],
+    truncated_labels: list[str],
+    round_no: int,
+    logger: logging.Logger,
+) -> list[str]:
+    """Re-run truncated zero-edit workers once at a higher output cap.
+
+    Only fires when NOTHING landed on disk (a partial landing proceeds to the
+    rescan as before). Returns the labels still truncated after the retry.
+    """
+    if not truncated_labels or _composition_html_digest(project_dir) != before_digest:
+        return truncated_labels
+    cap = _trunc_retry_max_output(logger)
+    if cap <= 0:
+        return truncated_labels
+    logger.warning(
+        "verify fix round %d [%s] truncated with zero edits — retrying once at "
+        "max_output=%d",
+        round_no, ", ".join(truncated_labels), cap,
+    )
+    still: list[str] = []
+    for key in truncated_labels:
+        prompt, label = prompts[key]
+        if _dispatch_fix(project_dir, prompt, round_no, logger, label, max_output=cap) == TRUNCATED_RC:
+            still.append(key)
+    return still
 
 
 def _apply_model_fix(
@@ -709,6 +770,7 @@ def _apply_model_fix(
     if not _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN"):
         fragments, _tail = _split_scan_by_file(_trim_scan_for_fix(scan_output))
     truncated_labels: list[str] = []
+    prompts: dict[str, tuple[str, str | None]] = {}
     if fragments:
         max_workers = min(len(fragments), 4)
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -717,6 +779,7 @@ def _apply_model_fix(
                 prompt = _build_fix_prompt_from_fragment(
                     fragment, project_dir, "scan findings", target_file=rel
                 )
+                prompts[rel] = (prompt, rel)
                 futs[ex.submit(_dispatch_fix, project_dir, prompt, round_no, logger, rel)] = rel
             for fut in as_completed(futs):
                 rel = futs[fut]
@@ -725,9 +788,13 @@ def _apply_model_fix(
                     truncated_labels.append(rel)
     else:
         prompt = _build_fix_prompt(scan_output, project_dir)
+        prompts["-"] = (prompt, None)
         rc = _dispatch_fix(project_dir, prompt, round_no, logger, None)
         if rc == TRUNCATED_RC:
             truncated_labels.append("-")
+    truncated_labels = _retry_truncated(
+        project_dir, before_digest, prompts, truncated_labels, round_no, logger
+    )
     return _require_changed_and_rescan(
         project_dir, before_digest, round_no, logger, truncated_labels=truncated_labels
     )
@@ -778,9 +845,12 @@ def _apply_visual_fix(
     """One pixels-fix model turn (no file split), zero-edit guard, then rescan."""
     before_digest = _composition_html_digest(project_dir)
     rc = _dispatch_fix(project_dir, prompt, round_no, logger, None)
-    truncated = ["-"] if rc == TRUNCATED_RC else None
+    truncated = ["-"] if rc == TRUNCATED_RC else []
+    truncated = _retry_truncated(
+        project_dir, before_digest, {"-": (prompt, None)}, truncated, round_no, logger
+    )
     return _require_changed_and_rescan(
-        project_dir, before_digest, round_no, logger, truncated_labels=truncated
+        project_dir, before_digest, round_no, logger, truncated_labels=truncated or None
     )
 
 

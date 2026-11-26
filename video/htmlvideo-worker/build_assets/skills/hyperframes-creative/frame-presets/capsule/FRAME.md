@@ -27,10 +27,10 @@ colors:
 
 typography:
   # — reading ramp (Space Grotesk) —
-  body:      { fontFamily: "Space Grotesk", cqw: 0.85, weight: 400, lineHeight: 1.6 }
-  subtitle:  { fontFamily: "Space Grotesk", cqw: 0.95, weight: 400, tracking: "0.18em", upper: true }
-  pill-text: { fontFamily: "Space Grotesk", cqw: 0.75, weight: 600, tracking: "0.12em", upper: true }
-  label:     { fontFamily: "Space Grotesk", px: 14, weight: 500, tracking: "0.1em", upper: true }
+  body:      { fontFamily: "Space Grotesk", cqw: 1.25, weight: 400, lineHeight: 1.55 }
+  subtitle:  { fontFamily: "Space Grotesk", cqw: 1.15, weight: 500, tracking: "0.16em", upper: true }
+  pill-text: { fontFamily: "Space Grotesk", cqw: 1.05, weight: 600, tracking: "0.10em", upper: true }
+  label:     { fontFamily: "Space Grotesk", px: 18, weight: 600, tracking: "0.08em", upper: true }
   # — display / hero ramp (Bodoni Moda, ink, sentence case) —
   card-headline:{ fontFamily: "Bodoni Moda", cqw: 1.9, weight: 700, lineHeight: 1.1 }
   orbit-numeral:{ fontFamily: "Bodoni Moda", cqw: 2.6, weight: 700, lineHeight: 1.0 }
@@ -157,12 +157,14 @@ the radial-glow + grain atmosphere; ALL frame-relative units are `cqw`/`cqh` aga
 Tokens identical to the source. `{colors.cream}` is the ground; `{colors.ink}`/`{colors.outline}`
 is type + the universal 2px stroke; the nine candy accents fill pills with **no semantic mapping**
 — pair a warm (coral/yellow/peach) with a cool (sky/lavender/violet/mint) with a neutral-bright
-(lime); never two same-family adjacent. Color appears on **stat numerals and pill fills only** —
-never on a Bodoni headline. Shadow is always `{colors.shadow}` (8% ink). No tenth color.
+(lime); never two same-family adjacent. Color appears on **high-contrast stat numerals (coral/violet)
+and pill fills only** — NEVER use light candies (`yellow`, `lime`, `mint`, `peach`, `lavender`,
+`sky`) as text color on white/cream surfaces (contrast < 2:1), and never color a Bodoni headline.
+Shadow is always `{colors.shadow}` (8% ink). No tenth color.
 
 ## Typography
 
-Two ramps. The **reading ramp** (Space Grotesk body 0.85cqw, uppercase tracked pill/label text)
+Two ramps. The **reading ramp** (Space Grotesk body 1.25cqw, uppercase tracked pill/label text ≥ 1.05cqw)
 carries copy + chips; the **display ramp** (Bodoni `card-headline` 1.9cqw → `display` 12cqw, all
 700–800) carries every headline, stat, and quote.
 

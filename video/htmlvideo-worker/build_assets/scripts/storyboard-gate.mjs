@@ -89,9 +89,9 @@ try {
 } catch {}
 const EASE_RE = /^(power[1-4]|sine|quad|cubic|quart|quint|expo|circ|back|elastic|bounce)\.(in|out|inOut)$/;
 
-/* ── layout/motion ledger (schema-sinking scheme-1, opt-in) ─────────────── */
-const ledgerOn = ["1", "true", "on", "yes"].includes(
-  (process.env.HTMLVIDEO_FRAME_VISUAL_LEDGER ?? "").trim().toLowerCase());
+/* ── layout/motion ledger (schema-sinking scheme-1, opt-in via =1; default OFF) */
+const ledgerRaw = (process.env.HTMLVIDEO_FRAME_VISUAL_LEDGER ?? "").trim().toLowerCase();
+const ledgerOn = ["1", "true", "on", "yes"].includes(ledgerRaw);
 // Body between a `## <name>` heading and the next `## ` heading (or end); null
 // when the heading is absent.
 function ledgerSection(block, name) {

@@ -104,6 +104,46 @@ class BuildPromptTest(unittest.TestCase):
         self.assertNotIn("both Write tool", p)
 
 
+    def test_prompt_text_out_mode_and_build_storyboard(self):
+        from unittest import mock
+
+        d = tempfile.mkdtemp(prefix="sb-textout-")
+        with open(os.path.join(d, "BRIEF.md"), "w") as f:
+            f.write(BRIEF_MD)
+        with open(os.path.join(d, "frame.md"), "w") as f:
+            f.write(FRAME_MD)
+        p = sc.build_storyboard_prompt(d, contract_card="CARD", text_out=True)
+        self.assertIn("Output ONLY the complete `STORYBOARD.md` markdown document", p)
+        self.assertIn('no `Write` or other tool calls', p)
+        self.assertNotIn('First tool call MUST be Write("STORYBOARD.md")', p)
+
+        raw_board = (
+            "```markdown\n"
+            "---\nformat: 1920x1080\nmode: autonomous\n---\n\n"
+            "## Frame 1 — Buy checks\n"
+            "- scene: s\n"
+            '- voiceover: "First check the moat."\n'
+            "- duration: 5s\n"
+            "- src: compositions/frames/bad.html\n"
+            "```\n"
+        )
+        with mock.patch.object(sb, "run_claude_result", return_value=(0, raw_board)) as rcr, \
+             mock.patch.object(sb, "run_claude") as rc_write, \
+             mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(sb.STORYBOARD_TEXT_OUT_ENV, None)
+            out_path = sb.build_storyboard(d, None)
+        rcr.assert_called_once()
+        self.assertEqual(rcr.call_args.kwargs["tools"], "")
+        self.assertEqual(rcr.call_args.kwargs["max_turns"], sb.STORYBOARD_TEXT_OUT_MAX_TURNS)
+        self.assertTrue(rcr.call_args.kwargs["trunc_kill"])
+        rc_write.assert_not_called()
+        with open(out_path, encoding="utf-8") as f:
+            saved = f.read()
+        self.assertIn("01-buy-checks.html", saved)
+        self.assertNotIn("```", saved)
+        self.assertTrue(os.path.isfile(os.path.join(d, "SCRIPT.md")))
+
+
 class SrcNormalizeTest(unittest.TestCase):
     def test_slugify(self):
         self.assertEqual(sb._slugify("Not investing, guessing"), "not-investing-guessing")
@@ -245,9 +285,10 @@ class ProfileDenyTest(unittest.TestCase):
         from html_utility.claude_cli import _PROFILES
 
         deny = set(_PROFILES["visual"].get("deny_tools") or [])
-        for name in ("Bash", "Glob", "Grep", "Write", "Edit", "Skill"):
+        for name in ("Bash", "Glob", "Grep", "Write", "Edit", "Read", "Skill"):
             self.assertIn(name, deny)
-        self.assertNotIn("Read", deny)  # optional rules escape hatch
+        self.assertEqual(_PROFILES["visual"].get("tools"), "")
+        self.assertEqual(_PROFILES["visual"].get("max_turns"), 1)
 
     def test_verify_denies_explore_keeps_edit(self):
         from html_utility.claude_cli import _PROFILES

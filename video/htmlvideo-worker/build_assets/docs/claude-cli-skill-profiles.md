@@ -56,14 +56,18 @@ flowchart TD
 
 ## 4. Profile 表与取值理由
 
-| skill | effort | thinking | max_output | max_turns | timeout(s) | deny Agent/Task | 理由 |
+> 2026-11-26 同步自 `html_utility/claude_cli.py` 最新 `_PROFILES`（详见 `docs/2026-11-26-frame-visual-html-truncation-shared-stage-optimization.md`）。
+
+| skill | effort | thinking | max_output | max_turns | timeout(s) | tools / deny | 理由 |
 |---|---|---|---|---|---|---|---|
-| intent | high | 32000 | 32000 | 100 | 1800 | 是；另禁 Write/Edit/Bash/Read/Glob/Grep（纯文本 → Python 落盘） | 2026-11-18 cap A/B 实证地板（16.7s 历史最优），显式固化 |
-| storyboard | high | 64000 | 16000 | 8 | 1800 | 是；另禁 Bash/Read/Glob/Grep/Edit（Write-only；SCRIPT.md 由 Python 从 voiceover 派生） | 契约卡内联后几乎 1 次 Write；8 轮 fail-fast；禁探盘 + SCRIPT 外提 |
-| visual | high | 64000 | 32000 | 100 | 1800 | 是；另禁 Bash/Glob/Grep/Write/Edit（保留 Read 作 rules 逃生口；文本回复合并） | 同上（7.1m 历史最优）；硬禁对齐 frame_html，停掉 ls/find |
-| frame_html | high | 64000 | 48000 | 60 | 1500 | 是；另禁 Bash/Glob/Grep（保留 Read/Edit/Write；driver 跑 frame-selfcheck，有界 ≤3 次重派） | 每帧一进程；48000 防截断探档（64000 一键回退）；1500s 墙钟；dispatch 内联，模型不读 `.dispatch.md` |
-| repair | high | 40000 | 16000 | 40 | 600 | 是 | 仅 assemble 失败的一次性修复会话 |
-| verify | medium | 32000 | 16000 | 40 | 1800 | 是；另禁 Bash/Glob/Grep（保留 Read/Edit/Write；scan 由 Python 跑） | 修色/加 data-layout 的 fix 角色；40 轮 fail-fast；压探盘与 Todo 空转 |
+| intent | medium | 12000 | 12000 | 4 | 1800 | `tools=""`；禁 Write/Edit/Bash/Read/Glob/Grep/Skill/Agent/Task | 仅输出 ~160 token JSON；12000 留 >50x 余量并抑止长思考 |
+| storyboard | high | 16000 | 16000 | 8 | 1800 | `tools="Write"`；禁 Bash/Read/Glob/Grep/Edit/Skill/Agent/Task | 仅交付 STORYBOARD.md（SCRIPT.md 由 Python 派生），默认 text-out 驱动 |
+| visual_design | medium | 24000 | 24000 | 1 | 1800 | `tools=""`；禁 Bash/Glob/Grep/Write/Edit/Read/Skill/Agent/Task | Phase A 全局设计契约 + `## Shared stage spec`；单轮零工具防千帆失忆重跑 |
+| visual | medium | 20000 | 20000 | 1 | 1800 | `tools=""`；禁 Bash/Glob/Grep/Write/Edit/Read/Skill/Agent/Task | Phase B 逐帧镜头设计；输入全内联，单轮纯文本输出，由 Python 合并 |
+| visual_legacy | high | 64000 | 32000 | 100 | 1800 | 仅禁 Agent/Task | `HTMLVIDEO_FRAME_VISUAL_DRIVER=0` 单会话回退路径 |
+| frame_html | medium | 48000 | 48000 | 30（Text-Out 覆写为 1） | 1500 | `tools="Read,Write,Edit"`（Text-Out 覆写 `""`）；禁 Bash/Glob/Grep/Skill/Agent/Task | 每帧独立进程；48000 保障首轮完成率，截断返回 125 后自动提额至 64000 |
+| repair | high | 40000 | 16000 | 40 | 600 | 禁 Agent/Task | 仅 assemble/gate 失败的一次性修复会话 |
+| verify | medium | 32000 | 16000 | 40 | 1800 | `tools="Read,Write,Edit"`；禁 Bash/Glob/Grep/Skill/Agent/Task | 修色/加 data-layout 的 fix 角色；40 轮 fail-fast；压探盘与 Todo 空转 |
 
 `frame_html` 另由调用方注入 `CLAUDE_CODE_SUBAGENT_EFFORT=high`（`frame_html.py` 与脚本 `--skill html` 一致；B 架构下仅 legacy 回退路径有意义，见 §9.7）。
 
@@ -119,8 +123,10 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 | `HTMLVIDEO_CLAUDE_<SKILL>_TIMEOUT` | 覆盖超时秒；≤0 回退默认 |
 | `HTMLVIDEO_CLAUDE_<SKILL>_MODEL` | 设置则追加 `--model`；默认不设 |
 | `HTMLVIDEO_CLAUDE_HEARTBEAT_SECONDS` | 全局：等待 Claude 时心跳间隔（默认 15）；`0` 关闭 |
+| `HTMLVIDEO_CLAUDE_DEBUG_REQUEST` | 全局：完整请求/响应抓包开关（**默认 `1` 开启**，注入 `ANTHROPIC_LOG=debug` + `BUN_OPTIONS=--preload=...`）；设 `0`/`false`/`off`/`no` 关闭 |
+| `HTMLVIDEO_CLAUDE_TRUNC_KILL_STREAK` | 全局：连续仅思考满额截断容忍次数（零工具调用默认 `1`，多轮工具调用默认 `2`） |
 
-`<SKILL>`：`INTENT` / `STORYBOARD` / `VISUAL` / `FRAME_HTML` / `VERIFY` / `REPAIR`。
+`<SKILL>`：`INTENT` / `STORYBOARD` / `VISUAL_DESIGN` / `VISUAL` / `FRAME_HTML` / `VERIFY` / `REPAIR`。
 
 全局 `CLAUDE_CODE_EFFORT_LEVEL`（见 `conf/env_htmlvideo_example`）在 `run_claude` 子进程中总被各 skill profile 覆盖，仅对手工直接运行 `claude` 生效。
 
@@ -133,6 +139,8 @@ Clamp 规则（`_clamp_thinking` 在 profile `max_output` 注入**之前**执行
 | CLI 正常退出码 | 透传 |
 | CLI rc=0 且 JSON `is_error=true` | **1** |
 | 墙钟超时 | **124** |
+| 思考满额截断（watcher 查杀，或 `rc=0` 空结果且 `output_tokens ≥ 0.95 × cap`） | **125**（`TRUNCATED_RC`） |
+| 对冲竞速取消 | **130**（`CANCELLED_RC`） |
 | JSON 解析失败 | 透传 CLI rc，日志打 stdout 尾 2000 字符 |
 | `subtype=error_max_turns` | warning；rc 仍按上表 |
 

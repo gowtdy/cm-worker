@@ -19,6 +19,9 @@ import {
   findingsPayload,
   FINDINGS_JSON_PREFIX,
   relPath,
+  transitionWindows,
+  isSharedStageCrossfadeOverlap,
+  splitSharedStageCrossfade,
 } from "../scripts/lib/verify-check-parse.mjs";
 
 const LAYOUT_AUDIT_JS = "/app/hyperframes/packages/cli/dist/commands/layout-audit.browser.js";
@@ -96,6 +99,24 @@ function testParseCheckJsonLayoutOverlap() {
   assert.ok(!ov.msg.includes(" inside "), ov.msg);
   assert.ok(ov.msg.includes("[t=2.1-4.3s box(100,200,300x80)]"), ov.msg);
   assert.ok(!b.errors.some((e) => e.code === "should_be_ignored"), "lint skipped");
+  const cJson = parseCheckJson({
+    contrast: {
+      findings: [{
+        code: "contrast_aa_failure",
+        severity: "warning",
+        ratio: 1.44,
+        requiredRatio: 4.5,
+        fg: "rgb(242, 209, 96)",
+        bg: "rgb(255, 255, 255)",
+        suggestedColor: "rgb(26, 26, 26)",
+        selector: ".f5-slot-live",
+        sourceFile: "/app/proj/compositions/frames/05.html",
+      }],
+    },
+  }, { root: "/app/proj" });
+  assert.equal(cJson.warns[0].ratio, 1.44);
+  assert.equal(cJson.warns[0].fg, "rgb(242, 209, 96)");
+  assert.equal(cJson.warns[0].suggestedColor, "rgb(26, 26, 26)");
   console.log("parseCheckJson OK");
 }
 
@@ -475,4 +496,46 @@ testTriageAutofixWhitelist();
 testTriageNumCheck();
 testFindingsPayload();
 test6b01Artifact();
+testSharedStageCrossfade();
+
+function testSharedStageCrossfade() {
+  // 6b0795df: index.html frame boundaries (F1 at 0 is not a transition)
+  const index = [
+    '<div id="el-01" class="scene" data-composition-src="compositions/frames/01.html" data-start="0" data-duration="6.2"></div>',
+    '<div id="el-05" class="scene" data-composition-src="compositions/frames/05.html" data-start="26.262" data-duration="5.3"></div>',
+    '<div id="el-08" class="scene" data-composition-src="compositions/frames/08.html" data-start="41.251" data-duration="5.5"></div>',
+    '<div id="el-captions" class="scene" data-composition-src="compositions/captions.html" data-start="0"></div>',
+  ].join("\n");
+  const wins = transitionWindows(index);
+  assert.equal(wins.length, 2);
+  const json = {
+    layout: {
+      findings: [
+        // crossfade-only self overlap of the pinned title (F4→F5, F7→F8 midpoints)
+        { code: "content_overlap", severity: "error", time: 26.569, firstSeen: 26.569, lastSeen: 41.538,
+          occurrences: 2, selector: "div.hf-stage-title", containerSelector: "div.hf-stage-title",
+          text: "THE INVESTOR'S CHECKLIST", sourceFile: "compositions/frames/02.html" },
+        // real in-frame label collision (first sample at 8.856s, 74 hits) — must stay
+        { code: "content_overlap", severity: "error", time: 8.856, firstSeen: 8.856, lastSeen: 41.538,
+          occurrences: 74, selector: "span.hf-stage-label", containerSelector: "span.hf-stage-label",
+          text: "01 Explainable", sourceFile: "compositions/frames/02.html" },
+        // different classes inside a window — not a self overlap, must stay
+        { code: "content_overlap", severity: "error", time: 26.5, firstSeen: 26.5, lastSeen: 26.5,
+          occurrences: 1, selector: "div.hf-stage-title", containerSelector: "h2.hero-line",
+          text: "X", sourceFile: "compositions/frames/05.html" },
+      ],
+    },
+  };
+  const { errors } = parseCheckJson(json, {});
+  assert.equal(errors[0].firstSeen, 26.569);
+  assert.equal(errors[0].occurrences, 2);
+  assert.equal(isSharedStageCrossfadeOverlap(errors[0], wins), true);
+  assert.equal(isSharedStageCrossfadeOverlap(errors[1], wins), false);
+  assert.equal(isSharedStageCrossfadeOverlap(errors[2], wins), false);
+  assert.equal(isSharedStageCrossfadeOverlap(errors[0], []), false, "no windows = never demote");
+  const { kept, demoted } = splitSharedStageCrossfade(errors, wins);
+  assert.equal(demoted.length, 1);
+  assert.equal(kept.length, 2);
+}
+
 console.log("all verify-check-parse tests passed");

@@ -56,10 +56,12 @@ const SEQUENCE = [
   { t: T_DONE, text: "{fullCorrectedText + ' ✓'}" }, // completion marker
 ];
 
-// Reverse-search for the latest entry whose t has passed
+// Reverse-search for the latest entry whose t has passed.
+// +1e-4 epsilon prevents IEEE-754 float accumulation (e.g. 0.1+0.2=0.30000000000000004)
+// from missing the final character when driver.t reaches TOTAL_DURATION.
 function textAt(time) {
   for (let i = SEQUENCE.length - 1; i >= 0; i--) {
-    if (time >= SEQUENCE[i].t) return SEQUENCE[i].text;
+    if (time + 1e-4 >= SEQUENCE[i].t) return SEQUENCE[i].text;
   }
   return "";
 }
@@ -76,6 +78,9 @@ tl.to(
     ease: "none",
     onUpdate: () => {
       textEl.textContent = textAt(driver.t);
+    },
+    onComplete: () => {
+      textEl.textContent = SEQUENCE[SEQUENCE.length - 1].text;
     },
   },
   0,
@@ -111,7 +116,10 @@ tl.to(
     duration: TYPE_DUR,
     ease: "power1.inOut",
     onUpdate: () => {
-      textEl.textContent = fullText.substring(0, Math.floor(len.v));
+      textEl.textContent = fullText.substring(
+        0,
+        Math.min(fullText.length, Math.floor(len.v + 1e-4)),
+      );
     },
   },
   0,

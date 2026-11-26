@@ -118,15 +118,18 @@ Do **not** repeat these per frame — restating video-level rules in every frame
 
 ## Caption-band keep-out (plan side)
 
-The bottom ~17% of the canvas is reserved for the caption pill. Plan every frame's content into the **top ~83%** so nothing important lands in the band (the worker enforces the pixel cutoff; you plan the layout). When captions are enabled, primary content and key visuals **cap at the band top**, and a centered hero anchors at **y ≈ 0.42 × height** (landscape ≈454, portrait ≈806), not the canvas midpoint; background / ambient / surface layers are exempt and may stay full-bleed. Holds even when captions are disabled — bottom-edge consistency.
+The bottom ~17% of the canvas is reserved for the root caption overlay (`compositions/captions.html`). Plan every frame's content into the **top ~83%** so nothing important lands in the band, and **never design or mention an in-frame caption band, bottom subtitle strip, or footer rule** inside `## Video direction` or per-frame `Scene` lines. When captions are enabled, primary content and key visuals **cap at the band top**, and a centered hero anchors at **y ≈ 0.42 × height** (landscape ≈454, portrait ≈806), not the canvas midpoint; background / ambient / surface layers are exempt and may stay full-bleed. Holds even when captions are disabled — bottom-edge consistency.
 
-## Layout / Motion ledger (schema-sinking, opt-in)
+## Layout / Motion ledger (schema-sinking, opt-in — default OFF)
 
-When `HTMLVIDEO_FRAME_VISUAL_LEDGER=1`, each frame ALSO appends **two concrete
-tables** after its Scene lines — the exact values the frame-html worker
-transcribes instead of re-deriving. This is the one opt-in exception to "no px /
-ease in Scene prose": the Scene prose stays vocabulary-only, and the numbers go
-in the ledger.
+Default is OFF (`HTMLVIDEO_FRAME_VISUAL_LEDGER=0`): layout consistency across
+shared-stage frames is governed by the `## Video direction` **Shared stage** spec
+(locked card dimensions + complete numbered slot labels) and CSS Flex/Grid in
+`build-frame-html`. When `HTMLVIDEO_FRAME_VISUAL_LEDGER=1` is explicitly set, each
+frame ALSO appends **two concrete tables** after its Scene lines — the exact
+values the frame-html worker transcribes instead of re-deriving. This is the one
+opt-in exception to "no px / ease in Scene prose": the Scene prose stays
+vocabulary-only, and the numbers go in the ledger.
 
     ## Layout ledger
 

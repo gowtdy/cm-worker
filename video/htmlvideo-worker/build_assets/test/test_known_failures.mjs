@@ -351,3 +351,59 @@ test("transitions boundary mismatch is info (self-healing, non-actionable)", () 
   assert.ok(m, "transitions mismatch did not match");
   assert.equal(m.entry.mode, "info");
 });
+
+test("in-frame-caption-band autofix hides duplicate bottom caption strips when captions.html exists", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kf-capband-"));
+  const frames = path.join(dir, "compositions", "frames");
+  fs.mkdirSync(frames, { recursive: true });
+  const f2 = path.join(frames, "02.html");
+  const f5 = path.join(frames, "05.html");
+  fs.writeFileSync(
+    f2,
+    '<template><div id="root"><div class="caption-band"><span class="caption-text">dup</span></div></div><style>#root{}</style></template>\n',
+    "utf8",
+  );
+  fs.writeFileSync(
+    f5,
+    '<template><div id="root"><div class="f5-caption">dup</div></div><style>#root{}</style></template>\n',
+    "utf8",
+  );
+  try {
+    const ctx = mkCtx({ videodir: dir });
+    // Without compositions/captions.html → no match
+    assert.ok(!matchKnownFailures(ctx).some((x) => x.entry.id === "in-frame-caption-band"));
+
+    // With compositions/captions.html → matches both 02 and 05 and injects display:none CSS
+    fs.writeFileSync(path.join(dir, "compositions", "captions.html"), "<template></template>", "utf8");
+    const m1 = matchKnownFailures(ctx).find((x) => x.entry.id === "in-frame-caption-band");
+    assert.ok(m1, "in-frame-caption-band should match when captions.html exists");
+    assert.equal(m1.hits.length, 2);
+    const r1 = m1.entry.autofix(ctx, m1.hits);
+    assert.equal(r1.changed, true);
+    assert.match(fs.readFileSync(f2, "utf8"), /\.caption-band\s*\{\s*display:\s*none\s*!important/);
+    assert.match(fs.readFileSync(f5, "utf8"), /\.f5-caption\s*\{\s*display:\s*none\s*!important/);
+
+    // Idempotent: second scan matches nothing
+    assert.ok(!matchKnownFailures(ctx).some((x) => x.entry.id === "in-frame-caption-band"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("contrast_aa_failure matches dedicated contrast rule instead of other-check-errors", () => {
+  const ctx = mkCtx({
+    checkErrors: [{
+      code: "contrast_aa_failure",
+      msg: ".f5-slot-live — Contrast is 1.44:1; WCAG AA requires 4.5:1.",
+      selector: ".f5-slot-live",
+      file: "compositions/frames/05-check.html",
+    }],
+  });
+  const matched = matchKnownFailures(ctx);
+  const c = matched.find((x) => x.entry.id === "contrast-aa-failure");
+  assert.ok(c, "contrast-aa-failure must match");
+  assert.ok(!matched.some((x) => x.entry.id === "other-check-errors"));
+  const prompt = renderPrompt(c.entry, ctx, c.hits);
+  assert.match(prompt, /#1A1A1A/);
+  assert.match(prompt, /05-check\.html/);
+});

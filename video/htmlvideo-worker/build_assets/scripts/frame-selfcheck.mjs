@@ -163,12 +163,16 @@ if (html.includes(SKELETON_MARK) && rootM) {
   const inner = rootInner(html, rootM.index + rootM[0].length).replace(/<!--[\s\S]*?-->/g, "");
   const realTags = [...inner.matchAll(/<([a-zA-Z][\w-]*)\b([^>]*)>/g)]
     .filter((m) => !/\bdata-skeleton\b/.test(m[2]));
-  if (realTags.length === 0 && inner.replace(/<[^>]*>/g, "").trim() === "") evidence.push("root-empty");
+  if (realTags.length === 0 && (inner.includes("data-skeleton") || inner.replace(/<[^>]*>/g, "").trim() === "")) {
+    evidence.push("root-empty");
+  }
+  const stripRuntime = (s) => s.replace(/\/\* hf-runtime-start \*\/[\s\S]*?\/\* hf-runtime-end \*\//g, "");
   const stripJs = (s) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(?<!:)\/\/[^\n]*/g, "");
   const inlineJs = [...html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
-    .map((m) => stripJs(m[1])).join("\n");
+    .map((m) => stripJs(stripRuntime(m[1]))).join("\n");
   const hasTween = /\.(?:to|from|fromTo|set|call|staggerTo|staggerFrom|staggerFromTo)\s*\(/.test(inlineJs)
-    || /\b(?:tl|timeline)\.add\s*\(/.test(inlineJs);
+    || /\b(?:tl|timeline)\.add\s*\(/.test(inlineJs)
+    || /\b__hf\.(?:type|draw)\s*\(/.test(inlineJs);
   if (!hasTween) evidence.push("no-tween");
   const css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)]
     .map((m) => m[1].replace(/\/\*[\s\S]*?\*\//g, "")).join("").trim();
@@ -213,6 +217,18 @@ for (const m of masked.matchAll(digitSelRe)) {
   const lineNo = html.slice(0, idx).split("\n").length;
   const colNo = idx - html.lastIndexOf("\n", idx - 1);
   fail(`digit-led selector "${m[1]}" at line ${lineNo} col ${colNo} — CSS drops the whole rule / querySelectorAll throws SyntaxError; convert to [id="…"] or [class~="…"], leave getElementById alone (id_requires_css_escape)`);
+}
+
+// --- infinite GSAP repeat: -1 (gsap_infinite_repeat) ------------------------
+for (const b of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  const cleanScript = b[1]
+    .replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "))
+    .replace(/(?<!:)\/\/[^\n]*/g, (c) => c.replace(/[^\n]/g, " "));
+  for (const rep of cleanScript.matchAll(/\brepeat\s*:\s*-1\b/g)) {
+    const idx = b.index + b[0].indexOf(b[1]) + rep.index;
+    const lineNo = html.slice(0, idx).split("\n").length;
+    fail(`infinite GSAP \`repeat: -1\` at line ${lineNo} — renderer seeks deterministically; use a finite tween bounded by data-duration (gsap_infinite_repeat)`);
+  }
 }
 
 // --- warnings (do not gate) --------------------------------------------------

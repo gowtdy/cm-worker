@@ -7,7 +7,7 @@ metadata:
 
 # Cursor Click Ripple
 
-An animated cursor moves to a target element, performs a click with visual depression, and emits expanding ripple rings from the click point. Three sequential phases on one timeline: **move** (eased translation to the target's center) → **click** (scale depression on cursor + target together, yoyo back) → **ripple** (1–3 staggered rings expand and fade from the click point). This is a _point event at one location_ — a sustained hold across space is [cursor-drag.md](cursor-drag.md).
+An animated cursor moves to a target element, performs a click with visual depression, and emits expanding ripple rings from the click point. Three sequential phases on one timeline: **move** (eased translation to the target's center) → **click** (explicit press + release scale tweens on cursor + target together) → **ripple** (1–3 staggered rings expand and fade from the click point). This is a _point event at one location_ — a sustained hold across space is [cursor-drag.md](cursor-drag.md).
 
 ## Recipe
 
@@ -39,17 +39,11 @@ An animated cursor moves to a target element, performs a click with visual depre
 // Phase 1 — Move: eased, not linear
 tl.to(".cursor", { x: TARGET_X, y: TARGET_Y, duration: MOVE_DUR, ease: MOVE_EASE }, 0);
 
-// Phase 2 — Click: cursor + target depress together, then return
-tl.to(
-  ".cursor",
-  { scale: CURSOR_PRESS_SCALE, duration: PRESS_DUR, ease: "power2.in", yoyo: true, repeat: 1 },
-  CLICK_AT,
-);
-tl.to(
-  ".target-button",
-  { scale: TARGET_PRESS_SCALE, duration: PRESS_DUR, ease: "power2.in", yoyo: true, repeat: 1 },
-  CLICK_AT,
-);
+// Phase 2 — Click: cursor + target depress together, then release cleanly
+tl.to(".cursor", { scale: CURSOR_PRESS_SCALE, duration: PRESS_DUR, ease: "power2.in" }, CLICK_AT);
+tl.to(".cursor", { scale: 1, duration: PRESS_DUR, ease: "power2.out" }, CLICK_AT + PRESS_DUR);
+tl.to(".target-button", { scale: TARGET_PRESS_SCALE, duration: PRESS_DUR, ease: "power2.in" }, CLICK_AT);
+tl.to(".target-button", { scale: 1, duration: PRESS_DUR, ease: "power2.out" }, CLICK_AT + PRESS_DUR);
 
 // Phase 3 — Ripple burst, N rings staggered from the click point
 tl.set([".ripple-1", ".ripple-2", ".ripple-3"], { opacity: 1 }, RIPPLE_AT);
@@ -80,7 +74,7 @@ tl.to(
 | MOVE_DUR                    | 0.4–1.0 s                   | short darts; long reads as a "considered click." Must end before CLICK_AT or it reads as a misclick                                    |
 | MOVE_EASE                   | discrete choice             | `power2.inOut` calm · `power3.out` decisive · `back.out(1.2–1.4)` settles onto the button with a tiny recoil (higher reads cartoonish) |
 | CLICK_AT                    | `MOVE_DUR + 0–0.3 s`        | zero pause reads as autopilot; >0.3 s reads as hesitation                                                                              |
-| PRESS_DUR                   | 0.06–0.12 s (half; yoyo ×2) | short crisp, long mushy; must finish before the next phase needs normal scale                                                          |
+| PRESS_DUR                   | 0.06–0.12 s (each leg)      | short crisp, long mushy; press + release (2 × PRESS_DUR) finishes before the next phase needs normal scale                             |
 | CURSOR / TARGET_PRESS_SCALE | 0.80–0.90 / 0.92–0.97       | cursor compresses MORE than the target — the cursor is the actor, the target the recipient                                             |
 | RIPPLE_AT                   | `CLICK_AT + 0–0.08 s`       | simultaneous feels causal; slight delay feels acoustic                                                                                 |
 | RIPPLE_DUR                  | 0.5–1.0 s                   | sharp ping vs soft sonar; must complete before anything that needs the ring gone                                                       |
@@ -96,7 +90,7 @@ Reference values: `../../examples/cta-orbit-collapse.html` — 0.5 s move on `ba
 - **Move before click** — trigger the click only after the move tween settles; clicking mid-motion reads as unintentional.
 - **Rings live in DOM from t=0** at the click-target center with `scale: 0` + `opacity: 0` — never conditionally rendered; `immediateRender: false` on the expand so they hold invisible until the trigger.
 - **Ripple from the click point** — the button's visual center, not any element's bounding-box origin.
-- **Synchronized depression** — cursor + target depress at the same position with the same duration, and both yoyo back.
+- **Synchronized depression** — cursor + target depress at `CLICK_AT` and release at `CLICK_AT + PRESS_DUR` with identical durations.
 - **Cursor above all content** (high z-index) for the whole sequence; `pointer-events: none` on cursor + ripples.
 
 ## See also

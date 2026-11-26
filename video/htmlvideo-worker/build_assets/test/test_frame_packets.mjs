@@ -275,7 +275,30 @@ export function testDispatchIngestsDesignContract() {
   const textB = readFileSync(docsB[0].path, "utf8");
   assert.ok(!textB.includes("## Design contract (video-wide)"),
     "no design-contract section when _design.md is absent");
-  console.log("design contract ingestion OK");
+
+  // P0-2 + P1-3: shared prefix byte-identical across frames; Blueprint assignment
+  // stripped from Design contract; Pre-Render Self-Audit excluded.
+  const textA1 = readFileSync(docsA[0].path, "utf8");
+  const textA2 = readFileSync(docsA[1].path, "utf8");
+  const cut1 = textA1.indexOf("# Dispatch: 01-hook");
+  const cut2 = textA2.indexOf("# Dispatch: 02-answer");
+  assert.ok(cut1 > 0 && cut1 === cut2, "shared prefix must precede # Dispatch");
+  assert.strictEqual(textA1.slice(0, cut1), textA2.slice(0, cut2),
+    "cross-frame prefix (Role + frame.md excerpt + Design contract) must be byte-identical");
+  assert.ok(textA1.slice(0, cut1).includes("## Design contract (video-wide)"));
+  assert.ok(textA1.slice(0, cut1).includes("## frame.md design tokens"));
+  assert.ok(!textA1.includes("## Blueprint assignment"),
+    "other frames' Blueprint assignment must be trimmed from Design contract");
+  // Duplicate Palette & type prose trimmed when frontmatter tokens are present
+  const trimmed = core.trimDesignContractForDispatch(
+    "## Video direction\n\n**Palette & type (verbatim from frame.md — authoritative, do not restate)**\nColors: cream `#F5F5F0`\n\n**Motion grammar.** Snap.\n\n## Blueprint assignment\nF1 = compose\n",
+    true,
+  );
+  assert.ok(!trimmed.includes("Palette & type") && trimmed.includes("Motion grammar") && !trimmed.includes("Blueprint assignment"));
+  // Tolerant blueprintAssignment parses bold **Blueprint assignment** too
+  const boldMap = core.blueprintAssignment("**Blueprint assignment**\nF1 = titlecard-reveal (Adapt)\n");
+  assert.strictEqual(boldMap.get(1)?.id, "titlecard-reveal");
+  console.log("design contract ingestion + shared prefix OK");
 }
 
 export function testSkeletons() {
@@ -691,6 +714,12 @@ export function testBareModeBlueprint() {
     sel: null, assigned: null, direction: "**Negative list.** No 3D anywhere.",
   });
   assert.deepStrictEqual(g.map((x) => x.kind), ["negative-list-3d"]);
+  // "no 3D extrude" is a material/bevel ban and MUST NOT falsely ban CSS rotateY flips
+  const extrudeOnly = core.detectConflicts({
+    block: "Scene 1 (0.0–4.0s): card flips 180deg on rotateY with perspective.\n",
+    sel: null, assigned: null, direction: "**Negative list.** No 3D extrude, no drop-shadow blur.",
+  });
+  assert.deepStrictEqual(extrudeOnly.map((x) => x.kind), []);
   console.log("bare-mode blueprint + type rotation scope OK");
 }
 
@@ -921,6 +950,123 @@ export function testIdleLoopConflict() {
   console.log("idle-loop conflict OK");
 }
 
+export function testSharedStageSkeletonsAndRuntime() {
+  const selfcheck = join(ROOT, "scripts", "frame-selfcheck.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "fh-stage-"));
+  writeFileSync(join(dir, "frame.md"), REAL_FRAME_MD);
+  mkdirSync(join(dir, ".hyperframes", "visual"), { recursive: true });
+  const designMd = `## Video direction
+
+**Motion grammar.** Crisp neo-brutalist snaps.
+
+## Blueprint assignment
+F1 = kinetic-type-beats (Adapt)
+F2 = card-morph-anchor (Adapt)
+F3 = card-morph-anchor (Adapt)
+F4 = grid-card-assemble (Adapt)
+
+## Shared stage spec
+layout: left-rail-right-card
+title: 3-POINT CHECK
+slots: 01 Understand | 02 Durable edge | 03 Reason intact
+F1: none
+F2: [active:coral, dim, dim]
+F3: top-stepper-center-card [done:coral, active:coral, dim]
+F4: center-scorecard [done:coral, done:coral, done:coral]
+`;
+  writeFileSync(join(dir, ".hyperframes", "visual", "_design.md"), designMd);
+  const sb = `---
+format: landscape
+---
+## Frame 1 — Hook
+- src: compositions/frames/01-hook.html
+- duration: 4s
+Scene 1 (0.0–4.0s): hook.
+
+## Frame 2 — Rail
+- src: compositions/frames/02-rail.html
+- duration: 5s
+Scene 1 (0.0–5.0s): rail.
+
+## Frame 3 — Stepper
+- src: compositions/frames/03-stepper.html
+- duration: 5s
+Scene 1 (0.0–5.0s): stepper.
+
+## Frame 4 — Scorecard
+- src: compositions/frames/04-scorecard.html
+- duration: 5s
+Scene 1 (0.0–5.0s): scorecard.
+`;
+  writeFileSync(join(dir, "STORYBOARD.md"), sb);
+  const spec = core.parseSharedStageSpec(designMd);
+  assert.strictEqual(spec.layout, "left-rail-right-card");
+  assert.strictEqual(spec.title, "3-POINT CHECK");
+  assert.deepStrictEqual(spec.slots, ["01 Understand", "02 Durable edge", "03 Reason intact"]);
+  assert.strictEqual(spec.frames.get(1).layout, "none");
+  assert.strictEqual(spec.frames.get(2).layout, "left-rail-right-card");
+  assert.strictEqual(spec.frames.get(3).layout, "top-stepper-center-card");
+  assert.strictEqual(spec.frames.get(4).layout, "center-scorecard");
+  // Unknown layout names fall back safely (only the 3 approved presets + none exist)
+  const bogus = core.parseSharedStageSpec("## Shared stage spec\nlayout: split-vs\nslots: A | B\nF1: [active, dim]\n");
+  assert.strictEqual(bogus.layout, "none");
+
+  const frames = core.splitFrames(sb).map((f) => ({ ...f, frameId: core.frameId(f) }));
+  const skels = core.buildSkeletons({ projectDir: dir, frames, canvas: { width: 1920, height: 1080 }, storyboard: sb });
+  // Every raw skeleton (both non-stage F1 and shared-stage F2/F3/F4) must fail ONLY skeleton_unfilled
+  for (const s of skels) {
+    const html = readFileSync(s.path, "utf8");
+    assert.ok(html.includes("const __hf ="), `${s.frameId} must carry __hf runtime`);
+    assertOnlyUnfilled(selfcheck, s.path);
+  }
+  const f1 = readFileSync(skels[0].path, "utf8");
+  assert.ok(!f1.includes('id="stage-card"'), "F1: none has no shared stage");
+  const f2 = readFileSync(skels[1].path, "utf8");
+  assert.ok(f2.includes('data-stage-layout="left-rail-right-card"') && f2.includes('id="stage-card"'));
+  assert.ok(f2.includes("left: 5cqw") && f2.includes("left: 34cqw"), "non-overlapping rail + card geometry");
+  const f3 = readFileSync(skels[2].path, "utf8");
+  assert.ok(f3.includes('data-stage-layout="top-stepper-center-card"') && f3.includes('data-state="done"'));
+  const f4 = readFileSync(skels[3].path, "utf8");
+  assert.ok(f4.includes('data-stage-layout="center-scorecard"'));
+  // 3 slots stay on one row; the title is crossfade-safe (allow-overlap)
+  assert.ok(f4.includes("grid-template-columns: repeat(3, minmax(0, 1fr))"), "3 slots = one row");
+  assert.ok(f4.includes("top: 8cqh") && f4.includes("top: 38cqh"), "lockup lifted, card unchanged");
+  assert.ok(/class="hf-stage-title"[^>]*data-layout-allow-overlap="true"/.test(f4), "title allow-overlap");
+  // ≥4 slots wrap to 2 columns (6b0795df: 4×~250px cells overflowed 30–37 char labels)
+  assert.strictEqual(core.centerScorecardColumns(1), 1);
+  assert.strictEqual(core.centerScorecardColumns(3), 3);
+  assert.strictEqual(core.centerScorecardColumns(4), 2);
+  assert.strictEqual(core.centerScorecardColumns(8), 2);
+
+  // Filling #stage-card + calling __hf.type passes frame-selfcheck cleanly
+  const filledF2 = f2
+    .replace('data-skeleton="bg"', "")
+    .replace('data-skeleton="card"', "")
+    .replace("<!-- FILL THIS FRAME'S HERO CONTENT HERE -->", '<h2 class="hero-line">Understand It</h2>')
+    .replace(/<\/script>\s*<\/template>/, '__hf.type(tl, ".hero-line", null, "Understand It", 0.1, 0.8);\n</script>\n</template>');
+  const filledPath = join(dir, "compositions", "frames", "02-rail.html");
+  writeFileSync(filledPath, filledF2);
+  const okRun = spawnSync("node", [selfcheck, filledPath], { encoding: "utf8" });
+  assert.strictEqual(okRun.status, 0, `${okRun.stdout}${okRun.stderr}`);
+
+  // Infinite repeat: -1 fails selfcheck, while finite repeat: 1 passes
+  const infPath = join(dir, "compositions", "frames", "02-rail.html");
+  writeFileSync(infPath, filledF2.replace(/<\/script>\s*<\/template>/, 'tl.to(".hero-line", { opacity: 0.5, repeat: -1, yoyo: true, duration: 0.4 }, 1);\n</script>\n</template>'));
+  const infRun = spawnSync("node", [selfcheck, infPath], { encoding: "utf8" });
+  assert.strictEqual(infRun.status, 1);
+  assert.ok(`${infRun.stdout}${infRun.stderr}`.includes("gsap_infinite_repeat"));
+
+  writeFileSync(infPath, filledF2.replace(/<\/script>\s*<\/template>/, 'tl.to(".hero-line", { scale: 0.95, repeat: 1, yoyo: true, duration: 0.1 }, 1);\n</script>\n</template>'));
+  const finRun = spawnSync("node", [selfcheck, infPath], { encoding: "utf8" });
+  assert.strictEqual(finRun.status, 0, `${finRun.stdout}${finRun.stderr}`);
+
+  // MAX_RULES = 3 cap
+  const ruleIds = core.knownRuleIds(ANIM);
+  const many = core.frameRules("- rules: discrete-text-sequence, context-sensitive-cursor, spring-pop-entrance, svg-path-draw, particle-burst\n", ruleIds);
+  assert.strictEqual(many.rules.length, 3);
+  console.log("shared stage skeletons + __hf runtime + repeat:-1 gate OK");
+}
+
 if (process.argv[1] && process.argv[1].endsWith("test_frame_packets.mjs")) {
   testNarrowBlueprint();
   testInferCitedRules();
@@ -937,4 +1083,5 @@ if (process.argv[1] && process.argv[1].endsWith("test_frame_packets.mjs")) {
   testRichSkeleton();
   testResolvedConflicts();
   testRecipeSnippets();
+  testSharedStageSkeletonsAndRuntime();
 }

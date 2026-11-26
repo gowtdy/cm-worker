@@ -177,6 +177,20 @@ def init_htmlframe(
             f"stdout:{proc.stdout}, stderr:{proc.stderr}"
         )
         logger.error(f"task_id:{task_id} Failed to initialize htmlframe: {msg}")
+    else:
+        # P0-4 (2026-11-25): hyperframes init drops a ~5.9KB interactive CLAUDE.md
+        # ("Always invoke the relevant skill", "ALWAYS RUN npm run check") that
+        # Claude Code auto-injects into <system-reminder> on every headless call,
+        # burning ~1.5k tokens/turn and contradicting our self-contained prompts.
+        strip_raw = os.environ.get("HTMLVIDEO_STRIP_PROJECT_CLAUDE_MD", "").strip().lower()
+        if strip_raw not in ("0", "false", "off", "no"):
+            claude_md = os.path.join(str(video_dir), "CLAUDE.md")
+            if os.path.isfile(claude_md):
+                try:
+                    os.remove(claude_md)
+                    logger.info("task_id:%s stripped interactive CLAUDE.md from %s", task_id, video_dir)
+                except OSError as exc:
+                    logger.warning("task_id:%s failed to strip CLAUDE.md: %s", task_id, exc)
 
     if proc.stdout:
         logger.info("task_id:%s hyperframes init stdout: %s", task_id, proc.stdout.strip())
