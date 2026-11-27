@@ -498,7 +498,68 @@ for (const b of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script
   }
   for (const tm of allJs.matchAll(/\b__hf\.type\s*\(\s*[^,]+,\s*["']([^"']+)["'](?:\s*,\s*["']([^"']+)["'])?/g)) {
     checkStaticSelector(tm[1], "__hf.type");
-    if (tm[2]) checkStaticSelector(tm[2], "__hf.type");
+    if (tm[2]) {
+      checkStaticSelector(tm[2], "__hf.type");
+      // P0-2 (6b0941c6 F4): caret <span> must appear AFTER text <span> in DOM order
+      // so the typing cursor trails on the right instead of pinning on the left (`| Cheaper o`).
+      const findFirstTagIndex = (sel) => {
+        const clean = sel.trim().split(/[\s>+~]+/).pop() || "";
+        const idM = /#([A-Za-z_-][A-Za-z0-9_-]*)/.exec(clean);
+        if (idM) {
+          const esc = idM[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const m = new RegExp(`<[^>]*\\bid\\s*=\\s*["']${esc}["']`, "i").exec(tplHtml);
+          return m ? m.index : -1;
+        }
+        const clsM = /\.([A-Za-z_-][A-Za-z0-9_-]*)/.exec(clean);
+        if (clsM) {
+          const esc = clsM[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const m = new RegExp(`<[^>]*\\bclass\\s*=\\s*["'][^"']*\\b${esc}\\b[^"']*["']`, "i").exec(tplHtml);
+          return m ? m.index : -1;
+        }
+        return -1;
+      };
+      const textIdx = findFirstTagIndex(tm[1]);
+      const caretIdx = findFirstTagIndex(tm[2]);
+      if (textIdx >= 0 && caretIdx >= 0 && caretIdx < textIdx) {
+        fail(`__hf.type caret "${tm[2]}" precedes text element "${tm[1]}" in DOM order — place caret after text so the cursor trails on the right (type_caret_before_text)`);
+      }
+    }
+  }
+
+  // --- P0-2 (6b0941c6 F4): gsap_css_transform_conflict -----------------------
+  // Mirror hyperframes lint's gsap_css_transform_conflict for simple selectors:
+  // CSS `transform: ...scale/translate...` paired with non-from/fromTo GSAP
+  // `set`/`to` animating the same transform family fails the verify mechanical gate.
+  const cssScaleSels = new Map();
+  const cssTranslateSels = new Map();
+  for (const cm of allCss.matchAll(/([#.][A-Za-z_-][A-Za-z0-9_-]*)\s*\{([^{}]+)\}/g)) {
+    const sel = cm[1].trim();
+    const tMatch = /\btransform\s*:\s*([^;]+)/i.exec(cm[2]);
+    if (!tMatch) continue;
+    const tVal = tMatch[1].trim();
+    if (/\bscale[XY3D]?\s*\(/i.test(tVal)) cssScaleSels.set(sel, tVal);
+    if (/\btranslate[XY3D]?\s*\(/i.test(tVal)) cssTranslateSels.set(sel, tVal);
+  }
+  if (cssScaleSels.size || cssTranslateSels.size) {
+    const reportedConflict = new Set();
+    for (const jm of allJs.matchAll(/\b(?:tl|gsap)\.(set|to)\s*\(\s*["']([^"']+)["']\s*,\s*\{([^}]*)\}/g)) {
+      const rawSel = jm[2];
+      const vars = jm[3];
+      const hasScale = /\b(?:scale|scaleX|scaleY)\s*:/.test(vars);
+      const hasTranslate = /\b(?:x|y|xPercent|yPercent)\s*:/.test(vars);
+      if (!hasScale && !hasTranslate) continue;
+      for (const part of rawSel.split(",")) {
+        const sel = part.trim();
+        if (!sel || reportedConflict.has(sel)) continue;
+        const cssScale = hasScale ? cssScaleSels.get(sel) : undefined;
+        const cssTrans = hasTranslate ? cssTranslateSels.get(sel) : undefined;
+        if (cssScale || cssTrans) {
+          reportedConflict.add(sel);
+          const cssVal = cssScale || cssTrans;
+          fail(`"${sel}" has CSS \`transform: ${cssVal}\` and GSAP \`.${jm[1]}()\` animates transform — remove CSS transform and let GSAP own the initial state (gsap_css_transform_conflict)`);
+        }
+      }
+    }
   }
 }
 
