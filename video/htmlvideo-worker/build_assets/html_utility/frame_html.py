@@ -690,6 +690,13 @@ def _worker_prompt(
             f"one line: done OK {frame_id}\n"
             f"- On an unrecoverable failure instead reply only: fail {frame_id}: <reason>"
         )
+    has_ledger = "## Layout ledger" in dispatch_text or "## Motion ledger" in dispatch_text
+    ledger_line = (
+        "- when the dispatch carries a `## Layout ledger` / `## Motion ledger`,\n"
+        "  transcribe their concrete values verbatim (place/size/color/ease/dur) — they\n"
+        "  ARE the layout decisions; do not re-derive them.\n"
+        if has_ledger else ""
+    )
     return f"""You are one per-frame HTML worker for a HyperFrames video.
 
 The complete merged dispatch for your frame is INLINED below — treat it as the
@@ -719,10 +726,7 @@ If the block lists several `- blueprint:` lines, the one under
   cqw·cqh grid; write cqw/cqh values, not pixel math;
 - do NOT re-decide colors, type sizes, or layout — frame.md tokens and the
   `## Video direction` block already fix them; name elements after their roles.
-- when the dispatch carries a `## Layout ledger` / `## Motion ledger`,
-  transcribe their concrete values verbatim (place/size/color/ease/dur) — they
-  ARE the layout decisions; do not re-derive them.
-- layout & visual guardrails: NEVER add an in-frame `.caption-band` or bottom
+{ledger_line}- layout & visual guardrails: NEVER add an in-frame `.caption-band` or bottom
   subtitle bar (`captions.html` owns `y > 83cqh`); use `display: flex` or
   `display: grid` (`padding`, `gap`, `box-sizing: border-box`) inside cards and
   side-by-side panels instead of raw `position: absolute` row/column offsets;
@@ -1412,8 +1416,19 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
         if role == "primary":
             race["primary_res"] = res
         if other_live:
-            log("race member %s/%s failed rc=%s — waiting on the other",
-                fid, role, res["rc"])
+            sc_detail = ""
+            if not res["sc_ok"] and res.get("sc_out"):
+                fail_lines = [
+                    ln.strip() for ln in res["sc_out"].splitlines()
+                    if "[FAIL]" in ln
+                ]
+                snippet = " | ".join(fail_lines[:3]) if fail_lines else res["sc_out"].strip()[-240:]
+                sc_detail = f" detail={snippet}"
+            log(
+                "race member %s/%s failed rc=%s done_ok=%s selfcheck=%s%s — waiting on the other",
+                fid, role, res["rc"], res["done"],
+                "PASS" if res["sc_ok"] else "FAIL", sc_detail,
+            )
             return None
         prim_res = race.get("primary_res", res)
         end_race(fid)
