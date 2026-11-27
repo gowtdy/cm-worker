@@ -107,7 +107,7 @@
 
 > **执行边界与策略前提**：
 > - **保持各阶段模型 `effort` 档位（`storyboard=high`、`visual_design=medium`、`visual=medium`、`frame_html=medium`、`verify=medium`）及 `frame_html`“主进程 + 150s 启动 `low` 对冲（`MAX_HEDGES=3, HEDGE_TIMEOUT=180s`）”竞速拓扑完全不变**（暂不降档 `visual_design` / `frame_html` / `verify`）。
-> - **保持 `contract-card.md` 的 `duration: advisory, not a gate` 现状不变**（一句话短输入自然生成精炼成片，不强加凑字数重跑门禁）。
+> - **时长对齐增强（2026-11-27 追加落地 S3-2）**：按业务需求解除 `contract-card.md` 固定 `3–6 body frames` / `6–20 words` 上限，改为按 `BRIEF.md` 的 `length` + `language` 确定性注入 `## Pacing & duration budget`，并在 `storyboard.py` 增加 `<75%` 词数前置门禁与最多 1 次扩写重跑。
 > - 所有改造项均提供独立环境变量开关，支持零重构建秒级回退。
 
 ### Stage 1（P0，必做）：修复漏上线项 + 四道质量门禁闭环 + 消除 10s 取消死等
@@ -173,3 +173,34 @@
 1. **稳定性与日志卫生**：零 HTTP 4xx/5xx，零截断，零 `superpowers` 插件日志，取消进程回收耗时 `<= 2.0s`；
 2. **性能与成本观测**：`frame_html` 关键路径 `<= 200s`（观测 `medium` 主进程在裁剪 8KB 冲突 Blueprint 后落在 `<150s` 的比例及对冲触发次数自然下降幅度）；
 3. **成片质量红线**：`verify-pixels.py` 全帧 `PASS`（`#stage-card` 内部无空白、无边缘坍缩），全片无 `data-layout-allow-*` 违规消音、无打字光标残留、无提前显影装饰框，Phase B 动效时间窗直接对齐真实 TTS 帧时长。
+
+---
+
+## 7. 落地实施与离线回归验收记录（2026-11-27）
+
+> **说明**：本方案文档中 Stage 3 仅规划了 **S3-1**（无 S3-2）；以下 **Stage 1（S1-1 ~ S1-5）、Stage 2（S2-1）、Stage 3（S3-1）** 已全部完成代码落地与离线/单测验证。
+
+### 7.1 改造项落地清单
+
+| 编号 | 状态 | 改动文件与要点 |
+|---|---|---|
+| **S1-1** | **已落地** | `skills/hyperframes-core/scripts/lib/frame-packets-core.mjs`：`__hf.type()` 末尾新增 `if (caret) tl.set(caret, { autoAlpha: 0 }, at + d + 0.15);`，并同步至 `.claude/skills/hyperframes-core/scripts/lib/frame-packets-core.mjs`，同时删除未被引用的冗余副本 `scripts/lib/frame-packets-core.mjs`；`test/test_frame_packets.mjs` 新增两处 skill 副本字节一致性及冗余副本不存在断言。 |
+| **S1-2** | **已落地** | `scripts/frame-selfcheck.mjs` 新增 4 条静态拦截：`gsap_camelcase_data_prop`、`gsap_label_concat`、`abs_zero_xpercent_center`、`gsap_fromto_delayed_leak` & `missing_dom_selector`，并在 `test/test_frame_packets.mjs` 补齐单测。 |
+| **S1-3** | **已落地** | `scripts/lib/verify-check-parse.mjs` & `scripts/verify-report.mjs` 新增 `HTMLVIDEO_VERIFY_ESCAPED_CONTAINER=1` 将非转场/非装饰 `escaped_container` 提级为阻塞错误并替换诱导 `data-layout-allow-overflow` 的提示，同时屏蔽 `text_occluded` 的通用 CLI `fixHint`；`scripts/known-failures.mjs` 收紧 `content-overlap` / `text-occluded` 的 `ambiguous` 规则；`html_utility/verify.py` 新增 `HTMLVIDEO_VERIFY_REJECT_BLANKET_ALLOW=1` 防消音 diff 守卫（覆盖 `overlap`/`occlusion`/`overflow`）。 |
+| **S1-4** | **已落地** | `scripts/verify-pixels.py` 新增 Shared Stage `#stage-card` 内部像素探针（`HTMLVIDEO_VERIFY_STAGE_CARD_PROBE=1`），基于全分辨率黑框边缘自动定位卡片内部有效区域，拦截空卡（`<0.25%`）及边缘坍缩（左/上 22% 窄带占比 `>75%` 且对侧 50% 密度 `<1.0%`）。 |
+| **S1-5** | **已落地** | `html_utility/claude_cli.py`：`_kill_process_group()` 支持可配 `grace_seconds`；`_wait_claude_proc()` 在取消/超时/截断时先以 `0.5s` 宽限立即终止进程组再 `join(1.0)` 消除 10s 死等；`_child_env()` 默认注入 `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`；`HTMLVIDEO_CLAUDE_DEBUG_REQUEST` 默认改为关闭（显式 `=1` 开启）；清空 `/app/log/claude/plugins/installed_plugins.json` 为 `{"version": 2, "plugins": {}}`。 |
+| **S2-1** | **已落地** | `html_utility/frame_html.py` 新增 `HTMLVIDEO_FRAME_HTML_SLIM_PRIMARY=1` 使主进程同样裁剪冗余 Blueprint 与 `## Rule index` 并保留 `## Rule recipes (snippets)`；`html_utility/visual.py` 将 `HTMLVIDEO_FRAME_VISUAL_LEDGER` 默认开启并在 Phase A 明确 Shared Stage 帧统一标 `(Adapt)`；精简 `skills/aiflow-build-frame-html/sub-agents/frame-worker-card.md`（同步 `.claude/skills`），移除旧 `Read/Write/done OK` 冲突指令并补充装饰环紧包裹容器规范。 |
+| **S3-1** | **已落地** | `html_utility/visual.py` 拆分暴露 `run_visual_phase_a()` 与 `run_visual_phase_b()`（Phase B 重新读取磁盘 `STORYBOARD.md` 获取真实 TTS 时长）；`html_utility/create_pipeline.py` 在 `parallel_tts_visual()` 中新增 `HTMLVIDEO_SYNC_BEFORE_VISUAL_B=1`（默认开），实现 `tts ‖ visual Phase A` → `sync_duration` → `visual Phase B`。 |
+| **S3-2** | **已落地（2026-11-27 追加）** | **分镜时长预算与前置词数门禁（消除 `contract-card.md` 固定短片上限）**：<br>1. `skills/aiflow-build-storyboard/references/contract-card.md`（同步 `.claude/skills` 副本）：将 `duration` 由 `advisory` 改为目标时长约束，解除 `3–6 body frames` / `usually 6–20 words` 固定上限，改为按目标时长动态匹配帧数与单帧词数；<br>2. `html_utility/storyboard_contract.py`：新增 `HTMLVIDEO_STORYBOARD_DURATION_BUDGET=1`（默认开），按实测有效语速（英文 `2.35 words/s`、中文 `3.9 汉字/s`、日文 `4.8 字符/s`）确定性计算并注入 `## Pacing & duration budget`（`VO_MODE: verbatim` 自动豁免），同时修复 `_CONTRACT_CARD_CANDIDATES` 重复路径；<br>3. `html_utility/storyboard.py`：新增 `HTMLVIDEO_STORYBOARD_DURATION_GATE=1`（默认开），若口播总词/字数低于目标 `75%`（如 `60s` 英文片 `<105 words`），在 TTS/Visual 之前执行最多 1 次快速 `text-out` 扩写重跑并择优保留（软兜底不炸单）。 |
+
+### 7.2 自动化单测与离线回放验证结果（2026-11-27 实测全绿）
+
+1. **单元测试**：
+   - `node /app/test/test_frame_packets.mjs`：**PASS**（含两处 skill 副本字节一致、冗余副本不存在、`data-accent` 列继承、`__hf.type` 光标自动收起及 4 条新静态自检规则）；
+   - `node /app/test/test_verify_check_parse.mjs`：**PASS**（含 `escaped_container` 提级与转场/装饰豁免）；
+   - `python3 -m unittest /app/test/test_storyboard_contract.py /app/test/test_visual_driver.py /app/test/test_claude_cli.py`：**全绿**（含 `contract-card.md` 双副本字节一致、多语言时长预算计算、`VO_MODE: verbatim` 豁免、`<75%` 词数 1 次扩写重跑、取消进程 `<2.0s` 退出、`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`、`SLIM_PRIMARY` 保留 snippets、`verify` 防消音回滚守卫、`VISUAL_LEDGER` 默认开启）。
+2. **存量目录离线回放（`6b083ee7d7c36f88` & `6b082a5be89ed160`）**：
+   - **骨架回放**：对 `6b083ee7` 临时副本重跑 `frame-packets.mjs`，F2 `dim` 槽位均带有 `data-accent="coral" / "lime" / "sky"`，且 `__hf.type` 含 `if (caret) tl.set(caret, { autoAlpha: 0 }, at + d + 0.15);`；
+   - **`frame-selfcheck.mjs` 回放**：`6b083ee7` F2 命中 `gsap_label_concat` × 2 + `abs_zero_xpercent_center`（`FAIL`）；`6b083ee7` F6 命中 `gsap_fromto_delayed_leak` + `missing_dom_selector`（`FAIL`）；`6b082a5b` F3 命中 `gsap_camelcase_data_prop` + `gsap_fromto_delayed_leak`（`FAIL`）；
+   - **`verify-report.mjs` 回放**：`6b083ee7` F2 的 2 条 `escaped_container` 成功从 `⚠` 提级为阻塞 `✗`（`GATE: FAIL ✗`）；
+   - **`verify-pixels.py` 回放**：`6b083ee7` 共 8 张抽帧中 `frame-01-at-8.761s.png`（F2）精准报 `FAIL: collapsed content inside #stage-card (left 22% holds 82.1%, right 50% has 0.77%)`（`exit=1`），其余 7 张正常帧全部 `PASS`。
