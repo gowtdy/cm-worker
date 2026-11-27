@@ -1026,7 +1026,11 @@ def _build_worker_prompt(
         "tiny lone pill floating on empty ground). (3) When `[DESIGN CONTRACT]` defines "
         "a **Shared stage** covering your frame, keep its exact card dimensions, slot "
         "grid, and complete numbered slot labels verbatim (dim inactive slots; never "
-        "render blank slots, `—` dashes, or renamed labels). (4) Text on white/cream "
+        "render blank slots, `—` dashes, or renamed labels). The pre-built `.hf-stage-lockup` "
+        "already renders the numbered progress slots — put ONLY this frame's single hero "
+        "visual inside `#stage-card`, NEVER redraw a second copy of the numbered slot "
+        "checklist inside `#stage-card` and NEVER reset already-`done` slots to `dim` to "
+        "replay ticking. (4) Text on white/cream "
         "surfaces MUST use `ink`; light candies (`yellow`/`lime`/`mint`/`peach`) are "
         "pill fills only, never text on light surfaces. (5) NEVER fabricate quantitative "
         "figures, percentages, multipliers, or dollar amounts (e.g. `+28%`, `26%`, `3.2x`, "
@@ -1723,10 +1727,11 @@ def run_visual_phase_b(
             os.remove(stale)
         except OSError:
             pass
-    # 2026-11-26 (S2-1): Layout+Motion ledger defaults ON (=0 opt-out).
-    # Compact cqw/cqh coordinate + easing tables guide both medium primary and
-    # low hedge workers without needing raw multi-variant blueprint prose.
-    ledger_on = _env_on(VISUAL_LEDGER_ENV, default=True)
+    # 2026-11-27: Layout+Motion ledger reverted to default OFF (=1 opt-in).
+    # Production run 6b08f96c showed default-ON inflated Phase B thinking 2.36x
+    # (104s → 227s) and emitted raw x%/y% coordinates that clashed with the
+    # pre-built `#stage-card` flex skeleton and flex/grid guardrails.
+    ledger_on = _env_on(VISUAL_LEDGER_ENV, default=False)
     color_catalog = frozenset(_color_token_names(tokens)) if ledger_on else None
     additions = _run_frame_workers(
         project_dir, blocks, order, design, visual_dir, max_workers, logger,
