@@ -19,8 +19,122 @@ import re
 # to the .claude skills copy -- same dual-copy convention as SKILL.md edits.
 _CONTRACT_CARD_CANDIDATES = (
     "/app/skills/aiflow-build-storyboard/references/contract-card.md",
-    "/app/skills/aiflow-build-storyboard/references/contract-card.md",
+    "/app/.claude/skills/aiflow-build-storyboard/references/contract-card.md",
 )
+
+STORYBOARD_DURATION_BUDGET_ENV = "HTMLVIDEO_STORYBOARD_DURATION_BUDGET"
+_VOICEOVER_LINE_RE = re.compile(r'^\s*-\s+voiceover:\s*"([^"]*)"', re.MULTILINE)
+_CJK_CHAR_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_NON_CJK_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*")
+
+
+def _duration_budget_enabled() -> bool:
+    raw = os.environ.get(STORYBOARD_DURATION_BUDGET_ENV, "1").strip().lower()
+    return raw not in ("0", "false", "off", "no")
+
+
+def parse_target_duration_s(brief_text: str) -> float | None:
+    raw = _brief_field(brief_text, "length").strip().strip("\"'")
+    if not raw:
+        return None
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*s?$", raw, re.I)
+    if not m:
+        return None
+    val = float(m.group(1))
+    return val if val >= 10.0 else None
+
+
+def _lang_bucket(language: str) -> str:
+    lang = (language or "").strip().strip("\"'").lower()
+    if lang.startswith("zh") or "chinese" in lang or "china" in lang or "中文" in lang:
+        return "zh"
+    if lang.startswith("ja") or "japan" in lang or "日" in lang:
+        return "ja"
+    return "en"
+
+
+def compute_pacing_budget(duration_s: float, language: str = "en") -> dict:
+    """Deterministically derive frame count and spoken unit budget from target runtime.
+
+    Calibrated against empirical TTS outputs (6b083ee7: 2.46 wps, 6b082a5b: 2.31 wps,
+    including frame tail padding).
+    """
+    bucket = _lang_bucket(language)
+    if bucket == "zh":
+        rate, unit_label = 3.9, "Chinese chars"
+        per_lo, per_hi = 24, 34
+    elif bucket == "ja":
+        rate, unit_label = 4.8, "Japanese chars"
+        per_lo, per_hi = 28, 40
+    else:
+        rate, unit_label = 2.35, "words"
+        per_lo, per_hi = 15, 21
+
+    target_units = max(20, int(round(duration_s * rate)))
+    min_units = max(16, int(round(target_units * 0.88)))
+    max_units = max(min_units + 10, int(round(target_units * 1.14)))
+    gate_min_units = max(12, int(round(target_units * 0.75)))
+
+    # Target ~6.5–7.5s average per frame, clamped to [4, 12]
+    est_frames = duration_s / 6.8
+    min_frames = max(4, min(11, int(round(est_frames - 1.0))))
+    max_frames = max(min_frames + 1, min(12, int(round(est_frames + 1.2))))
+
+    return {
+        "duration_s": duration_s,
+        "lang_bucket": bucket,
+        "rate": rate,
+        "unit_label": unit_label,
+        "min_frames": min_frames,
+        "max_frames": max_frames,
+        "target_units": target_units,
+        "min_units": min_units,
+        "max_units": max_units,
+        "gate_min_units": gate_min_units,
+        "per_frame_min": per_lo,
+        "per_frame_max": per_hi,
+    }
+
+
+def count_spoken_units(storyboard_text: str, language: str = "en") -> tuple[int, int]:
+    """Return ``(spoken_frame_count, total_spoken_units)`` for a STORYBOARD.md."""
+    bucket = _lang_bucket(language)
+    spoken_frames = 0
+    total = 0
+    for vo in _VOICEOVER_LINE_RE.findall(storyboard_text or ""):
+        s = vo.strip()
+        if not s:
+            continue
+        spoken_frames += 1
+        if bucket in ("zh", "ja"):
+            cjk = len(_CJK_CHAR_RE.findall(s))
+            latin = len(_NON_CJK_WORD_RE.findall(s))
+            total += cjk + latin
+        else:
+            total += len(s.split())
+    return spoken_frames, total
+
+
+def format_pacing_budget_block(brief_text: str, vo_mode: str = "") -> str:
+    """Build the ``## Pacing & duration budget`` prompt section, or ``""`` if skipped."""
+    if not _duration_budget_enabled():
+        return ""
+    if "verbatim" in (vo_mode or "").lower():
+        return ""
+    dur = parse_target_duration_s(brief_text)
+    if dur is None:
+        return ""
+    lang = _brief_field(brief_text, "language") or "en"
+    b = compute_pacing_budget(dur, lang)
+    return (
+        "## Pacing & duration budget (computed from brief length — authoritative)\n\n"
+        f"- Target runtime: **{int(round(dur))}s** (effective TTS pace ~{b['rate']} {b['unit_label']}/s incl. frame tail).\n"
+        f"- Target frame count: **{b['min_frames']}–{b['max_frames']} total frames** "
+        f"(~6–8s avg per frame, one clear job per frame).\n"
+        f"- Target total spoken length across all `voiceover` lines: **{b['min_units']}–{b['max_units']} {b['unit_label']}** "
+        f"(aim ~{b['target_units']} {b['unit_label']}; body frames ~{b['per_frame_min']}–{b['per_frame_max']} {b['unit_label']} each, hook/CTA punchier).\n"
+        "- If the source prompt is short (e.g. a single question), reach the budget by unpacking concrete decision criteria, step-by-step checks, or worked contrasts — never repeat filler and never invent fake statistics."
+    )
 
 
 def _prompt_header() -> str:
@@ -202,6 +316,10 @@ def build_storyboard_prompt(
         "## Pre-seeded STORYBOARD frontmatter (copy EXACTLY, fill only <FILL>)\n\n"
         + build_skeleton_frontmatter(brief_text)
     )
+    vo_mode_text = _read_optional(os.path.join(project_dir, "VO_MODE"))
+    pacing_block = format_pacing_budget_block(brief_text, vo_mode=vo_mode_text)
+    if pacing_block:
+        parts.append(pacing_block)
     for rel, label in (
         ("capture/extracted/visible-text.txt", "## visible-text.txt"),
         ("user_script.txt", "## user_script.txt"),

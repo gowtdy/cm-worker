@@ -572,6 +572,75 @@ def classify_scan_failure(output: str) -> str | None:
     return None
 
 
+_ALLOW_ATTR_RE = re.compile(r"\bdata-layout-allow-(?:overlap|occlusion|overflow)\b", re.IGNORECASE)
+_STYLE_OR_SCRIPT_RE = re.compile(r"<(style|script)\b[^>]*>[\s\S]*?</\1>", re.IGNORECASE)
+
+
+def _reject_blanket_allow_enabled() -> bool:
+    raw = os.environ.get("HTMLVIDEO_VERIFY_REJECT_BLANKET_ALLOW", "1").strip().lower()
+    return raw not in ("0", "false", "off", "no")
+
+
+def _snapshot_composition_html(project_dir: str) -> dict[str, str]:
+    """Read current contents of compositions/**/*.html for anti-silencing diff guard."""
+    root = os.path.join(project_dir, "compositions")
+    snap: dict[str, str] = {}
+    if not os.path.isdir(root):
+        return snap
+    for dirpath, _, filenames in os.walk(root):
+        for name in filenames:
+            if not name.endswith(".html"):
+                continue
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, project_dir).replace(os.sep, "/")
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    snap[rel] = fh.read()
+            except OSError:
+                continue
+    return snap
+
+
+def _style_script_signature(html: str) -> str:
+    return "\n".join(m.group(0) for m in _STYLE_OR_SCRIPT_RE.finditer(html))
+
+
+def _detect_and_revert_blanket_allow(
+    project_dir: str,
+    before_snapshot: dict[str, str],
+    logger: logging.Logger,
+) -> list[str]:
+    """Revert files where a fix worker silenced layout findings via blanket
+    ``data-layout-allow-overlap`` / ``data-layout-allow-occlusion`` attributes
+    (>=2 newly added, or 1 newly added with zero ``<style>``/``<script>`` edits).
+    """
+    reverted: list[str] = []
+    after_snapshot = _snapshot_composition_html(project_dir)
+    for rel, after_text in after_snapshot.items():
+        before_text = before_snapshot.get(rel)
+        if before_text is None or after_text == before_text:
+            continue
+        before_cnt = len(_ALLOW_ATTR_RE.findall(before_text))
+        after_cnt = len(_ALLOW_ATTR_RE.findall(after_text))
+        delta = after_cnt - before_cnt
+        if delta <= 0:
+            continue
+        style_script_changed = (
+            _style_script_signature(before_text) != _style_script_signature(after_text)
+        )
+        if delta >= 2 or (delta == 1 and not style_script_changed):
+            abs_path = os.path.join(project_dir, rel)
+            with open(abs_path, "w", encoding="utf-8") as fh:
+                fh.write(before_text)
+            reverted.append(rel)
+            logger.warning(
+                "verify anti-silencing guard reverted %s (+%d data-layout-allow-* attr(s), "
+                "style_script_changed=%s) — must fix CSS/GSAP layout instead",
+                rel, delta, style_script_changed,
+            )
+    return reverted
+
+
 def _composition_html_digest(project_dir: str) -> str:
     """Stable digest of compositions/**/*.html for zero-edit detection."""
     root = os.path.join(project_dir, "compositions")
@@ -773,6 +842,11 @@ def _apply_model_fix(
     ``HTMLVIDEO_VERIFY_FIX_FULL_SCAN=1``.
     """
     before_digest = _composition_html_digest(project_dir)
+    before_snapshot = (
+        _snapshot_composition_html(project_dir)
+        if _reject_blanket_allow_enabled()
+        else None
+    )
     fragments: dict[str, str] = {}
     if not _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN"):
         fragments, _tail = _split_scan_by_file(_trim_scan_for_fix(scan_output))
@@ -809,7 +883,12 @@ def _apply_model_fix(
         project_dir, before_digest, prompts, truncated_labels, round_no, logger
     )
     return _require_changed_and_rescan(
-        project_dir, before_digest, round_no, logger, truncated_labels=truncated_labels
+        project_dir,
+        before_digest,
+        round_no,
+        logger,
+        truncated_labels=truncated_labels,
+        before_snapshot=before_snapshot,
     )
 
 
@@ -819,15 +898,27 @@ def _require_changed_and_rescan(
     round_no: int,
     logger: logging.Logger,
     truncated_labels: list[str] | None = None,
+    before_snapshot: dict[str, str] | None = None,
 ) -> tuple[int, str]:
-    """Zero-edit guard + rescan. Raises when the model turn changed nothing.
+    """Zero-edit guard + anti-silencing diff guard + rescan.
 
     If a worker hit ``TRUNCATED_RC`` AFTER writing edits to disk (2026-11-24
     6b05ba2b5d081581), accept the landed edits and rescan instead of throwing
     away a completed fix.
     """
+    reverted: list[str] = []
+    if before_snapshot is not None and _reject_blanket_allow_enabled():
+        reverted = _detect_and_revert_blanket_allow(project_dir, before_snapshot, logger)
     after_digest = _composition_html_digest(project_dir)
     if after_digest == before_digest:
+        if reverted:
+            logger.warning(
+                "verify fix round %d reverted blanket allow-* silencing in [%s] "
+                "— rescanning to force CSS/GSAP layout fix",
+                round_no,
+                ", ".join(reverted),
+            )
+            return _run_verify(project_dir, logger)
         if truncated_labels:
             joined = ", ".join(truncated_labels)
             raise RuntimeError(
