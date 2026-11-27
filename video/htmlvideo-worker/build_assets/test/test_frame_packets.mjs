@@ -1155,6 +1155,40 @@ Scene 1 (0.0–5.0s): scorecard.
   const flowOk = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
   assert.strictEqual(flowOk.status, 0, `class-positioned #check-seal must pass selfcheck:\n${flowOk.stdout}${flowOk.stderr}`);
 
+  // P0-1 (6b0941c6 F2): __hf.draw scales dasharray by CTM when vector-effect="non-scaling-stroke"
+  assert.ok(f2.includes('vector-effect') && f2.includes('getScreenCTM'),
+    "__hf.draw must scale strokeDasharray by getScreenCTM for non-scaling-stroke paths");
+
+  // P0-2 (6b0941c6 F4): type_caret_before_text catches caret preceding text in DOM order
+  writeFileSync(synPath, filledF2
+    .replace("Understand It", '<span id="vc-caret">|</span><span id="vc-text"></span>')
+    .replace(/<\/script>\s*<\/template>/, '__hf.type(tl, "#vc-text", "#vc-caret", "Cheaper on both", 1.0, 0.8);\n</script>\n</template>'));
+  const caretBad = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(caretBad.status, 1, "caret before text must fail selfcheck");
+  assert.ok(`${caretBad.stdout}${caretBad.stderr}`.includes("type_caret_before_text"));
+
+  writeFileSync(synPath, filledF2
+    .replace("Understand It", '<span id="vc-text"></span><span id="vc-caret">|</span>')
+    .replace(/<\/script>\s*<\/template>/, '__hf.type(tl, "#vc-text", "#vc-caret", "Cheaper on both", 1.0, 0.8);\n</script>\n</template>'));
+  const caretOk = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(caretOk.status, 0, `caret after text must pass selfcheck:\n${caretOk.stdout}${caretOk.stderr}`);
+
+  // P0-2 (6b0941c6 F4): gsap_css_transform_conflict catches CSS transform: scaleX(0) + tl.set(scaleX)
+  writeFileSync(synPath, filledF2
+    .replace("Understand It", '<div class="pe-fill"></div>')
+    .replace("</style>", ".pe-fill { transform-origin: 0% 50%; transform: scaleX(0); }\n</style>")
+    .replace(/<\/script>\s*<\/template>/, 'tl.set(".pe-fill", { scaleX: 0 }, 0);\n</script>\n</template>'));
+  const scaleConflict = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(scaleConflict.status, 1, "CSS scaleX + tl.set scaleX must fail selfcheck");
+  assert.ok(`${scaleConflict.stdout}${scaleConflict.stderr}`.includes("gsap_css_transform_conflict"));
+
+  // Static CSS transform: rotate(...) on non-animated decor must NOT trigger gsap_css_transform_conflict
+  writeFileSync(synPath, filledF2
+    .replace("Understand It", '<div class="fp-a"></div>')
+    .replace("</style>", ".fp-a { transform: rotate(-14deg); }\n</style>"));
+  const staticRotOk = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(staticRotOk.status, 0, `static rotate decor must pass selfcheck:\n${staticRotOk.stdout}${staticRotOk.stderr}`);
+
   // Dual skill copies of frame-worker-card.md stay byte-identical
   const cardA = readFileSync(join(ROOT, "skills", "aiflow-build-frame-html", "sub-agents", "frame-worker-card.md"));
   const cardB = readFileSync(join(ROOT, ".claude", "skills", "aiflow-build-frame-html", "sub-agents", "frame-worker-card.md"));
