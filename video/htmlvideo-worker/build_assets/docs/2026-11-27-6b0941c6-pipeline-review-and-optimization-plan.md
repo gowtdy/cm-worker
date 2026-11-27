@@ -77,6 +77,21 @@
    - 还原 `6b0941c6196ef01f/04-the-value-test.html` 修复前状态（`.pe-fill { transform-origin: 0% 50%; transform: scaleX(0); }`）：精准剥离 `transform: scaleX(0);` 且保留 `transform-origin`，二次扫描 0 命中（幂等）；
    - 反向用例（`transform: translateX(-50%) scaleX(0)`）：严格保留不误删。
 3. **全量自动化测试套件**：
-   - `node /app/test/test_frame_packets.mjs`：**PASS**（含 `__hf.draw` CTM 缩放、`type_caret_before_text`、`gsap_css_transform_conflict`、静态 `rotate` 放行、`frame-worker-card.md` 7936B 预算及双副本字节一致、`frame-packets-core.mjs` 双副本字节一致）；
+   - `node /app/test/test_frame_packets.mjs`：**PASS**（含 `__hf.draw` CTM 缩放、`type_caret_before_text`、`gsap_css_transform_conflict`、静态 `rotate` 放行、`frame-worker-card.md` `7858 B` 预算及双副本字节一致、`frame-packets-core.mjs` 双副本字节一致）；
    - `node /app/test/test_verify_check_parse.mjs`：**PASS**；
-   - `python3 -m unittest /app/test/test_visual_driver.py /app/test/test_claude_cli.py /app/test/test_verify.py /app/test/test_storyboard_contract.py`：**230/230 全绿**（含 `contract-card.md` 双副本一致与 `DEFAULT_MAX_HEDGES == 6`）。
+   - `python3 -m unittest /app/test/test_visual_driver.py /app/test/test_claude_cli.py /app/test/test_verify.py /app/test/test_storyboard_contract.py`：**230/230 全绿**（含 `contract-card.md` 双副本一致、`DEFAULT_MAX_HEDGES == 6`、`SLIM_PRIMARY_ENV` 已彻底移除、`onUpdate` 边界放行）。
+
+---
+
+## 6. 全流程 Prompt / Skill 自相矛盾排查与 `SLIM_PRIMARY` 源头收敛（2026-11-27 追加落地）
+
+对全部 5 个大模型阶段（`intent` / `storyboard` / `visual A+B` / `frame_html` / `verify`）的实际拼接 Prompt 做交叉审计后，进一步清除了 **5 项真实自相矛盾**，并彻底移除 `SLIM_PRIMARY` / `SLIM_FALLBACK` 历史开关，从 `frame-packets` 源头切断 `frame_html` 对 Blueprint 散文的耦合：
+
+| 编号 | 状态 | 目标文件 | 根因与精确修改内容 |
+|---|---|---|---|
+| **C-1** | **已落地** | `skills/hyperframes-core/scripts/lib/frame-packets-core.mjs`（同步 `.claude/skills/...`）<br>`html_utility/frame_html.py`<br>`skills/aiflow-build-frame-html/sub-agents/frame-worker-card.md`（同步 `.claude/skills/...`） | **从源头移除 `## Selected blueprint` 与 `SLIM_PRIMARY` / `SLIM_FALLBACK` 开关，根治幽灵冲突**：<br>1. `frame-packets-core.mjs` `buildDispatchDocs()` 不再向 `.dispatch.md` 拼入 `## Selected blueprint`，且调用 `detectConflicts()` 时传入 `blueprintText: ""`（仅在内部传给 `frameRules()` 辅助规则推断），彻底消灭因未内联 Blueprint 引发的 `negative-list-orbit/spin (blueprint ...)` 幽灵冲突；<br>2. `frame_html.py` 彻底删除 `SLIM_PRIMARY_ENV` / `SLIM_FALLBACK_ENV` 及 `_worker_prompt()` 中所有 `selected blueprint body` / `## Selected blueprint is authoritative` 悬空描述；<br>3. `frame-worker-card.md` 移除 `inlined blueprint` / `keep blueprint signature move`（体积进一步压至 `7858 B`）。 |
+| **C-2** | **已落地** | `html_utility/frame_html.py` | **修正 `_hedge_suffix()` 居中护栏与 `gsap_css_transform_conflict` 正面冲突**：区分动静场景——被 GSAP 动画的 `left: 50%` 元素必须用 `xPercent: -50`（禁混写 CSS `transform`），纯静态无 GSAP 动画的元素才用 CSS `transform: translateX(-50%)`（优先父容器 Flex/Grid 居中）。 |
+| **C-3** | **已落地** | `html_utility/frame_html.py`<br>`test/test_visual_driver.py` | **收窄 `onUpdate` 禁令边界（消除 F1 `chromatic-glitch` 思考死锁）**：禁止 `gsap.ticker` / `requestAnimationFrame` 及全帧单一 `onUpdate` 大状态机（瞬间换词用 `tl.set`，打字用 `__hf.type`），明确放行内联 Recipe 中的有界代理 `onUpdate`（如 `chromatic-glitch` 振幅包络、`sine-wave-loop` 相位）。 |
+| **C-4** | **已落地** | `html_utility/frame_html.py`<br>`skills/aiflow-build-frame-html/sub-agents/frame-worker-card.md`（同步 `.claude/skills/...`） | **消除零工具 `text_out=True` 模式下的 `Read` 诱导语**：`_worker_prompt()` 在 `text_out=True` 时自动将内联 snippet 中的 `Read a full RULES_DIR/<id>.md...` 与 `// … truncated — Read the full recipe for the rest` 替换为无工具自足说明（磁盘 `.dispatch.md` 与 `TEXT_OUT=0` 回退模式保持兼容）。 |
+| **C-5** | **已落地** | `scripts/known-failures.mjs`<br>`html_utility/verify.py` | **消除 `verify` 误导性 `x: -1000` hint 与内联 `Read` 措辞冲突**：<br>1. `known-failures.mjs` 在 `other-lint-errors` 之前新增 `id: "gsap-css-transform-conflict"`（`mode: "model"`），指导仅删 CSS `transform` 并迁移真实初态、忽略 CLI hint 中的 `x: -1000` 模板数字；<br>2. `verify.py` `_FIX_HARD_CONSTRAINTS` 补充 `(skip Read when the file is already inlined below)`。 |
+
