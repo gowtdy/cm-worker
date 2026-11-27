@@ -1138,6 +1138,28 @@ Scene 1 (0.0–5.0s): scorecard.
   assert.strictEqual(selRun.status, 1, "missing DOM selector in __hf.draw must fail selfcheck");
   assert.ok(`${selRun.stdout}${selRun.stderr}`.includes("missing_dom_selector"));
 
+  // P0-2 (6b08f96c F1): flow_element_xpercent_center catches position:relative + xPercent:-50
+  // while allowing <div class="seal" id="check-seal"> when .seal carries position:absolute.
+  writeFileSync(synPath, filledF2
+    .replace("Understand It", '<div class="wordmark">GUESS</div>')
+    .replace("</style>", ".wordmark { position: relative; font-size: 12cqw; }\n</style>")
+    .replace(/<\/script>\s*<\/template>/, 'tl.set(".wordmark", { autoAlpha: 0, xPercent: -50, yPercent: -50 }, 0);\n</script>\n</template>'));
+  const flowBad = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(flowBad.status, 1, "position:relative + xPercent:-50 must fail selfcheck");
+  assert.ok(`${flowBad.stdout}${flowBad.stderr}`.includes("flow_element_xpercent_center"));
+
+  writeFileSync(synPath, filledF2
+    .replace("Understand It", '<div class="seal" id="check-seal">OK</div>')
+    .replace("</style>", ".seal { position: absolute; left: 50%; top: 50%; }\n</style>")
+    .replace(/<\/script>\s*<\/template>/, 'tl.set("#check-seal", { autoAlpha: 0, xPercent: -50, yPercent: -50 }, 0);\n</script>\n</template>'));
+  const flowOk = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(flowOk.status, 0, `class-positioned #check-seal must pass selfcheck:\n${flowOk.stdout}${flowOk.stderr}`);
+
+  // Dual skill copies of frame-worker-card.md stay byte-identical
+  const cardA = readFileSync(join(ROOT, "skills", "aiflow-build-frame-html", "sub-agents", "frame-worker-card.md"));
+  const cardB = readFileSync(join(ROOT, ".claude", "skills", "aiflow-build-frame-html", "sub-agents", "frame-worker-card.md"));
+  assert.ok(cardA.equals(cardB), "frame-worker-card.md skill copies out of sync");
+
   // S1-1: __hf.type auto-hides caret at `at + d + 0.15`, the two skill copies are byte-identical,
   // and the unused legacy duplicate under scripts/lib/ is gone.
   assert.ok(f2.includes("if (caret) tl.set(caret, { autoAlpha: 0 }, at + d + 0.15);"),

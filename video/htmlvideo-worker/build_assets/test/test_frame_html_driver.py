@@ -197,14 +197,18 @@ class DriverTest(unittest.TestCase):
         self.assertIn("do NOT re-decide colors, type sizes, or layout", p)
 
     def test_worker_prompt_transcribes_ledger_when_present(self):
-        # scheme-1 (2026-11-24): when the dispatch carries the sunk layout/motion
-        # ledgers, they are the authoritative concrete values — transcribe, don't
-        # re-derive. The line is unconditional (harmless when no ledger is present).
-        p = fh._worker_prompt(
+        # 2026-11-27 (P0-1): ledger transcription instruction is injected only
+        # when the dispatch actually carries a Layout/Motion ledger, avoiding
+        # contradictions with the flex/grid guardrail when ledger is OFF.
+        p_off = fh._worker_prompt(
             "01-hook", skeleton_mode=True, dispatch_text="# Dispatch stub\n")
-        self.assertIn("`## Layout ledger`", p)
-        self.assertIn("`## Motion ledger`", p)
-        self.assertIn("transcribe their concrete values verbatim", p)
+        self.assertNotIn("transcribe their concrete values verbatim", p_off)
+        p_on = fh._worker_prompt(
+            "01-hook", skeleton_mode=True,
+            dispatch_text="# Dispatch stub\n\n## Layout ledger\n| e | r | p | s | c | o |\n")
+        self.assertIn("`## Layout ledger`", p_on)
+        self.assertIn("`## Motion ledger`", p_on)
+        self.assertIn("transcribe their concrete values verbatim", p_on)
 
     def test_worker_done_ok_accepts_hyphen_suffix_ids(self):
         # 2026-11-21: empty-slug frames were ``01-``; trailing ``\b`` rejected
