@@ -1191,7 +1191,12 @@ const __hf = {
   draw(tl, target, at, dur, ease = "power2.out") {
     const els = typeof target === "string" ? [...document.querySelectorAll(target)] : [target].filter(Boolean);
     for (const el of els) {
-      const len = typeof el.getTotalLength === "function" ? Math.ceil(el.getTotalLength()) : 600;
+      let len = typeof el.getTotalLength === "function" ? Math.ceil(el.getTotalLength()) : 600;
+      if (el.getAttribute && el.getAttribute("vector-effect") === "non-scaling-stroke") {
+        const ctm = typeof el.getScreenCTM === "function" ? el.getScreenCTM() : null;
+        const scale = ctm ? Math.max(1, Math.hypot(ctm.a, ctm.b), Math.hypot(ctm.c, ctm.d)) : 1;
+        len = Math.ceil(len * scale);
+      }
       tl.set(el, { strokeDasharray: len, strokeDashoffset: len }, 0);
       tl.fromTo(el, { strokeDashoffset: len }, { strokeDashoffset: 0, duration: Math.max(0.05, Number(dur) || 0.5), ease, immediateRender: false }, at);
     }
