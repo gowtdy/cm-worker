@@ -28,7 +28,7 @@ reference files exist for human use; **do not re-read them**.
 | Key        | Meaning                                                        | Example                                              |
 | ---------- | -------------------------------------------------------------- | ---------------------------------------------------- |
 | `format`   | canvas size, from brief `aspect`                               | `1920x1080`                                          |
-| `duration` | brief `length` expectation (advisory, not a gate)              | `60s`                                                |
+| `duration` | target runtime from brief `length` — scale frame count & spoken word budget to land within ±15% of this target (unless `VO_MODE: verbatim`) | `60s` |
 | `message`  | one-line thesis, copied from brief                             | `"Analyzing fundamentals tells you when to buy…"`    |
 | `arc`      | chosen structure (+ beat summary in parentheses)               | `how-to-process (Hook → Thesis → Buy tests → CTA)`   |
 | `audience` | from brief                                                      | `Beginner to intermediate investors`                 |
@@ -80,11 +80,11 @@ Body = a run of `feature_showcase` (+ `benefit_highlight` / `social_proof` inter
 | Structure           | Use when                              | Body shape                                                       |
 | ------------------- | ------------------------------------- | ---------------------------------------------------------------- |
 | `concept-explainer` | one idea/term the audience half-knows | name concept → reveal mechanism layer by layer → land implication |
-| `how-to-process`    | a procedure with a clear start→finish | 3–6 ordered steps on one consistent stage, one move each         |
+| `how-to-process`    | a procedure with a clear start→finish | ordered steps on one consistent stage, one clear move each       |
 | `listicle`          | parallel, co-equal items              | hook → N roughly co-equal items → wrap; rule-of-three strongest  |
 | `story-explainer`   | case study / history / cautionary tale| setup → tension → turn → resolution → lesson                     |
 
-- 3–6 body frames, each with ONE clear job; no "more detail" filler frames.
+- Scale total frame count to `duration` (~`6–8s` per frame): `~30s → 5–6` total frames (`3–4` body), `~60s → 8–10` total frames (`6–8` body), `~90s+ → 10–12` total frames (`8–10` body). Follow `## Pacing & duration budget` when inlined. Each frame has ONE clear job; when the source input is short (e.g. a single question), deepen substance with concrete decision criteria, worked contrasts/counterexamples, or step-by-step checks — never repeat filler and never invent fake statistics.
 - Set `arc` to the chosen structure (or `<outer> with <inner>` for a compound).
 - Register matching (`frame.md` tunes voice, not structure): warm/handmade → plain considered · bold/poster → punchy declarative · friendly/polished → direct lighter · literary/tech → thoughtful precise.
 
@@ -165,7 +165,7 @@ SCRIPT.md — their `narrativeRole` + `persuasion` carry the explanation.
 
 Write each `voiceover` as the final spoken line:
 
-- 1–2 sentences, usually 6–20 words; concrete and human — teach, don't read the article aloud.
+- 1–2 sentences, typically `14–22 words` (`24–38` Chinese chars) for ~`6–8s` body frames and `8–14 words` (`14–24` Chinese chars) for punchy hook/CTA beats — match the `## Pacing & duration budget` total spoken range when inlined; concrete and human — teach, don't read the article aloud.
 - **Phrase-segment into discrete cues** ("First the snowball — then the hill — then the speed") so each on-screen piece can reveal when the voiceover names it; never one run-on breath.
 - `VO_MODE: restructure` (inlined by caller when present): user_script.txt is source material — rewrite/reorder to fit. `verbatim`: don't change words, only segment at sentence/clause boundaries.
 
@@ -188,6 +188,6 @@ Write each `voiceover` as the final spoken line:
 - Sequence is narrative-driven, not paragraph-order-driven (core doctrine 1, 2).
 - One named hook strategy opens; thesis lands by frame 2.
 - Every frame carries: `scene`, `voiceover`, `duration`, `transition_in` (registry name), `status: outline`, `src` placeholder, `type`, `persuasion` (named technique), `beat` (specific) + `narrativeRole`/`keyMessage` prose; `blueprint` tag only where a shape genuinely fits.
-- Body runs 3–6 cumulative frames, one job each.
+- Frame count and total spoken word/char count match the target `duration` (and `## Pacing & duration budget` when inlined), one clear job per frame.
 - Transitions repeat 2–3 registry names; frame 1 is `cut`.
 - No `## Video direction`, no Scene shot blocks, no `asset_candidates`, no `built`/`animated` statuses.

@@ -39,15 +39,13 @@
 - **Same-track clips never overlap** (`timeline_track_too_dense`) — track = temporal lane, stacking = `z-index`; nest ambient décor/glow/badges inside one parent clip (children without timing attrs) or use distinct `data-track-index` lanes.
 - **Full-bleed ground on `class="clip"`, never `background` on `#root`.** One full-duration background clip on track `0`.
 - **GSAP owns transforms.** Never put CSS `transform` on a GSAP-animated element (`gsap_css_transform_conflict`); center via `xPercent`/`yPercent`. Never tween layout props — `fontSize`, `letterSpacing`, `wordSpacing`, `width`, `height`, `top`, `left`, `margin*`, `padding*`, `roundProps` (`gsap_non_transform_motion`); for size changes, set larger CSS `font-size` and tween `scale`.
+- **Tight wrapper for decorative rings.** A ring/halo wrapping a capsule or pill (e.g. `.capsule-ring` with `inset: -0.7cqw`) MUST sit inside a tight `display: inline-flex` (or `width: fit-content`) wrapper around the capsule — NEVER inside a `width: 100%` parent container (which stretches the ring across the entire card).
 
 ## Workflow
 
-- **Read** — the inlined dispatch; in your FIRST tool turn Read every `RULES_DIR/<id>.md` in the Rule index as one parallel batch, never re-read (with `## Rule recipes` inlined: no batch read, a full recipe only if a detail is missing). Never `frame.md`, `_role.md`, `STORYBOARD.md`, skill files. Retry findings (`frame-selfcheck`/lint): read first, re-author away.
-- **FILL the pre-built skeleton** — `compositions/frames/<frame_id>.html` already exists (`skeleton-v1`); never a new skeleton; first edit by turn 2. Final file < ~15 KB: after Reading the skeleton, **one Write (or one large Edit) of the whole file** — no style → body → script split. Hard cap: a single Write input ≤ ~20 KB (InputValidationError).
-- **Reply** — **only** `done OK <frame_id>` (or `fail <frame_id>: <reason>`); no summary / checklist / explanation. Do NOT run frame-selfcheck / Bash — the driver runs it and re-dispatches with FAIL findings.
+- **Single-turn direct output.** All context (skeleton, frame block, design contract, `## Rule recipes (snippets)`) is already inlined in your prompt. Do NOT call `Read`/`Write`/`Bash` tools, and never open `frame.md`, `_role.md`, `STORYBOARD.md`, or skill files.
+- **Output ONLY the completed `<template>…</template>` fragment** (filling the pre-built `skeleton-v1` scaffold) — no prose, no explanation, no `done OK` footer. Retry findings (`frame-selfcheck`/lint): fix every reported issue directly in the `<template>…</template>` output.
 - **Not yours** — prefix authored ids & reusable classes with `<frame_id>-` (`#root` / `.clip` excepted); you don't decide narration, duration, between-frame transitions, audio, tokens, or motions/assets.
-
-Cut catalog (path in your dispatch prompt): open only for Scene-seam swaps / scene cuts / text-to-text changes.
 
 ## GSAP idioms (copy)
 

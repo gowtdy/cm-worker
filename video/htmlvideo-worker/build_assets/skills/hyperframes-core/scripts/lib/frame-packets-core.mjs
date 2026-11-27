@@ -1185,6 +1185,7 @@ const __hf = {
       onUpdate() { el.textContent = s.slice(0, Math.round(proxy.n)); },
       onComplete() { el.textContent = s; },
     }, at);
+    if (caret) tl.set(caret, { autoAlpha: 0 }, at + d + 0.15);
     return tl;
   },
   draw(tl, target, at, dur, ease = "power2.out") {
