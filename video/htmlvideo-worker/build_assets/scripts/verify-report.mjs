@@ -42,6 +42,7 @@ import {
   transitionWindows,
   splitSharedStageCrossfade,
   splitCanvasOverflow,
+  splitEscapedContainer,
 } from "./lib/verify-check-parse.mjs";
 import { matchKnownFailures, renderPrompt } from "./known-failures.mjs";
 
@@ -263,6 +264,19 @@ if (check.error) {
       say(`  ✗ promoted ${promoted.length} real canvas_overflow finding(s) from info to error`);
     }
   }
+  // S1-3: Promote non-transition, non-decorative `escaped_container` warnings
+  // (e.g. 6b083ee7 F2 pills clipped by `#stage-card { overflow: hidden }`) to
+  // blocking errors AFTER checkParseMismatch/checkContradiction accounting.
+  const escapedContainerFlag = (process.env.HTMLVIDEO_VERIFY_ESCAPED_CONTAINER || "1").trim().toLowerCase();
+  if (!["0", "false", "off", "no"].includes(escapedContainerFlag) && chk.warns.length) {
+    const windows = indexHtml ? transitionWindows(indexHtml) : [];
+    const { kept, promoted } = splitEscapedContainer(chk.warns, windows);
+    if (promoted.length) {
+      chk.warns = kept;
+      chk.errors.push(...promoted);
+      say(`  ✗ promoted ${promoted.length} real escaped_container finding(s) from warning to error`);
+    }
+  }
   // Shared-stage crossfade self-overlaps are unfixable in any single frame
   // (see verify-check-parse.mjs) — demote to info AFTER errorCount accounting.
   const stageXfadeFlag = (process.env.HTMLVIDEO_VERIFY_STAGE_XFADE_FILTER || "1").trim().toLowerCase();
@@ -289,9 +303,11 @@ if (check.error) {
     for (const c of list) {
       const tag = isCaptionFP(c) ? "  (expected false-positive — see known-failures caption-text-box-overflow)" : "";
       // Render the CLI's own fixHint for codes the catalog doesn't own
-      // (content_overlap's fixHint is the same generic allow-overlap line for
-      // every finding, so skip it there — the catalog triages it precisely).
-      const hint = c.fixHint && c.code !== "content_overlap" ? `  [hint: ${trunc(c.fixHint, 200)}]` : "";
+      // (content_overlap & text_occluded fixHints suggest generic allow-*
+      // opt-outs for every finding, so skip them — the catalog triages precisely).
+      const hint = c.fixHint && !["content_overlap", "text_occluded"].includes(c.code)
+        ? `  [hint: ${trunc(c.fixHint, 200)}]`
+        : "";
       const where = c.file ? ` in ${c.file}` : "";
       say(`  ${c.mark} [${c.section}] ${c.code}${where} — ${c.msg}${hint}${tag}`);
     }

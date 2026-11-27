@@ -9,13 +9,19 @@ import os
 import re
 
 from html_utility.claude_cli import run_claude, run_claude_result
-from html_utility.storyboard_contract import build_storyboard_prompt
+from html_utility.storyboard_contract import (
+    build_storyboard_prompt,
+    compute_pacing_budget,
+    count_spoken_units,
+    parse_target_duration_s,
+)
 
 STORYBOARD_FILENAME = "STORYBOARD.md"
 SCRIPT_FILENAME = "SCRIPT.md"
 BRIEF_FILENAME = "BRIEF.md"
 FRAME_FILENAME = "frame.md"
 STORYBOARD_TEXT_OUT_ENV = "HTMLVIDEO_STORYBOARD_TEXT_OUT"
+STORYBOARD_DURATION_GATE_ENV = "HTMLVIDEO_STORYBOARD_DURATION_GATE"
 STORYBOARD_TEXT_OUT_MAX_TURNS = 2
 
 # `- voiceover: "..."` on its own line; the quoted value is the spoken guide.
@@ -242,6 +248,57 @@ def _extract_storyboard_markdown(text: str | None) -> str | None:
     return s + "\n"
 
 
+def _storyboard_duration_gate_on() -> bool:
+    raw = os.environ.get(STORYBOARD_DURATION_GATE_ENV, "1").strip().lower()
+    return raw not in ("0", "false", "off", "no")
+
+
+def _check_duration_shortfall(
+    project_dir: str,
+    storyboard_text: str,
+) -> tuple[dict, int, int] | None:
+    """Return ``(budget, spoken_frames, units)`` when a spoken board falls below
+    75% of the target spoken budget; ``None`` when acceptable or exempted."""
+    if not _storyboard_duration_gate_on():
+        return None
+    if not _has_spoken_frames(storyboard_text):
+        return None
+    vo_mode_path = os.path.join(project_dir, "VO_MODE")
+    if os.path.isfile(vo_mode_path):
+        with open(vo_mode_path, encoding="utf-8") as f:
+            if "verbatim" in f.read().lower():
+                return None
+    brief_path = os.path.join(project_dir, BRIEF_FILENAME)
+    if not os.path.isfile(brief_path):
+        return None
+    with open(brief_path, encoding="utf-8") as f:
+        brief_text = f.read()
+    dur = parse_target_duration_s(brief_text)
+    if dur is None:
+        return None
+    lang = _brief_language(project_dir) or "en"
+    budget = compute_pacing_budget(dur, lang)
+    spoken_frames, units = count_spoken_units(storyboard_text, lang)
+    if units < budget["gate_min_units"]:
+        return budget, spoken_frames, units
+    return None
+
+
+def _duration_expansion_suffix(budget: dict, spoken_frames: int, units: int) -> str:
+    est_s = units / max(0.5, budget["rate"])
+    return (
+        "\n\n## Duration shortfall retry (IMPORTANT)\n\n"
+        f"Your previous draft had only **{spoken_frames} spoken frames / {units} {budget['unit_label']}** "
+        f"(~{est_s:.0f}s at {budget['rate']} {budget['unit_label']}/s), which is far below the "
+        f"**{int(round(budget['duration_s']))}s** target.\n"
+        f"Rewrite the complete `STORYBOARD.md` so it has **{budget['min_frames']}–{budget['max_frames']} frames** "
+        f"and **{budget['min_units']}–{budget['max_units']} {budget['unit_label']}** total "
+        f"(~{budget['per_frame_min']}–{budget['per_frame_max']} {budget['unit_label']} per body frame). "
+        "Deepen thin beats with concrete decision criteria, step-by-step checks, or worked contrasts — "
+        "do NOT add repetitive filler and do NOT invent fake statistics."
+    )
+
+
 def build_storyboard(
     project_dir: str,
     logger: logging.Logger,
@@ -283,6 +340,43 @@ def build_storyboard(
         )
         extracted = _extract_storyboard_markdown(reply) if rc == 0 else None
         if extracted:
+            shortfall = _check_duration_shortfall(project_dir, extracted)
+            if shortfall is not None:
+                budget, spoken_frames, units = shortfall
+                if logger is not None:
+                    logger.warning(
+                        "storyboard duration shortfall: %d frames / %d %s < gate %d (target %ds) — running 1 expansion retry",
+                        spoken_frames,
+                        units,
+                        budget["unit_label"],
+                        budget["gate_min_units"],
+                        int(round(budget["duration_s"])),
+                    )
+                retry_prompt = prompt + _duration_expansion_suffix(budget, spoken_frames, units)
+                r_rc, r_reply = run_claude_result(
+                    project_dir,
+                    retry_prompt,
+                    logger,
+                    skill="storyboard",
+                    label="storyboard-expand",
+                    tools="",
+                    max_turns=STORYBOARD_TEXT_OUT_MAX_TURNS,
+                    trunc_kill=True,
+                )
+                r_extracted = _extract_storyboard_markdown(r_reply) if r_rc == 0 else None
+                if r_extracted:
+                    lang = _brief_language(project_dir) or "en"
+                    _, r_units = count_spoken_units(r_extracted, lang)
+                    if r_units > units:
+                        extracted = r_extracted
+                        units = r_units
+                    if units < budget["gate_min_units"] and logger is not None:
+                        logger.warning(
+                            "storyboard still short after expansion retry (%d %s < %d) — accepting best draft",
+                            units,
+                            budget["unit_label"],
+                            budget["gate_min_units"],
+                        )
             with open(storyboard_path, "w", encoding="utf-8") as f:
                 f.write(extracted)
             return finalize_storyboard_outputs(project_dir, logger)

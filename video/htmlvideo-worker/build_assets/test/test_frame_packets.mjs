@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
@@ -1109,6 +1110,48 @@ Scene 1 (0.0–5.0s): scorecard.
   const dpRun = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
   assert.strictEqual(dpRun.status, 1, "camelCase dataState in GSAP tween must fail selfcheck");
   assert.ok(`${dpRun.stdout}${dpRun.stderr}`.includes("gsap_camelcase_data_prop"));
+
+  // S1-2 (6b083ee7 F2/F6): gsap_label_concat, abs_zero_xpercent_center, gsap_fromto_delayed_leak, missing_dom_selector
+  writeFileSync(synPath, filledF2.replace(/<\/script>\s*<\/template>/, 'tl.to(".hero-line", { opacity: 1, duration: 0.3 }, "scene1" + i * 0.14);\n</script>\n</template>'));
+  const lcRun = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(lcRun.status, 1, "broken label concat must fail selfcheck");
+  assert.ok(`${lcRun.stdout}${lcRun.stderr}`.includes("gsap_label_concat"));
+
+  writeFileSync(synPath, filledF2
+    .replace("</style>", ".cat-pill { position: absolute; left: 0; top: 0; }\n</style>")
+    .replace(/<\/script>\s*<\/template>/, 'tl.fromTo(".cat-pill", { xPercent: -50, opacity: 0 }, { xPercent: -50, opacity: 1, duration: 0.3 }, 0);\n</script>\n</template>'));
+  const azRun = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(azRun.status, 1, "left:0 + xPercent:-50 must fail selfcheck");
+  assert.ok(`${azRun.stdout}${azRun.stderr}`.includes("abs_zero_xpercent_center"));
+
+  writeFileSync(synPath, filledF2.replace(/<\/script>\s*<\/template>/, 'tl.fromTo(".hero-line", { scale: 1, autoAlpha: 0.6 }, { scale: 1.1, autoAlpha: 0, duration: 0.5 }, 2.5);\n</script>\n</template>'));
+  const ftRun = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(ftRun.status, 1, "delayed fromTo without immediateRender:false must fail selfcheck");
+  assert.ok(`${ftRun.stdout}${ftRun.stderr}`.includes("gsap_fromto_delayed_leak"));
+
+  writeFileSync(synPath, filledF2.replace(/<\/script>\s*<\/template>/, 'tl.fromTo(".hero-line", { scale: 1, autoAlpha: 0.6 }, { scale: 1.1, autoAlpha: 0, duration: 0.5, immediateRender: false }, 2.5);\n</script>\n</template>'));
+  const ftOkRun = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(ftOkRun.status, 0, `delayed fromTo with immediateRender:false must pass:\n${ftOkRun.stdout}${ftOkRun.stderr}`);
+
+  writeFileSync(synPath, filledF2.replace(/<\/script>\s*<\/template>/, '__hf.draw(tl, "#nonexistent-path path", 1.2, 0.3);\n</script>\n</template>'));
+  const selRun = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(selRun.status, 1, "missing DOM selector in __hf.draw must fail selfcheck");
+  assert.ok(`${selRun.stdout}${selRun.stderr}`.includes("missing_dom_selector"));
+
+  // S1-1: __hf.type auto-hides caret at `at + d + 0.15`, the two skill copies are byte-identical,
+  // and the unused legacy duplicate under scripts/lib/ is gone.
+  assert.ok(f2.includes("if (caret) tl.set(caret, { autoAlpha: 0 }, at + d + 0.15);"),
+    "__hf.type must auto-hide caret after typing finishes");
+  const coreCopies = [
+    join(ROOT, "skills", "hyperframes-core", "scripts", "lib", "frame-packets-core.mjs"),
+    join(ROOT, ".claude", "skills", "hyperframes-core", "scripts", "lib", "frame-packets-core.mjs"),
+  ];
+  const coreBase = readFileSync(coreCopies[0]);
+  for (const cp of coreCopies.slice(1)) {
+    assert.ok(coreBase.equals(readFileSync(cp)), `frame-packets-core.mjs out of sync: ${cp}`);
+  }
+  assert.ok(!existsSync(join(ROOT, "scripts", "lib", "frame-packets-core.mjs")),
+    "unused legacy duplicate scripts/lib/frame-packets-core.mjs must not exist");
 
   // P1-1 (6b082a5b F3): per-slot column data-accent inheritance for dim slots (both single-accent and multi-accent stages)
   const dirCol = mkdtempSync(join(tmpdir(), "fp-col-accent-"));

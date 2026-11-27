@@ -26,6 +26,7 @@ import argparse
 import glob
 import json as _json
 import os
+import re
 import sys
 from collections import Counter
 
@@ -48,10 +49,181 @@ SPARSE_RATIO = 0.15      # content bbox below this = suspicious
 CORNER_BAND = 0.25       # bbox hugging within this fraction of an edge
 INK_MAX = 90             # max(r,g,b) below this = ink
 
+# S1-4: Shared Stage `#stage-card` interior probe boxes (fraction of canvas W/H),
+# inset by STAGE_CARD_INSET to avoid the 3px border and drop shadow.
+STAGE_CARD_BOXES = {
+    "top-stepper-center-card": (0.18, 0.82, 0.19, 0.65),
+    "left-rail-right-card": (0.34, 0.94, 0.14, 0.78),
+    "center-scorecard": (0.20, 0.80, 0.38, 0.78),
+}
+STAGE_CARD_INSET = 0.02
+STAGE_CARD_BG_COLORS = ((255, 255, 255), (245, 245, 240))
+STAGE_CARD_DIST = 25.0
+STAGE_CARD_EMPTY_RATIO = 0.0025
+STAGE_CARD_COLLAPSE_BAND = 0.22
+STAGE_CARD_COLLAPSE_SHARE = 0.75
+STAGE_CARD_COLLAPSE_OPP_MAX = 0.01
+
+_SCENE_TAG_RE = re.compile(r"<div\b[^>]*>", re.IGNORECASE)
+_SRC_ATTR_RE = re.compile(r'data-composition-src="([^"]*compositions/frames/[^"]+)"')
+_START_ATTR_RE = re.compile(r'data-start="([\d.]+)"')
+_DUR_ATTR_RE = re.compile(r'data-duration="([\d.]+)"')
+_STAGE_LAYOUT_RE = re.compile(r'data-stage-layout="([^"]+)"')
+_SNAP_TIME_RE = re.compile(r"-at-([\d.]+)s\.png$")
+
+
+def _stage_card_probe_enabled():
+    raw = os.environ.get("HTMLVIDEO_VERIFY_STAGE_CARD_PROBE", "1").strip().lower()
+    return raw not in ("0", "false", "off", "no")
+
+
+def _load_stage_card_intervals(videodir):
+    """Return list of (start, end, stage_layout) for frames containing `#stage-card`."""
+    index_path = os.path.join(videodir, "index.html")
+    if not os.path.isfile(index_path):
+        return []
+    try:
+        with open(index_path, encoding="utf-8") as fh:
+            index_html = fh.read()
+    except OSError:
+        return []
+    intervals = []
+    for m in _SCENE_TAG_RE.finditer(index_html):
+        tag = m.group(0)
+        src_m = _SRC_ATTR_RE.search(tag)
+        if not src_m:
+            continue
+        start_m = _START_ATTR_RE.search(tag)
+        dur_m = _DUR_ATTR_RE.search(tag)
+        if not start_m or not dur_m:
+            continue
+        try:
+            start = float(start_m.group(1))
+            dur = float(dur_m.group(1))
+        except ValueError:
+            continue
+        rel = src_m.group(1).lstrip("./")
+        frame_path = os.path.join(videodir, rel)
+        if not os.path.isfile(frame_path):
+            continue
+        try:
+            with open(frame_path, encoding="utf-8") as fh:
+                fhtml = fh.read()
+        except OSError:
+            continue
+        if 'id="stage-card"' not in fhtml and "id='stage-card'" not in fhtml:
+            continue
+        lay_m = _STAGE_LAYOUT_RE.search(fhtml)
+        layout = lay_m.group(1).strip() if lay_m else "top-stepper-center-card"
+        if layout not in STAGE_CARD_BOXES:
+            layout = "top-stepper-center-card"
+        intervals.append((start, start + dur, layout))
+    return intervals
+
+
+def _stage_layout_for_snapshot(snap_path, intervals):
+    if not intervals:
+        return None
+    m = _SNAP_TIME_RE.search(os.path.basename(snap_path))
+    if not m:
+        return None
+    try:
+        t = float(m.group(1))
+    except ValueError:
+        return None
+    for start, end, layout in intervals:
+        if start - 0.05 <= t <= end + 0.05:
+            return layout
+    return None
+
+
+def _detect_stage_card_y_bounds(img, bx0, bx1, default_y0, default_y1):
+    """Find actual top/bottom dark border rows of `#stage-card` on full-res image."""
+    W, H = img.size
+    px_full = img.load()
+    span = bx1 - bx0
+    xs = [int(W * (bx0 + 0.06 * span + 0.88 * span * i / 39)) for i in range(40)]
+    y_lo = max(0, int(H * max(0.08, default_y0 - 0.04)))
+    y_hi = min(H, int(H * min(0.84, max(default_y1, 0.78) + 0.04)))
+    dark_rows = [
+        y for y in range(y_lo, y_hi)
+        if sum(1 for x in xs if max(px_full[x, y]) < 80) >= 32
+    ]
+    if len(dark_rows) >= 2 and (dark_rows[-1] - dark_rows[0]) > H * 0.25:
+        return dark_rows[0] / H, dark_rows[-1] / H
+    return default_y0, default_y1
+
+
+def _probe_stage_card_interior(img, small_px, sw, sh, layout):
+    """Probe `#stage-card` interior for empty card or edge-collapsed content."""
+    box = STAGE_CARD_BOXES.get(layout)
+    if not box:
+        return [], None
+    bx0, bx1, default_y0, default_y1 = box
+    by0, by1 = _detect_stage_card_y_bounds(img, bx0, bx1, default_y0, default_y1)
+    x0 = max(0, int(sw * (bx0 + STAGE_CARD_INSET)))
+    x1 = min(sw, int(sw * (bx1 - STAGE_CARD_INSET)))
+    y0 = max(0, int(sh * (by0 + STAGE_CARD_INSET)))
+    y1 = min(sh, int(sh * (by1 - STAGE_CARD_INSET)))
+    cw = x1 - x0
+    ch = y1 - y0
+    if cw <= 4 or ch <= 4:
+        return [], None
+
+    active = []
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            c = small_px[x, y]
+            if all(rgb_dist(c, bg) > STAGE_CARD_DIST for bg in STAGE_CARD_BG_COLORS):
+                active.append((x - x0, y - y0))
+
+    total = cw * ch
+    active_ratio = len(active) / total
+    findings = []
+    meta = {
+        "layout": layout,
+        "interior_active_pct": round(active_ratio * 100, 3),
+    }
+    if active_ratio < STAGE_CARD_EMPTY_RATIO:
+        findings.append((
+            "FAIL",
+            f"empty #stage-card interior ({active_ratio * 100:.2f}% active pixels)",
+        ))
+        return findings, meta
+
+    left_cut = max(1, int(cw * STAGE_CARD_COLLAPSE_BAND))
+    right_start = cw // 2
+    left_share = sum(1 for (x, _) in active if x < left_cut) / len(active)
+    right_area = max(1, (cw - right_start) * ch)
+    right_density = sum(1 for (x, _) in active if x >= right_start) / right_area
+
+    top_cut = max(1, int(ch * STAGE_CARD_COLLAPSE_BAND))
+    bot_start = ch // 2
+    top_share = sum(1 for (_, y) in active if y < top_cut) / len(active)
+    bot_area = max(1, cw * (ch - bot_start))
+    bot_density = sum(1 for (_, y) in active if y >= bot_start) / bot_area
+
+    meta["left22_share_pct"] = round(left_share * 100, 1)
+    meta["right50_density_pct"] = round(right_density * 100, 3)
+    meta["top22_share_pct"] = round(top_share * 100, 1)
+    meta["bottom50_density_pct"] = round(bot_density * 100, 3)
+
+    if left_share > STAGE_CARD_COLLAPSE_SHARE and right_density < STAGE_CARD_COLLAPSE_OPP_MAX:
+        findings.append((
+            "FAIL",
+            f"collapsed content inside #stage-card (left 22% holds {left_share * 100:.1f}%, right 50% has {right_density * 100:.2f}%)",
+        ))
+    elif top_share > STAGE_CARD_COLLAPSE_SHARE and bot_density < STAGE_CARD_COLLAPSE_OPP_MAX:
+        findings.append((
+            "FAIL",
+            f"collapsed content inside #stage-card (top 22% holds {top_share * 100:.1f}%, bottom 50% has {bot_density * 100:.2f}%)",
+        ))
+    return findings, meta
+
 def rgb_dist(a, b):
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2) ** 0.5
 
-def analyze(path):
+def analyze(path, stage_layout=None):
     img = Image.open(path).convert("RGB")
     W, H = img.size
     # downscale (NEAREST keeps the original palette) for fast stats
@@ -111,7 +283,11 @@ def analyze(path):
             findings.append(("WARN", f"under-scaled main stage ({stage_ratio * 100:.2f}% content in top 83%)"))
     if ink < 0.00001 and ratio >= EMPTY_RATIO:
         findings.append(("WARN", "no text-contrast pixels detected"))
-    return {
+    stage_card_meta = None
+    if stage_layout and _stage_card_probe_enabled():
+        sc_findings, stage_card_meta = _probe_stage_card_interior(img, px, sw, sh, stage_layout)
+        findings.extend(sc_findings)
+    out = {
         "file": os.path.basename(path),
         "dominant": tuple(dominant),
         "content_pct": round(ratio * 100, 2),
@@ -120,6 +296,9 @@ def analyze(path):
         "ink_pct": round(ink * 100, 3),
         "findings": findings,
     }
+    if stage_card_meta is not None:
+        out["stage_card"] = stage_card_meta
+    return out
 
 def main():
     ap = argparse.ArgumentParser()
@@ -130,10 +309,12 @@ def main():
     if not snaps:
         print("[verify-pixels] no snapshots/frame-*.png found — run snapshot first", file=sys.stderr)
         sys.exit(2)
+    stage_intervals = _load_stage_card_intervals(args.videodir) if _stage_card_probe_enabled() else []
     results, fails = [], 0
     for s in snaps:
         try:
-            r = analyze(s)
+            layout = _stage_layout_for_snapshot(s, stage_intervals)
+            r = analyze(s, stage_layout=layout)
         except Exception as e:
             print(f"[verify-pixels] cannot analyze {s}: {e}", file=sys.stderr)
             sys.exit(2)

@@ -129,7 +129,7 @@ class BuildPromptTest(unittest.TestCase):
         )
         with mock.patch.object(sb, "run_claude_result", return_value=(0, raw_board)) as rcr, \
              mock.patch.object(sb, "run_claude") as rc_write, \
-             mock.patch.dict(os.environ, {}, clear=False):
+             mock.patch.dict(os.environ, {sb.STORYBOARD_DURATION_GATE_ENV: "0"}, clear=False):
             os.environ.pop(sb.STORYBOARD_TEXT_OUT_ENV, None)
             out_path = sb.build_storyboard(d, None)
         rcr.assert_called_once()
@@ -299,6 +299,79 @@ class ProfileDenyTest(unittest.TestCase):
         for name in ("Read", "Edit", "Write"):
             self.assertNotIn(name, deny)
         self.assertEqual(_PROFILES["verify"]["max_turns"], 40)
+
+
+class DurationBudgetAndGateTest(unittest.TestCase):
+    def test_contract_card_copies_are_byte_identical(self):
+        a = "/app/skills/aiflow-build-storyboard/references/contract-card.md"
+        b = "/app/.claude/skills/aiflow-build-storyboard/references/contract-card.md"
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            self.assertEqual(fa.read(), fb.read())
+
+    def test_pacing_budget_scales_with_duration_and_language(self):
+        en30 = sc.compute_pacing_budget(30, "en")
+        en60 = sc.compute_pacing_budget(60, "en")
+        en90 = sc.compute_pacing_budget(90, "en")
+        zh60 = sc.compute_pacing_budget(60, "zh")
+
+        self.assertEqual(en60["unit_label"], "words")
+        self.assertGreaterEqual(en60["min_frames"], 8)
+        self.assertGreaterEqual(en60["min_units"], 120)
+        self.assertLess(en30["target_units"], en60["target_units"])
+        self.assertLess(en60["target_units"], en90["target_units"])
+
+        self.assertEqual(zh60["unit_label"], "Chinese chars")
+        self.assertGreaterEqual(zh60["min_units"], 200)
+
+    def test_prompt_inlines_pacing_budget_and_skips_verbatim(self):
+        d = tempfile.mkdtemp(prefix="sb-budget-")
+        with open(os.path.join(d, "BRIEF.md"), "w") as f:
+            f.write(BRIEF_MD)
+        with open(os.path.join(d, "frame.md"), "w") as f:
+            f.write(FRAME_MD)
+        p = sc.build_storyboard_prompt(d, contract_card="CARD", text_out=True)
+        self.assertIn("## Pacing & duration budget", p)
+        self.assertIn("60s", p)
+
+        with open(os.path.join(d, "VO_MODE"), "w") as f:
+            f.write("verbatim\n")
+        p_verb = sc.build_storyboard_prompt(d, contract_card="CARD", text_out=True)
+        self.assertNotIn("## Pacing & duration budget", p_verb)
+
+    def test_duration_gate_triggers_single_expansion_retry(self):
+        from unittest import mock
+
+        d = tempfile.mkdtemp(prefix="sb-gate-")
+        with open(os.path.join(d, "BRIEF.md"), "w") as f:
+            f.write(BRIEF_MD)
+        with open(os.path.join(d, "frame.md"), "w") as f:
+            f.write(FRAME_MD)
+
+        short_board = (
+            "---\nformat: 1920x1080\nduration: 60s\nmode: autonomous\n---\n\n"
+            "## Frame 1 — Hook\n- scene: s\n"
+            '- voiceover: "Is this stock worth buying today?"\n'
+            "- duration: 4s\n- src: compositions/frames/01-hook.html\n"
+        )
+        long_line = " ".join(["word"] * 20)
+        expanded_board = (
+            "---\nformat: 1920x1080\nduration: 60s\nmode: autonomous\n---\n\n"
+            + "\n".join(
+                f"## Frame {i} — Step {i}\n- scene: s{i}\n"
+                f'- voiceover: "{long_line}"\n'
+                f"- duration: 7s\n- src: compositions/frames/0{i}-step.html\n"
+                for i in range(1, 8)
+            )
+        )
+        with mock.patch.object(
+            sb, "run_claude_result", side_effect=[(0, short_board), (0, expanded_board)]
+        ) as rcr:
+            out_path = sb.build_storyboard(d, None)
+        self.assertEqual(rcr.call_count, 2)
+        self.assertIn("## Duration shortfall retry", rcr.call_args_list[1].args[1])
+        with open(out_path, encoding="utf-8") as f:
+            saved = f.read()
+        self.assertIn("## Frame 7 — Step 7", saved)
 
 
 if __name__ == "__main__":

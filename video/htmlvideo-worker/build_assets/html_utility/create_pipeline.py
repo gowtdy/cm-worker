@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,7 +18,21 @@ from html_utility.init_htmlvideo import init_htmlvideo
 from html_utility.render import render_video
 from html_utility.storyboard import build_storyboard
 from html_utility.verify import verify_frame
-from html_utility.visual import build_frame_visual
+from html_utility.visual import (
+    VISUAL_DRIVER_ENV,
+    build_frame_visual,
+    run_visual_phase_a,
+    run_visual_phase_b,
+)
+
+SYNC_BEFORE_VISUAL_B_ENV = "HTMLVIDEO_SYNC_BEFORE_VISUAL_B"
+
+
+def _env_on(name: str, default: bool = True) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "false", "off", "no")
 
 
 @dataclass
@@ -132,6 +147,54 @@ def _run_visual(logger: Any, project_dir: str) -> StepResult:
         )
 
 
+def _run_visual_phase_a(logger: Any, project_dir: str) -> tuple[StepResult, dict[str, str] | None]:
+    t0 = time.time()
+    try:
+        state = run_visual_phase_a(project_dir, logger)
+        return StepResult(ret=0, msg="ok", cost=time.time() - t0), state
+    except Exception as e:
+        return (
+            StepResult(
+                ret=1,
+                msg=f"Failed to build frame visual (phase A): {e}",
+                cost=time.time() - t0,
+            ),
+            None,
+        )
+
+
+def _run_visual_phase_b(
+    logger: Any,
+    project_dir: str,
+    state: dict[str, str] | None,
+    phase_a_cost: float,
+) -> StepResult:
+    t0 = time.time()
+    try:
+        path = run_visual_phase_b(
+            project_dir,
+            logger,
+            design=state["design"] if state else None,
+            tokens=state["tokens"] if state else None,
+        )
+        phase_b_cost = time.time() - t0
+        return StepResult(
+            ret=0,
+            msg="ok",
+            cost=phase_a_cost + phase_b_cost,
+            path=path,
+            extra_costs={"visual_phase_a": phase_a_cost, "visual_phase_b": phase_b_cost},
+        )
+    except Exception as e:
+        phase_b_cost = time.time() - t0
+        return StepResult(
+            ret=1,
+            msg=f"Failed to build frame visual (phase B): {e}",
+            cost=phase_a_cost + phase_b_cost,
+            extra_costs={"visual_phase_a": phase_a_cost, "visual_phase_b": phase_b_cost},
+        )
+
+
 def parallel_tts_visual(
     logger: Any,
     project_dir: str,
@@ -140,6 +203,62 @@ def parallel_tts_visual(
     task_id: str,
     domain: str,
 ) -> TtsVisualResult:
+    """Run TTS in parallel with Visual.
+
+    When ``HTMLVIDEO_SYNC_BEFORE_VISUAL_B=1`` (default ON, S3-1) and the visual
+    driver is enabled, splits Visual into Phase A + Phase B:
+      1. ``tts_generate`` || ``run_visual_phase_a``
+      2. ``sync_duration`` (0.1s, writes real TTS frame durations into STORYBOARD.md)
+      3. ``run_visual_phase_b`` (choreographs Scene windows against real TTS durations)
+    Set ``HTMLVIDEO_SYNC_BEFORE_VISUAL_B=0`` to roll back to legacy full-visual parallel.
+    """
+    if _env_on(SYNC_BEFORE_VISUAL_B_ENV, default=True) and _env_on(VISUAL_DRIVER_ENV, default=True):
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            fut_tts = ex.submit(_run_tts, logger, project_dir, modelcat, modelname, task_id)
+            fut_phase_a = ex.submit(_run_visual_phase_a, logger, project_dir)
+            pending = {fut_tts: "tts", fut_phase_a: "phase_a"}
+            tts_res: StepResult | None = None
+            phase_a_res: StepResult | None = None
+            phase_a_state: dict[str, str] | None = None
+            for fut in as_completed(pending):
+                kind = pending[fut]
+                if kind == "tts":
+                    tts_res = fut.result()
+                    if tts_res.ret == 0:
+                        _report_progress(
+                            logger,
+                            task_id,
+                            domain,
+                            TaskStatus.VIDEO_TTSED,
+                            f"task_id:{task_id} tts generated, project_dir:{project_dir} "
+                            f"cost:{tts_res.cost:.1f}s",
+                        )
+                else:
+                    phase_a_res, phase_a_state = fut.result()
+        assert tts_res is not None and phase_a_res is not None
+        if phase_a_res.ret != 0:
+            return TtsVisualResult(tts=tts_res, visual=phase_a_res)
+        if tts_res.ret == 0:
+            sync_t0 = time.time()
+            s_ret, s_msg = sync_duration(logger, project_dir, task_id)
+            logger.info(
+                "task_id:%s pre-phase-b sync_duration ret=%d cost=%.2fs msg=%s",
+                task_id, s_ret, time.time() - sync_t0, s_msg,
+            )
+        visual_res = _run_visual_phase_b(
+            logger, project_dir, phase_a_state, phase_a_res.cost,
+        )
+        if visual_res.ret == 0:
+            _report_progress(
+                logger,
+                task_id,
+                domain,
+                TaskStatus.VIDEO_VISUALED,
+                f"task_id:{task_id} frame visual built, frame_visual_path:{visual_res.path}, "
+                f"project_dir:{project_dir} cost:{visual_res.cost:.1f}s",
+            )
+        return TtsVisualResult(tts=tts_res, visual=visual_res)
+
     with ThreadPoolExecutor(max_workers=2) as ex:
         fut_tts = ex.submit(_run_tts, logger, project_dir, modelcat, modelname, task_id)
         fut_visual = ex.submit(_run_visual, logger, project_dir)

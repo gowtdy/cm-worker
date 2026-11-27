@@ -616,6 +616,46 @@ export function splitCanvasOverflow(infos, windows = [], opts = {}) {
 }
 
 /**
+ * True when an `escaped_container` warning represents real content escaping
+ * its clipping container (not captions, not background/decorative layers, and
+ * not purely inside a frame transition window).
+ */
+export function isBlockingEscapedContainer(item, windows = []) {
+  if (!item || String(item.code || "") !== "escaped_container") return false;
+  const targetText = `${item.selector || ""} ${item.container || ""} ${item.msg || ""}`;
+  if (/#caption-word|\.caption-line/i.test(targetText)) return false;
+  if (/(?:\.bg\b|\.deco[-_\w]*|\.glow[-_\w]*|\.atmosphere\b|watermark|ornament)/i.test(targetText)) {
+    return false;
+  }
+  if (Array.isArray(windows) && windows.length) {
+    const times = [item.firstSeen, item.lastSeen, item.time].filter((t) => typeof t === "number");
+    if (times.length && times.every((t) => windows.some(([lo, hi]) => t >= lo && t <= hi))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Split warnings into kept vs promoted blocking `escaped_container` findings. */
+export function splitEscapedContainer(warns, windows = []) {
+  const kept = [];
+  const promoted = [];
+  for (const w of warns || []) {
+    if (isBlockingEscapedContainer(w, windows)) {
+      promoted.push({
+        ...w,
+        mark: "✗",
+        fixHint:
+          "Element escaped its container bounds — fix CSS positioning (e.g. `left: 50%; top: 50%` instead of `left: 0` with `xPercent: -50`) or GSAP `cqw`/`cqh` offsets so content stays inside `#stage-card` / parent container (do NOT silence with `data-layout-allow-overflow`).",
+      });
+    } else {
+      kept.push(w);
+    }
+  }
+  return { kept, promoted };
+}
+
+/**
  * Machine-readable triage of check errors for deterministic auto-fixes.
  * Each overlap row carries both sides plus ``mark_side``: the harness marks
  * only that side and never falls back to the other one.

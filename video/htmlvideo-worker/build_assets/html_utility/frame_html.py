@@ -347,6 +347,7 @@ HEDGE_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE"
 HEDGE_AFTER_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_AFTER"
 MAX_HEDGES_ENV = "HTMLVIDEO_FRAME_HTML_MAX_HEDGES"
 HEDGE_EFFORT_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_EFFORT"
+SLIM_PRIMARY_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_PRIMARY"
 SLIM_FALLBACK_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_FALLBACK"
 SLIM_KEEP_SNIPPETS_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_KEEP_SNIPPETS"
 DEFAULT_HEDGE_AFTER = 150
@@ -1183,6 +1184,7 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
                 DEFAULT_HEDGE_EFFORT,
             )
         hedge_effort = DEFAULT_HEDGE_EFFORT
+    slim_primary = _env_on(SLIM_PRIMARY_ENV, default=True)
     slim_fallback = _env_on(SLIM_FALLBACK_ENV, default=True)
     slim_keep_snippets = _env_on(SLIM_KEEP_SNIPPETS_ENV, default=True)
     degrade_on = _env_on(DEGRADE_ENV)
@@ -1232,7 +1234,7 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
             kw["timeout"] = SALVAGE_TIMEOUT
         else:
             dispatch_text = _load_dispatch_text(project_dir, fid)
-            if slim_fallback and mode in ("degraded", "hedge"):
+            if (slim_primary and mode == "normal") or (slim_fallback and mode in ("degraded", "hedge")):
                 dispatch_text = _minimal_dispatch_text(
                     dispatch_text, keep_snippets=slim_keep_snippets)
             recipes_mode = _recipes_mode(dispatch_text)

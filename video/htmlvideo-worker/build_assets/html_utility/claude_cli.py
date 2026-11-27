@@ -710,9 +710,13 @@ def _log_parsed_result(
     return rc, result
 
 
-def _kill_process_group(proc: subprocess.Popen[str], logger: logging.Logger) -> None:
+def _kill_process_group(
+    proc: subprocess.Popen[str],
+    logger: logging.Logger,
+    grace_seconds: float | None = None,
+) -> None:
     """Terminate the whole session (claude + tool children), then escalate."""
-    if proc.pid is None:
+    if proc.pid is None or proc.poll() is not None:
         return
     try:
         pgid = os.getpgid(proc.pid)
@@ -722,17 +726,18 @@ def _kill_process_group(proc: subprocess.Popen[str], logger: logging.Logger) -> 
         os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         return
-    deadline = time.monotonic() + _TIMEOUT_GRACE_SECONDS
+    grace = _TIMEOUT_GRACE_SECONDS if grace_seconds is None else max(0.05, float(grace_seconds))
+    deadline = time.monotonic() + grace
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             return
-        time.sleep(0.1)
+        time.sleep(0.05)
     try:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         return
     try:
-        proc.wait(timeout=_TIMEOUT_GRACE_SECONDS)
+        proc.wait(timeout=min(grace, _TIMEOUT_GRACE_SECONDS))
     except subprocess.TimeoutExpired:
         logger.warning(
             "claude skill process group still alive after SIGKILL pgid=%s",
@@ -834,14 +839,19 @@ def _wait_claude_proc(
     )
     t_out.start()
     t_err.start()
+    killed_early = False
     try:
         while proc.poll() is None:
             now = time.monotonic()
             if now >= deadline:
+                killed_early = True
+                _kill_process_group(proc, logger, grace_seconds=0.5)
                 raise subprocess.TimeoutExpired(
                     proc.args if proc.args is not None else ["claude"], timeout
                 )
             if cancel_event is not None and cancel_event.is_set():
+                killed_early = True
+                _kill_process_group(proc, logger, grace_seconds=0.5)
                 raise _CancelledKill()
             if heartbeat and (now - last_beat) >= heartbeat:
                 logger.info(
@@ -858,23 +868,29 @@ def _wait_claude_proc(
                 last_watch = now
                 reason = watcher.poll()
                 if reason:
+                    killed_early = True
+                    _kill_process_group(proc, logger, grace_seconds=0.5)
                     raise _TruncatedKill(reason)
-            time.sleep(0.5)
+            time.sleep(0.25)
     finally:
-        t_out.join(timeout=_TIMEOUT_GRACE_SECONDS)
-        t_err.join(timeout=_TIMEOUT_GRACE_SECONDS)
+        if killed_early and proc.poll() is None:
+            _kill_process_group(proc, logger, grace_seconds=0.5)
+        join_timeout = 1.0 if killed_early else _TIMEOUT_GRACE_SECONDS
+        t_out.join(timeout=join_timeout)
+        t_err.join(timeout=join_timeout)
     return "".join(stdout_chunks)
 
 
 def _apply_debug_request_env(env: dict[str, str]) -> None:
-    """When HTMLVIDEO_CLAUDE_DEBUG_REQUEST is on (default ON; =0 disables), dump
-    full Anthropic request/response bodies to log/api-bodies and claude-debug.log.
+    """When HTMLVIDEO_CLAUDE_DEBUG_REQUEST is explicitly enabled (=1/true/yes/on),
+    dump full Anthropic request/response bodies to log/api-bodies and
+    claude-debug.log. Defaults OFF (2026-11-26 S1-5) to save disk IO.
 
     Claude Code is a Bun-compiled binary, so we set BUN_OPTIONS=--preload=...
     (equals form) rather than NODE_OPTIONS=--require.
     """
     raw = env.get("HTMLVIDEO_CLAUDE_DEBUG_REQUEST", "")
-    if raw.strip().lower() in _DEBUG_REQUEST_FALSY:
+    if raw.strip().lower() not in _DEBUG_REQUEST_TRUTHY:
         return
     env["ANTHROPIC_LOG"] = "debug"
     preload_flag = f"--preload={_INSPECT_PRELOAD}"
@@ -889,15 +905,16 @@ def _apply_debug_request_env(env: dict[str, str]) -> None:
 def _child_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
     """Build the Claude child environment.
 
-    Always drops built-in git/PR workflow text from the system prompt for this
+    Always drops built-in git/PR workflow text and auto-memory prompts for this
     non-interactive pipeline, and strips any inherited ``ANTHROPIC_LOG`` from
-    the worker daemon environment unless ``HTMLVIDEO_CLAUDE_DEBUG_REQUEST`` is
+    the worker daemon environment unless ``HTMLVIDEO_CLAUDE_DEBUG_REQUEST=1`` is
     enabled (or ``extra_env`` explicitly sets ``ANTHROPIC_LOG``) so normal runs
     do not dump multi-MB HTTP bodies into stdout and ``log/api-bodies``.
     """
     env = {
         **os.environ,
         "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1",
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
     }
     env.pop("ANTHROPIC_LOG", None)
     if "BUN_OPTIONS" in env and _INSPECT_PRELOAD in env["BUN_OPTIONS"]:

@@ -537,7 +537,9 @@ def _build_design_prompt(
         "## Blueprint assignment\n"
         f"<one line per frame, frames are: {joined}. Format: `F<num> = <blueprint> "
         "(Adapt|Reproduce)` — `<blueprint>` MUST be a valid catalog id or "
-        f"`{COMPOSE_BLUEPRINT}`>\n\n"
+        f"`{COMPOSE_BLUEPRINT}`; ALL frames hosted on the Shared Stage `#stage-card` "
+        "MUST be marked `(Adapt)` uniformly — do NOT spend thinking debating "
+        "`Adapt` vs `Reproduce` frame by frame>\n\n"
         + catalog_block
         + "\n"
         "3. **Exact H2 `## Shared stage spec` at the very end** (structured companion to "
@@ -1548,7 +1550,35 @@ def _run_frame_workers(
     return additions
 
 
-def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
+def _validate_frame_visual_prerequisites(project_dir: str) -> None:
+    hyperframes_path = os.path.join(project_dir, HYPERFRAMES_JSON)
+    frame_path = os.path.join(project_dir, FRAME_FILENAME)
+    storyboard_path = os.path.join(project_dir, STORYBOARD_FILENAME)
+    if not os.path.isfile(hyperframes_path):
+        raise FileNotFoundError(f"hyperframes.json missing: {hyperframes_path}")
+    if not os.path.isfile(frame_path):
+        raise FileNotFoundError(f"frame.md missing: {frame_path}")
+    if not os.path.isfile(storyboard_path):
+        raise FileNotFoundError(f"STORYBOARD.md missing: {storyboard_path}")
+    if os.path.getsize(storyboard_path) == 0:
+        raise ValueError(f"STORYBOARD.md is empty: {storyboard_path}")
+    with open(storyboard_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    if VIDEO_DIRECTION_HEADING in content:
+        raise ValueError(
+            f"STORYBOARD.md already has {VIDEO_DIRECTION_HEADING!r}: {storyboard_path} "
+            "(design already consumed — do not redesign)"
+        )
+
+
+def run_visual_phase_a(project_dir: str, logger: logging.Logger) -> dict[str, str]:
+    """Run Visual Phase A (global design contract + blueprint assignment gate).
+
+    Writes ``.hyperframes/visual/_design.md`` and returns ``{"design", "tokens"}``
+    so callers (e.g. ``create_pipeline.parallel_tts_visual``) can run
+    ``sync_duration`` before invoking ``run_visual_phase_b``.
+    """
+    _validate_frame_visual_prerequisites(project_dir)
     log = logger.info if logger else (lambda *a, **k: None)
     storyboard_path = os.path.join(project_dir, STORYBOARD_FILENAME)
     with open(storyboard_path, "r", encoding="utf-8") as f:
@@ -1647,6 +1677,41 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
     with open(os.path.join(project_dir, DESIGN_FILE), "w", encoding="utf-8") as f:
         f.write(design + "\n")
     log("visual driver: design contract ready (%d chars)", len(design))
+    return {"design": design, "tokens": tokens}
+
+
+def run_visual_phase_b(
+    project_dir: str,
+    logger: logging.Logger,
+    design: str | None = None,
+    tokens: str | None = None,
+) -> str:
+    """Run Visual Phase B (per-frame workers + merge + storyboard-gate).
+
+    Re-reads ``STORYBOARD.md`` fresh from disk so any ``sync_duration`` updates
+    written between Phase A and Phase B are picked up verbatim by every worker.
+    """
+    log = logger.info if logger else (lambda *a, **k: None)
+    storyboard_path = os.path.join(project_dir, STORYBOARD_FILENAME)
+    with open(storyboard_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    preamble, blocks, order = _split_storyboard(text)
+    if not order:
+        raise RuntimeError("STORYBOARD.md has no ## Frame N blocks")
+
+    visual_dir = os.path.join(project_dir, VISUAL_DIR)
+    os.makedirs(visual_dir, exist_ok=True)
+    if design is None:
+        with open(os.path.join(project_dir, DESIGN_FILE), "r", encoding="utf-8") as f:
+            design = f.read().strip()
+    if tokens is None:
+        frame_md = ""
+        try:
+            with open(os.path.join(project_dir, FRAME_FILENAME), "r", encoding="utf-8") as f:
+                frame_md = f.read()
+        except OSError:
+            pass
+        tokens = _frame_md_tokens(frame_md)
 
     # ── Phase B: parallel per-frame workers ───────────────────────────────
     max_workers = _env_positive_int(
@@ -1658,11 +1723,10 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
             os.remove(stale)
         except OSError:
             pass
-    # 2026-11-25 (6b06 review): Layout+Motion ledger defaults OFF (=1 opt-in).
-    # Per-frame coordinate tables burned 22k thinking in Phase B and triggered
-    # 41k-thinking contradictions in frame_html; Shared-stage spec + CSS Flex/Grid
-    # replace hand-calculated coordinate ledgers.
-    ledger_on = _env_on(VISUAL_LEDGER_ENV, default=False)
+    # 2026-11-26 (S2-1): Layout+Motion ledger defaults ON (=0 opt-out).
+    # Compact cqw/cqh coordinate + easing tables guide both medium primary and
+    # low hedge workers without needing raw multi-variant blueprint prose.
+    ledger_on = _env_on(VISUAL_LEDGER_ENV, default=True)
     color_catalog = frozenset(_color_token_names(tokens)) if ledger_on else None
     additions = _run_frame_workers(
         project_dir, blocks, order, design, visual_dir, max_workers, logger,
@@ -1716,7 +1780,7 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
     for round_no in range(1 + max_repair):
         gate = run_gate()
         if gate.returncode == 0:
-            return storyboard_path
+            return _validate_frame_visual_outputs(project_dir)
         gate_msg = (gate.stdout or "") + (gate.stderr or "")
         if round_no < max_repair:
             log("visual driver: gate FAILED, repair round %d/%d", round_no + 1, max_repair)
@@ -1724,6 +1788,13 @@ def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
             reenforce_blueprints()
     raise RuntimeError(
         f"storyboard-gate failed after {max_repair} repair round(s):\n{gate_msg}")
+
+
+def _build_frame_visual_driver(project_dir: str, logger: logging.Logger) -> str:
+    state = run_visual_phase_a(project_dir, logger)
+    return run_visual_phase_b(
+        project_dir, logger, design=state["design"], tokens=state["tokens"],
+    )
 
 
 def _validate_frame_visual_outputs(project_dir: str) -> str:
