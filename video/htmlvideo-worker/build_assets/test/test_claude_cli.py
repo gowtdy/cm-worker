@@ -298,21 +298,22 @@ class RunClaudeTests(unittest.TestCase):
             env["BUN_OPTIONS"], f"--smol --preload={_INSPECT_PRELOAD}"
         )
 
-    def test_debug_request_on_by_default_and_zero_disables(self) -> None:
-        # Default ON: unset HTMLVIDEO_CLAUDE_DEBUG_REQUEST enables ANTHROPIC_LOG + preload
-        _, _, _, kwargs_on = self._invoke(skill="intent")
-        env_on = kwargs_on["env"]
-        self.assertEqual(env_on["ANTHROPIC_LOG"], "debug")
-        self.assertEqual(env_on["BUN_OPTIONS"], f"--preload={_INSPECT_PRELOAD}")
-        # Explicit =0 disables and strips inherited ANTHROPIC_LOG + preload
-        self.popen_mock.reset_mock()
+    def test_debug_request_off_by_default_and_one_enables(self) -> None:
+        # S1-5: Default OFF — unset HTMLVIDEO_CLAUDE_DEBUG_REQUEST strips inherited ANTHROPIC_LOG + preload
         os.environ["ANTHROPIC_LOG"] = "debug"
         os.environ["BUN_OPTIONS"] = f"--smol --preload={_INSPECT_PRELOAD}"
-        os.environ["HTMLVIDEO_CLAUDE_DEBUG_REQUEST"] = "0"
         _, _, _, kwargs_off = self._invoke(skill="intent")
         env_off = kwargs_off["env"]
         self.assertNotIn("ANTHROPIC_LOG", env_off)
         self.assertEqual(env_off.get("BUN_OPTIONS"), "--smol")
+        self.assertEqual(env_off.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY"), "1")
+        # Explicit =1 enables ANTHROPIC_LOG + preload
+        self.popen_mock.reset_mock()
+        os.environ["HTMLVIDEO_CLAUDE_DEBUG_REQUEST"] = "1"
+        _, _, _, kwargs_on = self._invoke(skill="intent")
+        env_on = kwargs_on["env"]
+        self.assertEqual(env_on["ANTHROPIC_LOG"], "debug")
+        self.assertEqual(env_on["BUN_OPTIONS"], f"--smol --preload={_INSPECT_PRELOAD}")
 
     def test_empty_result_at_output_cap_promotes_to_truncated_rc(self) -> None:
         from html_utility.claude_cli import TRUNCATED_RC, run_claude_result
@@ -979,6 +980,96 @@ class TruncationWatcherTests(unittest.TestCase):
             f.write("not json\n{broken\n")
         self.assertIsNone(w2.poll())
         self.assertFalse(w2.disabled)
+
+
+class Stage1To3RegressionTests(unittest.TestCase):
+    def test_wait_claude_proc_cancel_exits_fast(self) -> None:
+        import subprocess
+        import sys
+        import threading
+        import time
+        from html_utility.claude_cli import _CancelledKill, _wait_claude_proc
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        cancel = threading.Event()
+        threading.Timer(0.15, cancel.set).start()
+        t0 = time.monotonic()
+        with self.assertRaises(_CancelledKill):
+            _wait_claude_proc(
+                proc, 30, logging.getLogger("test.cancel"),
+                skill="frame_html", label="F1", cancel_event=cancel,
+            )
+        elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 2.0, f"cancel took {elapsed:.2f}s (expected < 2.0s)")
+        self.assertIsNotNone(proc.poll())
+
+    def test_slim_primary_keeps_snippets_and_strips_blueprint(self) -> None:
+        from html_utility.frame_html import _minimal_dispatch_text
+
+        doc = (
+            "## Role\nrole text\n\n"
+            "## Assigned storyboard block\nScene 1\n\n"
+            "## Selected blueprint\nHuge multi-variant dark 3D blueprint\n\n"
+            "## Rule index\n- foo.md\n\n"
+            "## Rule recipes (snippets)\n- punch-in: spring\n"
+        )
+        slim = _minimal_dispatch_text(doc, keep_snippets=True)
+        self.assertNotIn("## Selected blueprint", slim)
+        self.assertNotIn("## Rule index", slim)
+        self.assertIn("## Rule recipes (snippets)", slim)
+        self.assertIn("punch-in: spring", slim)
+
+    def test_verify_blanket_allow_diff_guard_reverts(self) -> None:
+        import tempfile
+        from html_utility.verify import (
+            _detect_and_revert_blanket_allow,
+            _snapshot_composition_html,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            fdir = os.path.join(td, "compositions", "frames")
+            os.makedirs(fdir, exist_ok=True)
+            fpath = os.path.join(fdir, "02-test.html")
+            orig = (
+                "<template><div id='root'><div class='cat-pill'>01</div>"
+                "<div class='cat-pill'>02</div></div>"
+                "<style>.cat-pill{left:0}</style><script></script></template>"
+            )
+            with open(fpath, "w", encoding="utf-8") as fh:
+                fh.write(orig)
+            snap = _snapshot_composition_html(td)
+            # Blanket silencing (no style/script change, +2 allow attrs) -> reverted
+            silenced = orig.replace(
+                "class='cat-pill'",
+                "class='cat-pill' data-layout-allow-overlap='true'",
+            )
+            with open(fpath, "w", encoding="utf-8") as fh:
+                fh.write(silenced)
+            reverted = _detect_and_revert_blanket_allow(
+                td, snap, logging.getLogger("test.verify"),
+            )
+            self.assertEqual(reverted, ["compositions/frames/02-test.html"])
+            with open(fpath, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), orig)
+
+            # Legitimate CSS fix with 1 allow attr -> accepted
+            legit = orig.replace("left:0", "left:50%").replace(
+                "class='cat-pill'",
+                "class='cat-pill' data-layout-allow-overlap='true'",
+                1,
+            )
+            with open(fpath, "w", encoding="utf-8") as fh:
+                fh.write(legit)
+            reverted2 = _detect_and_revert_blanket_allow(
+                td, snap, logging.getLogger("test.verify"),
+            )
+            self.assertEqual(reverted2, [])
 
 
 if __name__ == "__main__":

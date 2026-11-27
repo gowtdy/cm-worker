@@ -25,6 +25,8 @@ import {
   splitSharedStageCrossfade,
   isBlockingCanvasOverflow,
   splitCanvasOverflow,
+  isBlockingEscapedContainer,
+  splitEscapedContainer,
 } from "../scripts/lib/verify-check-parse.mjs";
 
 const LAYOUT_AUDIT_JS = "/app/hyperframes/packages/cli/dist/commands/layout-audit.browser.js";
@@ -618,6 +620,39 @@ function testSharedStageCrossfade() {
   assert.equal(ovSplit.promoted.length, 1);
   assert.equal(ovSplit.kept.length, 4);
   assert.equal(ovSplit.promoted[0].mark, "✗");
+
+  // S1-3 (6b083ee7 F2): escaped_container promotion with transition/decor/caption guards
+  const escJson = {
+    layout: {
+      findings: [
+        {
+          code: "escaped_container", severity: "warning", time: 8.761,
+          selector: "div.cat-pill", containerSelector: "#stage-card",
+          sourceFile: "compositions/frames/02.html",
+          message: "Element extends outside its container.",
+        },
+        {
+          code: "escaped_container", severity: "warning", time: 26.4,
+          selector: "div.slide-card", containerSelector: "#stage-card",
+          sourceFile: "compositions/frames/05.html",
+          message: "Element extends outside its container.",
+        },
+        {
+          code: "escaped_container", severity: "warning", time: 10.0,
+          selector: "div.deco-glow.glow1", containerSelector: "#root",
+          sourceFile: "compositions/frames/06.html",
+          message: "Element extends outside its container.",
+        },
+      ],
+    },
+  };
+  const parsedEsc = parseCheckJson(escJson, { frameStarts: starts });
+  assert.equal(parsedEsc.warns.length, 3);
+  const escSplit = splitEscapedContainer(parsedEsc.warns, wins);
+  assert.equal(escSplit.promoted.length, 1);
+  assert.equal(escSplit.kept.length, 2);
+  assert.equal(escSplit.promoted[0].mark, "✗");
+  assert.equal(escSplit.promoted[0].selector, "div.cat-pill");
 }
 
 console.log("all verify-check-parse tests passed");
