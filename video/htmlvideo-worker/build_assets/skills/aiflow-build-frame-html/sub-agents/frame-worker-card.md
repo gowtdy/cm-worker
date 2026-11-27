@@ -30,9 +30,9 @@
 
 - **Top ~83% keep-out & NO in-frame caption band.** Root `captions.html` owns bottom ~17% (`y > 83cqh`) even when `Captions: disabled`. NEVER render `.caption-band`, bottom subtitle bars, or footer rules inside a frame.
 - **Scale & legibility floor.** Hero occupies `35–55%` of canvas (center ~`40–42cqh`, never a `<10%` lone box on empty ground). Pill/body labels `>= 1.05cqw` (load-bearing copy `>= 1.4cqw`, never `<0.85cqw`).
-- **Flex/Grid inside cards & splits (mandatory).** Lay out card interiors, slot racks, and side-by-side card+chart splits with `display: flex` or `display: grid`, `padding`, `gap`, and `box-sizing: border-box` (`min-width: 0`) — NEVER stack rows/titles/columns inside cards with raw `position: absolute` `%` offsets.
+- **Flex/Grid inside cards & splits (mandatory).** Lay out card interiors, slot racks, and side-by-side card+chart splits with `display: flex` or `display: grid`, `padding`, `gap`, and `box-sizing: border-box` (`min-width: 0`) — NEVER stack rows/titles/columns inside cards with raw `position: absolute` `%` offsets. When Scene 2 replaces Scene 1 inside `#stage-card`, place both states in the SAME overlapping slot (`display: grid` with `grid-area: 1 / 1` or shared absolute center anchor) instead of leaving a hidden `autoAlpha: 0` Scene 1 flex child occupying empty upper space.
 - **Contrast & Shared stage.** Text on white/cream surfaces MUST use `ink`; light candies (`yellow`/`lime`/`mint`/`peach`/`lavender`/`sky`) are pill FILLS only, NEVER text color on light surfaces. For a **Shared stage**, keep exact card width/grid and render ALL numbered slot labels identically across frames (dim inactive slots, never blank/`—`).
-- **Clean morphs & SVG axes.** Morph/swap transitions fade outgoing cards to `autoAlpha: 0` (never an `opacity: 0.3` ghost). SVG line charts put X-axis at bottom (`y = H - pad`); higher values have smaller `y`.
+- **Clean morphs & SVG axes.** Morph/swap transitions fade outgoing cards to `autoAlpha: 0` (never an `opacity: 0.3` ghost); when a centered closing stamp/seal lands over `#stage-card`, fade out any underlying headline/sub-line copy (`autoAlpha: 0`) at the handoff so the stamp never obscures opaque text. SVG line charts put X-axis at bottom (`y = H - pad`); higher values have smaller `y`.
 - **Short motion-graphics copy** — hero word / stat / 1–3 word label, never a narration sentence.
 - **Whole shot — never front-load.** Reveal pieces on voiceover cues (esp. back ~50%). Exits banned on non-final frames (`exit_animation_on_non_final_scene` — root transition IS the exit; fade-out only if final frame). Entrances via `fromTo`, hero visible by `t <= 0.5s`.
 - **Shot-sequence fidelity & Roles.** Every Scene = one timeline phase; named motions follow `RULES_DIR` recipes; keep blueprint signature move (`compose` = no template). `focal` = hero; `foreground subject` — text around not over; `background` — full-bleed; `supporting` — quiet. Built in SVG/CSS/type; only real media is user asset in `roles:`/`focal:` (`[video]` `.mp4` → muted `<video class="clip">` direct child of `#root`; image → `<img>`).
@@ -51,7 +51,7 @@
 
 ```js
 // CSS: #root{width:100cqw;height:100cqh} .X{position:absolute;left:50%;top:40%} — no CSS transform
-tl.set(".X", { xPercent: -50, yPercent: -50 }, 0); // centering lives in GSAP
+tl.set(".X", { xPercent: -50, yPercent: -50 }, 0); // ONLY for position:absolute;left:50%;top:50% — NEVER on flex/grid children or position:relative
 tl.fromTo(".X", { autoAlpha: 0, y: 40 }, { autoAlpha: 1, y: 0, duration: 0.6 }, 0.1);
 // fromTo paints "from" at build (immediateRender); a 2nd fromTo on same prop → immediateRender: false
 ```

@@ -963,9 +963,29 @@ class DriverFanOutTest(unittest.TestCase):
             vis.build_frame_visual(self.tmp, log)
         self.assertIn(("design-bp-fix", "visual_design"), calls2)
 
-    def test_ledger_is_default_on_and_opt_out_in_driver(self):
+    def test_ledger_is_default_off_and_opt_in_in_driver(self):
         import os
         os.environ.pop(vis.VISUAL_LEDGER_ENV, None)
+        prompts_off = []
+        def fake_off(project_dir, prompt, logger, **kw):
+            label = kw.get("label")
+            if label == "design":
+                return 0, ("## Blueprint assignment\nF1 = compose\nF2 = compose\n")
+            prompts_off.append(prompt)
+            return 0, (f"done OK {label[1:]}\n- focal: f\n- roles: r\n"
+                       "- rules: gsap-effects\nScene 1 (0–3): a\nScene 2 (3–6.2): b\n")
+        gate = mock.Mock(returncode=0, stdout="", stderr="")
+        log = logging.getLogger("test.visual.driver")
+        with mock.patch.object(vis, "run_claude_result", side_effect=fake_off), \
+                mock.patch.object(vis.subprocess, "run", return_value=gate), \
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}):
+            vis.build_frame_visual(self.tmp, log)
+        self.assertTrue(all("## Layout ledger" not in p for p in prompts_off))
+        self.assertTrue(all("NEVER redraw a second copy of the numbered slot" in p for p in prompts_off))
+
+        # Reset STORYBOARD and verify =1 opt-in enables ledger tables
+        with open(os.path.join(self.tmp, "STORYBOARD.md"), "w", encoding="utf-8") as f:
+            f.write(self.board)
         prompts_on = []
         def fake_on(project_dir, prompt, logger, **kw):
             label = kw.get("label")
@@ -975,30 +995,11 @@ class DriverFanOutTest(unittest.TestCase):
             return 0, (f"done OK {label[1:]}\n- focal: f\n- roles: r\n"
                        "- rules: gsap-effects\nScene 1 (0–3): a\nScene 2 (3–6.2): b\n"
                        + _GATE_LEDGER)
-        gate = mock.Mock(returncode=0, stdout="", stderr="")
-        log = logging.getLogger("test.visual.driver")
         with mock.patch.object(vis, "run_claude_result", side_effect=fake_on), \
                 mock.patch.object(vis.subprocess, "run", return_value=gate), \
-                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1"}):
+                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1", vis.VISUAL_LEDGER_ENV: "1"}):
             vis.build_frame_visual(self.tmp, log)
         self.assertTrue(all("## Layout ledger" in p for p in prompts_on))
-
-        # Reset STORYBOARD and verify =0 opt-out disables ledger tables
-        with open(os.path.join(self.tmp, "STORYBOARD.md"), "w", encoding="utf-8") as f:
-            f.write(self.board)
-        prompts_off = []
-        def fake_off(project_dir, prompt, logger, **kw):
-            label = kw.get("label")
-            if label == "design":
-                return 0, ("## Blueprint assignment\nF1 = compose\nF2 = compose\n")
-            prompts_off.append(prompt)
-            return 0, (f"done OK {label[1:]}\n- focal: f\n- roles: r\n"
-                       "- rules: gsap-effects\nScene 1 (0–3): a\nScene 2 (3–6.2): b\n")
-        with mock.patch.object(vis, "run_claude_result", side_effect=fake_off), \
-                mock.patch.object(vis.subprocess, "run", return_value=gate), \
-                mock.patch.dict(os.environ, {vis.VISUAL_DRIVER_ENV: "1", vis.VISUAL_LEDGER_ENV: "0"}):
-            vis.build_frame_visual(self.tmp, log)
-        self.assertTrue(all("## Layout ledger" not in p for p in prompts_off))
 
 
 _GATE = "/app/scripts/storyboard-gate.mjs"

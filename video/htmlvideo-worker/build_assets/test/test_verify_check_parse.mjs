@@ -331,6 +331,23 @@ function testTriageAutofixWhitelist() {
   assert.equal(full({ selector: "#stamp-text", container: "#hero" }).mark_side, "selector");
   // Mixed weak + strong on the same side: strong wins
   assert.equal(full({ selector: "div.pill-stamp", container: "#hero" }).reason, 'decorative token "stamp"');
+  // P0-3 (6b08f96c F7): stamp/seal over multi-word text block (e.g. subtitle) is NOT autofix-safe
+  const stampOverSub = full({
+    selector: "div.f7-sub",
+    container: "div.f7-stamp",
+    text: "Sell when any signal breaks.",
+  });
+  assert.equal(stampOverSub.kind, "designed_overlay");
+  assert.equal(stampOverSub.autofix, false);
+  assert.equal(stampOverSub.mark_side, null);
+  // Short 1–2 word label under stamp remains autofix-safe
+  const stampOverShort = full({
+    selector: "div.f7-sub",
+    container: "div.f7-stamp",
+    text: "SELL",
+  });
+  assert.equal(stampOverShort.autofix, true);
+  assert.equal(stampOverShort.mark_side, "container");
   // Weak tokens: designed, but left for the model; reason must not read as safe
   for (const [selector, container, tok] of [
     ["span.tag", "#hero", "tag"],
