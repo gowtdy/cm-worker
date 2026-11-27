@@ -391,6 +391,81 @@ for (const b of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
     .replace(/<!--[\s\S]*?-->/g, " ");
+
+  // --- P0-2 (6b08f96c F1): flow_element_xpercent_center ----------------------
+  // Applying GSAP `xPercent: -50` / `yPercent: -50` to a `position: relative`
+  // or normal-flow/flex element shifts it up-left by half its own size (clipping
+  // inside `overflow: hidden` cards). Aggregate CSS rules across each matched
+  // DOM element's id + all classes so `<div class="seal" id="check-seal">` with
+  // `.seal { position: absolute }` never false-positives.
+  if (/\b[xy]Percent\s*:\s*-50\b/.test(allJs)) {
+    const cssRules = [];
+    for (const cm of allCss.matchAll(/([^{}@]+)\{([^{}]+)\}/g)) {
+      const sels = cm[1].split(",").map((s) => s.trim()).filter(Boolean);
+      cssRules.push({ sels, decls: cm[2] });
+    }
+    const domNodes = [];
+    for (const tm of tplHtml.matchAll(/<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/g)) {
+      const tag = tm[1].toLowerCase();
+      const attrStr = tm[2];
+      const idM = /\bid\s*=\s*["']([^"']+)["']/i.exec(attrStr);
+      const clsM = /\bclass\s*=\s*["']([^"']+)["']/i.exec(attrStr);
+      const styleM = /\bstyle\s*=\s*["']([^"']+)["']/i.exec(attrStr);
+      domNodes.push({
+        tag,
+        id: idM ? idM[1].trim() : "",
+        classes: new Set(clsM ? clsM[1].trim().split(/\s+/).filter(Boolean) : []),
+        inlineStyle: styleM ? styleM[1] : "",
+      });
+    }
+    const matchesSimpleSel = (node, simpleSel) => {
+      // Only match the rightmost compound (after any combinator) if simple
+      const compound = simpleSel.trim().split(/[\s>+~]+/).pop() || "";
+      if (!compound) return false;
+      const cleanComp = compound.replace(/:[a-zA-Z-]+(?:\([^)]*\))?/g, "").replace(/\[[^\]]*\]/g, "");
+      const ids = [...cleanComp.matchAll(/#([A-Za-z_-][A-Za-z0-9_-]*)/g)].map((x) => x[1]);
+      const clss = [...cleanComp.matchAll(/\.([A-Za-z_-][A-Za-z0-9_-]*)/g)].map((x) => x[1]);
+      if (!ids.length && !clss.length) return false;
+      const tagM = /^([a-zA-Z][a-zA-Z0-9-]*)/.exec(cleanComp);
+      if (tagM && tagM[1].toLowerCase() !== node.tag) return false;
+      if (ids.some((id) => node.id !== id)) return false;
+      if (clss.some((c) => !node.classes.has(c))) return false;
+      return true;
+    };
+    const seenFlowSels = new Set();
+    for (const jm of allJs.matchAll(/\.(?:set|to|from|fromTo)\s*\(\s*["']([^"']+)["']\s*,\s*\{([^}]*)\}/g)) {
+      const rawSel = jm[1];
+      const varsStr = jm[2];
+      if (!/\b[xy]Percent\s*:\s*-50\b/.test(varsStr)) continue;
+      for (const part of rawSel.split(",")) {
+        const sel = part.trim();
+        if (!sel || seenFlowSels.has(sel)) continue;
+        // Skip complex descendant selectors for target lookup unless simple compound
+        if (/[\s>+~]/.test(sel)) continue;
+        const matched = domNodes.filter((n) => matchesSimpleSel(n, sel));
+        if (!matched.length) continue;
+        for (const node of matched) {
+          const declParts = [];
+          if (node.inlineStyle) declParts.push(node.inlineStyle);
+          for (const rule of cssRules) {
+            if (rule.sels.some((rs) => matchesSimpleSel(node, rs))) {
+              declParts.push(rule.decls);
+            }
+          }
+          const combined = declParts.join("; ");
+          if (/\bposition\s*:\s*(?:absolute|fixed)\b/i.test(combined)) continue;
+          const posMatches = [...combined.matchAll(/\bposition\s*:\s*([a-zA-Z-]+)/gi)];
+          const explicitPos = posMatches.length ? posMatches[posMatches.length - 1][1].toLowerCase() : "";
+          const hasOffset = /\b(?:left|top|inset)\s*:/i.test(combined);
+          if (explicitPos === "relative" || explicitPos === "static" || (!explicitPos && !hasOffset)) {
+            seenFlowSels.add(sel);
+            fail(`GSAP \`xPercent/yPercent: -50\` on non-absolute element "${sel}" (${explicitPos ? `position: ${explicitPos}` : "no position: absolute"}) shifts a flex/flow element off-center and risks clipping — remove \`xPercent/yPercent: -50\` on flex/flow children or use \`position: absolute; left: 50%; top: 50%\` (flow_element_xpercent_center)`);
+            break;
+          }
+        }
+      }
+    }
+  }
   const domIds = new Set();
   const domClasses = new Set();
   for (const im of tplHtml.matchAll(/\bid\s*=\s*["']([^"']+)["']/gi)) {
