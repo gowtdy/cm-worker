@@ -347,8 +347,6 @@ HEDGE_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE"
 HEDGE_AFTER_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_AFTER"
 MAX_HEDGES_ENV = "HTMLVIDEO_FRAME_HTML_MAX_HEDGES"
 HEDGE_EFFORT_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_EFFORT"
-SLIM_PRIMARY_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_PRIMARY"
-SLIM_FALLBACK_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_FALLBACK"
 SLIM_KEEP_SNIPPETS_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_KEEP_SNIPPETS"
 DEFAULT_HEDGE_AFTER = 150
 DEFAULT_MAX_HEDGES = 6
@@ -556,33 +554,31 @@ def _worker_prompt(
     if recipes_mode == "full":
         recipe_line = (
             "What the dispatch inlines: the frame.md design-token excerpt, the rule "
-            "card, your storyboard block, the selected blueprint body, and every "
-            "cited rule recipe IN FULL under `## Rule recipes (full)` (the "
-            "`## Rule index` lists their RULES_DIR paths for reference only). Do "
+            "card, your storyboard block, and every "
+            "cited rule recipe IN FULL under `## Rule recipes (full)`. Do "
             "NOT Read any recipe; never open frame.md or _role.md — they cannot "
             "add what the dispatch already carries.")
     elif recipes_mode == "snippets":
         if text_out:
             recipe_line = (
                 "What the dispatch inlines: the frame.md design-token excerpt, the rule "
-                "card, your storyboard block, the selected blueprint body, and a "
+                "card, your storyboard block, and a "
                 "mechanism + core-code SNIPPET of every cited recipe under "
                 "`## Rule recipes (snippets)`. Everything you need is inlined — do "
                 "NOT Read any recipe, frame.md, or _role.md.")
         else:
             recipe_line = (
                 "What the dispatch inlines: the frame.md design-token excerpt, the rule "
-                "card, your storyboard block, the selected blueprint body, and a "
+                "card, your storyboard block, and a "
                 "mechanism + core-code SNIPPET of every cited recipe under "
-                "`## Rule recipes (snippets)`. The `## Rule index` still lists the "
-                "`RULES_DIR/<id>.md` paths: do NOT batch-read them — Read a full "
+                "`## Rule recipes (snippets)`. Do NOT batch-read recipe files — Read a full "
                 "recipe only when a detail you need is missing from its snippet (at "
                 "most once per recipe); never open frame.md or _role.md — they cannot "
                 "add what the dispatch already carries.")
     else:
         recipe_line = (
             "What the dispatch inlines: the frame.md design-token excerpt, the rule "
-            "card, your storyboard block, and the selected blueprint body. Rule "
+            "card, and your storyboard block. Rule "
             "recipes are NOT inlined — the dispatch carries only a `## Rule index` "
             "of `RULES_DIR/<id>.md` paths. In your FIRST tool turn, Read every "
             "recipe listed in the Rule index in one parallel batch (all Read calls "
@@ -690,6 +686,14 @@ def _worker_prompt(
             f"one line: done OK {frame_id}\n"
             f"- On an unrecoverable failure instead reply only: fail {frame_id}: <reason>"
         )
+    if text_out:
+        dispatch_text = dispatch_text.replace(
+            "Do NOT batch-read the recipes; Read a full `RULES_DIR/<id>.md` only when a detail you need is missing (at most once per recipe). This overrides the card's first-turn recipe batch read.",
+            "Implement directly from these mechanism + core-code snippets (tools are disabled in this session — do NOT call Read).",
+        ).replace(
+            "// … truncated — Read the full recipe for the rest",
+            "// … snippet end (implement from the mechanism + core pattern above)",
+        )
     has_ledger = "## Layout ledger" in dispatch_text or "## Motion ledger" in dispatch_text
     ledger_line = (
         "- when the dispatch carries a `## Layout ledger` / `## Motion ledger`,\n"
@@ -714,10 +718,8 @@ STORYBOARD.md — exploring sibling frames burns turns and cannot help this fram
 Conflict priority (higher wins): the `## Resolved conflicts` rulings at the end
 of the dispatch (when present — they already settle the contradictions, do not
 re-deliberate) > the time-coded Scene list in your storyboard block >
-`## Video direction` / design contract > the blueprint body > frame.md
-narrative prose. frame.md token VALUES (hex, font families) are always exact.
-If the block lists several `- blueprint:` lines, the one under
-`## Selected blueprint` is authoritative.
+`## Video direction` / design contract > frame.md narrative prose. frame.md
+token VALUES (hex, font families) are always exact.
 
 {turn_line} Hard no-ops in thinking (each wastes the whole turn):
 - do NOT re-list the Scene beats — they are in your storyboard block below;
@@ -740,9 +742,12 @@ If the block lists several `- blueprint:` lines, the one under
   `<svg preserveAspectRatio="none">` bracket/frame directly on `#root` around a
   narrower centered group (place brackets inside the tight flex/grid group
   container or use CSS `border`).
-- NO manual `onUpdate` / `gsap.ticker` master time loops to drive text, glitch
-  ghosts, or state machines — always use declarative `tl.set` / `tl.to` /
-  `tl.fromTo` and the pre-injected `__hf.type` / `__hf.draw` helpers.
+- NO manual `gsap.ticker` / `requestAnimationFrame` loops or full-frame
+  `onUpdate` master state machines to drive scene transitions or typing — use
+  `tl.set` (instant text swaps), `__hf.type` (character typing), `tl.to` /
+  `tl.fromTo`, and `__hf.draw`; bounded per-effect `onUpdate` proxies from an
+  inlined recipe (e.g. `chromatic-glitch` amplitude envelope or
+  `sine-wave-loop` phase) are allowed.
 - NO inline `<svg><feTurbulence>` noise filters or URL-encoded SVG data-URI
   grain textures — use flat colors and lightweight CSS `radial-gradient` only.
 {draft_line}
@@ -1051,8 +1056,10 @@ def _hedge_suffix(text_out=False):
         "per element (rise/fade/scale-pop), static per-Scene layout, no 3D, no "
         "particles, no counters. Priority: a valid file with every Scene present "
         "> visual richness. Hard guardrails: (1) any `left: 50%` centered element "
-        "MUST include `transform: translateX(-50%)` (or flex centering on its "
-        "container); (2) quote every CSS-unit value in GSAP tweens (e.g. "
+        "MUST center via GSAP `xPercent: -50` when GSAP animates it (never mix "
+        "CSS `transform` with GSAP), or CSS `transform: translateX(-50%)` when "
+        "purely static (prefer flex/grid centering on its container); (2) quote "
+        "every CSS-unit value in GSAP tweens (e.g. "
         "`y: \"2cqh\"`, never bare `y: 2cqh`); (3) NEVER render literal "
         "placeholders (`— figure —`, `{metric}`, `N%`) — use short qualitative "
         "labels when no number exists; (4) on shared-stage frames keep "
@@ -1188,8 +1195,6 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
                 DEFAULT_HEDGE_EFFORT,
             )
         hedge_effort = DEFAULT_HEDGE_EFFORT
-    slim_primary = _env_on(SLIM_PRIMARY_ENV, default=True)
-    slim_fallback = _env_on(SLIM_FALLBACK_ENV, default=True)
     slim_keep_snippets = _env_on(SLIM_KEEP_SNIPPETS_ENV, default=True)
     degrade_on = _env_on(DEGRADE_ENV)
     degrade_window = _env_positive_int(
@@ -1238,9 +1243,9 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
             kw["timeout"] = SALVAGE_TIMEOUT
         else:
             dispatch_text = _load_dispatch_text(project_dir, fid)
-            if (slim_primary and mode == "normal") or (slim_fallback and mode in ("degraded", "hedge")):
-                dispatch_text = _minimal_dispatch_text(
-                    dispatch_text, keep_snippets=slim_keep_snippets)
+            keep_snips = True if mode == "normal" else slim_keep_snippets
+            dispatch_text = _minimal_dispatch_text(
+                dispatch_text, keep_snippets=keep_snips)
             recipes_mode = _recipes_mode(dispatch_text)
             prompt = _worker_prompt(
                 fid, skeleton_mode, project_dir=project_dir,

@@ -160,7 +160,7 @@ _FIX_HARD_CONSTRAINTS = """Hard constraints for this fix role (override project 
 - Do NOT run verify-all / lint / check / snapshot / `npm run check`.
 - Project CLAUDE.md "Always invoke skill" / "ALWAYS RUN check" do NOT apply here.
 - Edit `compositions/**/*.html` only, in ONE batched pass (parallel Edits), then stop.
-- Read each target file (absolute path) at most ONCE, then Edit it. Do NOT
+- Read each target file (absolute path) at most ONCE, then Edit it (skip Read when the file is already inlined below). Do NOT
   Grep / Glob / list directories or open files the findings do not name.
 """
 
