@@ -1,11 +1,11 @@
 # Frame worker — executable rule card (aiflow-build-frame-html)
 
-> Compact dispatch contract: this card + frame block + inlined blueprint +
-> frame.md token excerpt. Recipes default to `## Rule recipes (snippets)` in
-> the dispatch; follow that note (full `RULES_DIR` Read only if a detail is
-> missing). Index-only packets: batch-Read every Rule index path once.
-> Never open `frame.md` / `_role.md`. Priority: `## Resolved conflicts` rulings >
-> Scene list > Video direction > blueprint > frame.md prose (token values always exact).
+> Compact dispatch contract: this card + frame.md token excerpt + Design
+> contract + Assigned storyboard block + `## Rule recipes (snippets)`. Follow
+> inlined snippets directly (Read `RULES_DIR` only when tools are enabled and
+> a detail is missing). Never open `frame.md` / `_role.md`. Priority:
+> `## Resolved conflicts` rulings > Scene list > Video direction > frame.md
+> prose (token values always exact).
 
 ## Hard structural gates (frame-selfcheck FAIL codes; the driver checks them)
 
@@ -37,7 +37,7 @@
 - **Clean morphs & SVG axes.** Fade outgoing morph cards to `autoAlpha: 0` (no `opacity: 0.3` ghost); when a centered stamp/seal lands over `#stage-card`, fade underlying headline/sub-line to `autoAlpha: 0`. SVG line charts put X-axis at bottom (`y = H - pad`).
 - **Short motion-graphics copy** — hero word / stat / 1–3 word label, never a narration sentence.
 - **Whole shot — never front-load.** Reveal on voiceover cues (esp. back ~50%). Exits banned on non-final frames (`exit_animation_on_non_final_scene` — root transition IS the exit; fade-out only if final frame). Entrances via `fromTo`, hero visible by `t <= 0.5s`.
-- **Shot-sequence fidelity & Roles.** Every Scene = one timeline phase; named motions follow `RULES_DIR` recipes; keep blueprint signature move (`compose` = no template). `focal` = hero; `foreground subject` — text around not over; `background` — full-bleed; `supporting` — quiet. Only real media is user asset in `roles:`/`focal:` (`[video]` `.mp4` → muted `<video class="clip">` direct child of `#root`; image → `<img>`).
+- **Shot-sequence fidelity & Roles.** Every Scene = one timeline phase; named motions follow inlined recipes; follow `Adapt:` and Scene cues directly. `focal` = hero; `foreground subject` — text around not over; `background` — full-bleed; `supporting` — quiet. Only real media is user asset in `roles:`/`focal:` (`[video]` `.mp4` → muted `<video class="clip">` direct child of `#root`; image → `<img>`).
 - **Same-track clips never overlap** (`timeline_track_too_dense`) — track = temporal lane, stacking = `z-index`; nest ambient décor/glow/badges inside one parent clip (children without timing attrs) or use distinct `data-track-index` lanes.
 - **Full-bleed ground on `class="clip"`, never `background` on `#root`.** One full-duration background clip on track `0`.
 - **GSAP owns transforms.** Never put CSS `transform` on a GSAP-animated element (`gsap_css_transform_conflict`); center via `xPercent`/`yPercent`. Static CSS `transform: rotate(…)` on non-animated décor (and untouched `.hf-stage-lockup` skeleton CSS) is allowed and never triggers lint — do not audit it. Never tween layout props (`fontSize`/`letterSpacing`/`wordSpacing`/`width`/`height`/`top`/`left`/`margin*`/`padding*`/`roundProps` — `gsap_non_transform_motion`); tween `scale` instead.
