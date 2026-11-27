@@ -687,13 +687,13 @@ export function testBareModeBlueprint() {
     cardPath: card, frameMdPath: join(dir, "frame.md"), storyboard: sb,
   });
   const t3 = readFileSync(docs[0].path, "utf8");
-  assert.ok(t3.includes("## Selected blueprint: typewriter-reveal (mode: Adapt)"), "id from assignment");
-  assert.ok(t3.includes("BODY-typewriter"));
+  assert.ok(!t3.includes("## Selected blueprint"), "dispatch docs omit Selected blueprint (consumed upstream by visual)");
+  assert.ok(!t3.includes("BODY-typewriter"), "dispatch docs do not inline blueprint prose");
   const kinds = docs[0].conflicts.map((c) => c.kind);
   assert.ok(!kinds.includes("blueprint-assignment") && !kinds.includes("blueprint-fields"), kinds.join(","));
   assert.ok(!/`(?:Adapt|Reproduce)` is the frame's blueprint/i.test(t3));
   assert.ok(!t3.includes("ignore the assignment"));
-  // type-only rotation ban vs card tilt → scoped ruling, not the global 3D drop
+  // type-only rotation ban vs card tilt (from block prose) → scoped ruling, not the global 3D drop
   assert.ok(kinds.includes("type-rotation-scope"), kinds.join(","));
   assert.ok(!kinds.includes("negative-list-3d"), "type-scoped ban must not drop card 3D");
   const tail = t3.slice(t3.indexOf("## Resolved conflicts"));
@@ -743,12 +743,12 @@ export function testDualBlueprintDispatch() {
     cardPath: card, frameMdPath: join(dir, "frame.md"), storyboard: sb,
   });
   const t1 = readFileSync(docs[0].path, "utf8");
-  assert.ok(t1.includes("## Selected blueprint: titlecard-reveal (mode: Reproduce)"), "frame 1 heading");
-  assert.ok(t1.includes("BODY-titlecard-reveal"), "frame 1 inlines the moded blueprint");
-  assert.ok(!t1.includes("BODY-kinetic-type-beats"), "frame 1 must not inline the superseded blueprint");
-  assert.ok(t1.includes("superseded"), "frame 1 notes the superseded field");
+  assert.ok(!t1.includes("## Selected blueprint"), "dispatch docs omit Selected blueprint");
+  assert.ok(!t1.includes("BODY-titlecard-reveal"), "dispatch docs do not inline blueprint prose");
+  assert.ok(!t1.includes("BODY-kinetic-type-beats"), "frame 1 must not inline superseded blueprint");
+  assert.ok(t1.includes("superseded"), "frame 1 still rules on conflicting - blueprint: lines in Resolved conflicts");
   const t2 = readFileSync(docs[1].path, "utf8");
-  assert.ok(t2.includes("## Selected blueprint: kinetic-type-beats (mode: Adapt)"), "frame 2 heading");
+  assert.ok(!t2.includes("## Selected blueprint"), "frame 2 omits Selected blueprint");
   assert.ok(!t2.includes("BODY-grid-card-assemble"));
   // legacy packet path uses the same selection
   const pk = core.buildFramePackets({
@@ -870,9 +870,8 @@ export function testNarrowBlueprint() {
     projectDir: dir, frames, outDir: join(dir, out), animationDir: dir, cardPath: card, storyboard: sb,
   })[0].path, "utf8");
   const on = withEnv("HTMLVIDEO_FRAME_PACKETS_NARROW_BLUEPRINT", undefined, () => build("on"));
-  assert.ok(on.includes(`## Selected blueprint: kinetic-type-beats (mode: Reproduce)\n\n${core.NARROWED_BLUEPRINT_NOTE}`));
-  const off = withEnv("HTMLVIDEO_FRAME_PACKETS_NARROW_BLUEPRINT", "0", () => build("off"));
-  assert.ok(!off.includes(core.NARROWED_BLUEPRINT_NOTE) && off.includes(KINETIC.trim()), "off → full blueprint");
+  assert.ok(!on.includes("## Selected blueprint"), "dispatch docs no longer inline Selected blueprint prose");
+  assert.ok(!on.includes(KINETIC.trim()), "dispatch docs omit full blueprint body");
   console.log("narrow blueprint OK", plainBytes, Buffer.byteLength(hook.text), "bytes");
 }
 

@@ -1241,7 +1241,10 @@ class SharedStageAndHedgeOptimizationTest(unittest.TestCase):
         prompt = fh._worker_prompt(
             "01-hook", skeleton_mode=False, dispatch_text="# Dispatch: 01-hook\n", text_out=True
         )
-        self.assertIn("NO manual `onUpdate` / `gsap.ticker`", prompt)
+        self.assertIn("NO manual `gsap.ticker` / `requestAnimationFrame`", prompt)
+        self.assertIn("bounded per-effect `onUpdate` proxies", prompt)
+        self.assertNotIn("SLIM_PRIMARY_ENV", dir(fh))
+        self.assertNotIn("## Selected blueprint", prompt)
         self.assertIn("NO inline `<svg><feTurbulence>`", prompt)
         self.assertIn("NEVER set `white-space: nowrap` on multi-word sentences", prompt)
         self.assertIn("never ghost side-by-side", prompt)
