@@ -268,8 +268,12 @@ for (const b of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script
 // Skip thin dividers, explicit right-anchored/half-width panes, and rules that
 // already center via transform, negative margin-left, or GSAP xPercent: -50.
 {
-  const allJs = [...html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
-    .map((b) => b[1]).join("\n");
+  const stripRuntime = (s) => s.replace(/\/\* hf-runtime-start \*\/[\s\S]*?\/\* hf-runtime-end \*\//g, "");
+  const stripJsComments = (s) => s
+    .replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "))
+    .replace(/(?<!:)\/\/[^\n]*/g, (c) => c.replace(/[^\n]/g, " "));
+  const inlineScripts = [...html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)];
+  const allJs = inlineScripts.map((b) => stripJsComments(stripRuntime(b[1]))).join("\n");
   const hasJsXPercent = /\bxPercent\s*:\s*-50\b/.test(allJs);
   const allCss = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)]
     .map((b) => b[1].replace(/\/\*[\s\S]*?\*\//g, " ")).join("\n");
@@ -288,6 +292,138 @@ for (const b of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script
     } else {
       warn(`uncentered \`left: 50%\` on "${sel}" without translateX(-50%) / xPercent: -50 (uncentered_left_50)`);
     }
+  }
+
+  // --- S1-2: gsap_camelcase_data_prop ---------------------------------------
+  // GSAP ignores bare camelCase `dataState:` / `dataAccent:` in tween vars;
+  // callers must use `attr: { "data-state": ... }` (6b082a5b F3).
+  for (const b of inlineScripts) {
+    const clean = stripJsComments(stripRuntime(b[1]));
+    // Mask string literals so prose inside strings never triggers.
+    const noStr = clean.replace(/(["'`])(?:\\.|(?!\1)[^\\\n])*\1/g, (s) => " ".repeat(s.length));
+    for (const dm of noStr.matchAll(/(?<![.\w$])(data[A-Z][A-Za-z0-9]*)\s*:/g)) {
+      const prop = dm[1];
+      const kebab = prop.replace(/([A-Z])/g, "-$1").toLowerCase();
+      fail(`camelCase GSAP data property "${prop}:" — GSAP does not mutate data-* attributes via camelCase; use \`attr: { "${kebab}": ... }\` (gsap_camelcase_data_prop)`);
+    }
+
+    // --- S1-2: gsap_label_concat --------------------------------------------
+    // `"scene1" + i * 0.14` evaluates to `"scene10.14"` (invalid label) instead
+    // of `` `scene1+=${i * 0.14}` `` (6b083ee7 F2).
+    for (const lm of clean.matchAll(/["'](scene\d*)["']\s*\+\s*(?!\s*["'`]\s*[+-]=)/g)) {
+      fail(`broken GSAP label concatenation \`"${lm[1]}" + ...\` — JS stringifies to "${lm[1]}0.14"; use template literal \`\\\`${lm[1]}+=\${...}\\\`\` (gsap_label_concat)`);
+    }
+
+    // --- S1-2: gsap_fromto_delayed_leak -------------------------------------
+    // `tl.fromTo(target, { autoAlpha: 0.6 }, ..., at > 0)` without
+    // `immediateRender: false` paints the `from` state at t=0 (6b083ee7 F6).
+    const ftRe = /\b(?:tl|timeline|gsap)\.fromTo\s*\(/g;
+    for (const fm of clean.matchAll(ftRe)) {
+      const startIdx = fm.index + fm[0].length;
+      let depth = 1;
+      let inStr = null;
+      let i = startIdx;
+      const args = [];
+      let argStart = startIdx;
+      for (; i < clean.length && depth > 0; i++) {
+        const ch = clean[i];
+        if (inStr) {
+          if (ch === "\\") { i++; continue; }
+          if (ch === inStr) inStr = null;
+          continue;
+        }
+        if (ch === '"' || ch === "'" || ch === "`") { inStr = ch; continue; }
+        if (ch === "(" || ch === "{" || ch === "[") depth++;
+        else if (ch === ")" || ch === "}" || ch === "]") {
+          depth--;
+          if (depth === 0) {
+            args.push(clean.slice(argStart, i).trim());
+            break;
+          }
+        } else if (ch === "," && depth === 1) {
+          args.push(clean.slice(argStart, i).trim());
+          argStart = i + 1;
+        }
+      }
+      if (args.length >= 4) {
+        const [targetArg, fromArg, toArg, posArg] = args;
+        const pos = posArg.trim();
+        const isZeroPos =
+          /^0(?:\.0+)?$/.test(pos)
+          || /^["'](?:0|scene1)["']$/.test(pos);
+        const fromVisible = /\b(?:autoAlpha|opacity)\s*:\s*(?:0?\.[1-9]\d*|1(?:\.0+)?)\b/.test(fromArg);
+        const hasNoImm = /\bimmediateRender\s*:\s*false\b/.test(fromArg) || /\bimmediateRender\s*:\s*false\b/.test(toArg);
+        if (!isZeroPos && fromVisible && !hasNoImm) {
+          fail(`delayed \`fromTo(${targetArg}, ...)\` at position ${pos} paints visible \`from\` state at t=0 — add \`immediateRender: false\` (gsap_fromto_delayed_leak)`);
+        }
+      }
+    }
+  }
+
+  // --- S1-2: abs_zero_xpercent_center ---------------------------------------
+  // `position: absolute; left: 0;` (without `width: 100%` or `right: 0`) paired
+  // with GSAP `xPercent: -50` pins the element center on the left edge (6b083ee7 F2).
+  if (hasJsXPercent) {
+    for (const m of allCss.matchAll(/([^{}@]+)\{([^{}]+)\}/g)) {
+      const sel = m[1].trim();
+      const decls = m[2];
+      if (!/\bposition\s*:\s*absolute\b/i.test(decls)) continue;
+      if (!/\bleft\s*:\s*0(?:px|%|cqw|cqh|em|rem)?\s*(?:;|$)/i.test(decls)) continue;
+      if (/\bwidth\s*:\s*100(?:%|cqw)\b/i.test(decls)) continue;
+      if (/\bright\s*:\s*0\b/i.test(decls)) continue;
+      if (/\binset\s*:/i.test(decls)) continue;
+      const selTokens = [...sel.matchAll(/[#.][A-Za-z_-][A-Za-z0-9_-]*/g)].map((x) => x[0]);
+      if (!selTokens.length) continue;
+      const referencedInJs = selTokens.some((tok) => {
+        const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return new RegExp(`["'\`][^"'\`]*${esc}(?![A-Za-z0-9_-])[^"'\`]*["'\`]`).test(allJs);
+      });
+      if (referencedInJs) {
+        fail(`\`position: absolute; left: 0\` on "${sel}" combined with GSAP \`xPercent: -50\` pins element center on the left edge — use \`left: 50%; top: 50%\` for centered positioning (abs_zero_xpercent_center)`);
+      }
+    }
+  }
+
+  // --- S1-2: missing_dom_selector -------------------------------------------
+  // Validate static `#id` / `.class` selectors passed to `__hf.draw` / `__hf.type`
+  // exist in the <template> DOM (6b083ee7 F6 `#capsule-check` vs `.capsule-check`).
+  const tplHtml = (tplOpen !== -1 && tplClose !== -1 ? html.slice(tplOpen, tplClose) : html)
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ");
+  const domIds = new Set();
+  const domClasses = new Set();
+  for (const im of tplHtml.matchAll(/\bid\s*=\s*["']([^"']+)["']/gi)) {
+    domIds.add(im[1].trim());
+  }
+  for (const cm of tplHtml.matchAll(/\bclass\s*=\s*["']([^"']+)["']/gi)) {
+    for (const c of cm[1].split(/\s+/)) {
+      if (c) domClasses.add(c);
+    }
+  }
+  const checkStaticSelector = (rawSel, helperName) => {
+    if (!rawSel || rawSel.includes("${")) return;
+    for (const part of rawSel.split(",")) {
+      const p = part.trim();
+      if (!p) continue;
+      for (const idM of p.matchAll(/#([A-Za-z_-][A-Za-z0-9_-]*)/g)) {
+        if (!domIds.has(idM[1])) {
+          fail(`${helperName} selector "${rawSel}" references missing id "#${idM[1]}" not found in <template> DOM (missing_dom_selector)`);
+        }
+      }
+      for (const clsM of p.matchAll(/\.([A-Za-z_-][A-Za-z0-9_-]*)/g)) {
+        if (!domClasses.has(clsM[1])) {
+          fail(`${helperName} selector "${rawSel}" references missing class ".${clsM[1]}" not found in <template> DOM (missing_dom_selector)`);
+        }
+      }
+    }
+  };
+  for (const dm of allJs.matchAll(/\b__hf\.draw\s*\(\s*[^,]+,\s*["']([^"']+)["']/g)) {
+    checkStaticSelector(dm[1], "__hf.draw");
+  }
+  for (const tm of allJs.matchAll(/\b__hf\.type\s*\(\s*[^,]+,\s*["']([^"']+)["'](?:\s*,\s*["']([^"']+)["'])?/g)) {
+    checkStaticSelector(tm[1], "__hf.type");
+    if (tm[2]) checkStaticSelector(tm[2], "__hf.type");
   }
 }
 

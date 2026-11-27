@@ -506,7 +506,7 @@ export const KNOWN_FAILURES = [
       ];
       if (tri.designed_overlay.length) rows.push(`- designed_overlay×${tri.designed_overlay.length} (${where(tri.designed_overlay)}) → add data-layout-allow-overlap="true" on the text or an inner container (NOT the scene root).`);
       if (tri.real_collision.length) rows.push(`- real_collision×${tri.real_collision.length} (${where(tri.real_collision)}) → reposition / reduce size; do NOT allow-overlap.`);
-      if (tri.ambiguous.length) rows.push(`- ambiguous×${tri.ambiguous.length} (${where(tri.ambiguous)}) → sibling badges overlaying in the SAME circle/box (a number next to a check/tick) = data-layout-allow-overlap="true"; two text blocks that should sit APART or have no position = reposition. If still unsure, default to reposition — never re-read the file.`);
+      if (tri.ambiguous.length) rows.push(`- ambiguous×${tri.ambiguous.length} (${where(tri.ambiguous)}) → sibling \`.pill\` / \`.card\` / \`.row\` items colliding with each other or their own inner text are REAL COLLISIONS: fix CSS/GSAP positioning or spacing and NEVER add \`data-layout-allow-overlap\`. Only a status icon overlaying a number in the exact same badge circle may use \`data-layout-allow-overlap="true"\`. Default to reposition — never re-read the file.`);
       rows.push(
         "- caption keep-out band: if either side is a `#caption-word-*`, delete the frame's own in-frame caption strip (it duplicates the auto-caption) or move it above `--cap-band-top` — NEVER add data-layout-allow-overlap for it.",
       );
@@ -539,7 +539,7 @@ export const KNOWN_FAILURES = [
       }
       if (tri.ambiguous.length) {
         rows.push(
-          `- ambiguous×${tri.ambiguous.length} (${where(tri.ambiguous)}) → inspect the layering intent first, then pick data-layout-allow-occlusion vs raise z-index / move (NOT data-layout-allow-overlap).`,
+          `- ambiguous×${tri.ambiguous.length} (${where(tri.ambiguous)}) → sibling \`.pill\` / \`.card\` / \`.row\` elements overlapping or covering each other's text are REAL COLLISIONS: fix CSS/GSAP layout positioning or z-index and NEVER add \`data-layout-allow-occlusion\` or \`data-layout-allow-overlap\`.`,
         );
       }
       rows.push(
