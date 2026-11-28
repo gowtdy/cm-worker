@@ -493,6 +493,30 @@ function testFindingsPayload() {
     autofix_ok: false, mark_side: null,
   });
   assert.equal(p.other_check_errors, 1);
+  assert.deepEqual(p.non_overlap_errors, [
+    {
+      file: "compositions/frames/01.html",
+      code: "contrast_aa_failure",
+      section: "",
+      selector: "#t 2:1",
+      container: "",
+    },
+  ]);
+  const mixed = findingsPayload([
+    { code: "content_overlap", file: "compositions/frames/07.html", selector: "span.word", container: "#pill", msg: "" },
+    { code: "contrast_aa_failure", section: "Contrast", file: "compositions/frames/05.html", selector: ".slot", msg: "" },
+    { code: "text_not_painted", section: "Layout", file: "compositions/frames/03.html", selector: "#qmark", msg: "" },
+    { code: "pageerror", section: "Runtime", file: "compositions/frames/02.html", selector: "", msg: "ReferenceError" },
+  ]);
+  assert.equal(mixed.other_check_errors, 3);
+  assert.deepEqual(
+    mixed.non_overlap_errors.map((r) => [r.code, r.section, r.file, r.selector]),
+    [
+      ["contrast_aa_failure", "Contrast", "compositions/frames/05.html", ".slot"],
+      ["text_not_painted", "Layout", "compositions/frames/03.html", "#qmark"],
+      ["pageerror", "Runtime", "compositions/frames/02.html", "ReferenceError"],
+    ],
+  );
   // ticker separators: weak token "dot" over text block → real_collision (covered once .f8-ticker is marked)
   const dot = findingsPayload([{
     code: "content_overlap", file: "compositions/frames/08.html",
