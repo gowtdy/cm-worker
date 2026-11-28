@@ -152,9 +152,89 @@
 
 | 指标 | 本次 `6b096712` 实测 | 方案落地后预期 | 核心驱动项 |
 |---|---:|---:|---|
-| **Verify 通过率** | 失败（3 轮死循环） | **1 轮直过或 1 次有效修复 PASS** | P0-1 消除指令与防消音守卫自相矛盾 |
+| **Verify 通过率** | 失败（3 轮死循环） | **1 轮直过或 1 次有效修复 PASS（极端局部瑕疵由 P1-2 告警降级兜底）** | P0-1 消除指令与防消音守卫自相矛盾 + P1-2 非致命瑕疵软放行保险丝 |
 | **`visual_design` 耗时 / Thinking** | `303.8s` / `18.4k` | **`120–150s` / `6–7k`** | P1-1 消除 `done:coral` 语义反转思考死锁 |
 | **`frame_html` 阶段墙钟** | `554.2s` (`9.2m`) | **`220–280s` (`3.7–4.7m`)** | P0-2 前置清洗直接救活 `65–80s` 完赛的 hedge |
 | **`verify` 阶段墙钟** | `190.0s` (FAIL) | **`35–60s` (PASS)** | P0-2 前置拦截 `left/top` + P0-1 消除回滚空转重扫 |
 | **全流程端到端总耗时（含 render）** | 未完赛（折算 `~21.2m`） | **`11.5–14.0m`** | 三阶段长尾同步削峰（累计省 **`~450–550s`**） |
 | **显性 + 隐性 Output Tokens** | `173k` + 约 `41k` 空烧 | **`115k–135k` + `<20k` 空烧** | 提前由合格 hedge 终止 `30k+` 思考马拉松主进程 |
+
+---
+
+## 7. 增量方案评审与执行规范：Verify 终局分级软放行（Degraded Pass，2026-11-28 已落地全绿）
+
+> **背景动机**：`verify` 位于流水线末端（前序已消耗 `12–20m` 与 `120k–170k` tokens）。P0-1 虽已根治本次规则冲突死循环，但在长尾复杂画面中，模型仍可能偶发 3 轮修不净 1–2 处轻微局部排版瑕疵（如边角胶囊微碰、非关键副文案轻微越界）。若在修满预算后对**非致命局部瑕疵**支持“补过像素门禁 + 打结构化告警 + 降级放行进入 `render`”，可彻底避免单点轻微瑕疵导致整片 20 分钟算力清零。
+
+### 7.1 对初版“非致命告警放行”方案的源码级可行性审计（4 项契约纠偏 + 2 项优化）
+
+经交叉核查 `verify.py`、`verify-all.mjs`、`verify-report.mjs`、`verify-check-parse.mjs`、`known-failures.mjs` 与 `frame-selfcheck.mjs`，**方案整体完全可行且工程收益明确**，但初版设想存在 **4 处源码契约断层** 与 **2 处设计优化空间**，落地时必须一并闭环：
+
+| 评审维度 | 初版方案设想 | 源码核查发现与精确优化修正 |
+|---|---|---|
+| **1. `VERIFY_FINDINGS_JSON` 载荷缺失非 overlap 明细（契约断层）** | 直接读取 `VERIFY_FINDINGS_JSON` 判断剩余 `check` 错误的 `code` 是否属于非致命集合 | **现状断层**：`verify-check-parse.mjs` `findingsPayload()`（L678–700）目前仅展开 `content_overlap` 的三类数组，其余所有 `check` 错误被压缩为单一整数 **`other_check_errors: number`（L699）**，无 `code` / `section` / `file` / `selector`！Python 端无法区分可降级的 `contrast_aa_failure` 与致命的 `text_not_painted` 或 `[Runtime]` 异常。<br>**修正**：在 `findingsPayload()` 向后兼容新增 `non_overlap_errors: [{ file, code, section, selector, container }]`（保留原 `other_check_errors` 整数不破坏现有调用方与单测），并在 `verify-report.mjs`（L374–378）同步写入 `lint_error_codes` 与 `selfcheck_other_fails`。 |
+| **2. `frame-selfcheck` 非数字选择器错误（`self.other`）漏检风险** | 仅检查 `digit_led_selectors == 0` 与 `lint_errors == 0` | **现状盲区**：`verify-report.mjs`（L88–98, L370）仅将 `digit-led selector` 计入 `self.digit` 阻断门禁，而 `frame-selfcheck.mjs` 独有的 `skeleton_unfilled`、`invalid_inline_script_syntax`、`literal_placeholder`（如可见 `— figure —`）、`missing_dom_selector` 等 `[FAIL]` 被归入 `self.other` 仅打印 `⚠` 且未写入 `VERIFY_FINDINGS_JSON`。<br>**修正**：若模型在修复轮改坏内联 JS 语法或留下占位符，绝不可软放行。必须在 `VERIFY_FINDINGS_JSON` 暴露 `selfcheck_other_fails: self.other.length`，软放行硬性要求 `selfcheck_other_fails === 0`。 |
+| **3. 中途“零编辑 / 思考截断”提前抛异常绕过兜底（控制流断层）** | 仅在 `verify_frame()` 跑完 `max_fix` 循环末尾（L1121）做降级判断 | **现状断层**：`verify.py` `_require_changed_and_rescan()`（L968–978）在模型某一轮输出 `fixed 0`（无改动）或思考截断重试仍无编辑时，会**当场 `raise RuntimeError`**，根本走不到 L1121 循环出口！<br>**修正**：封装统一降级入口 `_try_degraded_pass()`。当 `_apply_model_fix()` 遭遇零编辑/截断拟抛异常时，若当前 `scan_output` **已满足软放行白名单条件**，直接转入 `_try_degraded_pass()`（既救活成片，又省掉后续无效轮次）；若含致命错误则照常立即抛异常。 |
+| **4. 白名单粒度纠偏：补入 `text_box_overflow`，剔除字幕禁区碰撞** | 笼统将 `content_overlap` / `text_occluded` 全量归为非致命，未提 `text_box_overflow` | **修正 ①（防字幕糊脸）**：若 `content_overlap` 或 `text_occluded` 的 `selector` / `container` 命中底部卡拉 OK 字幕词 `#caption-word-*`（`CAPTION_WORD_RE`，L305），画面正文会与全局字幕直接叠印，严重影响观看，**默认禁止软放行**（归入阻断项）。<br>**修正 ②（消除轻重倒置）**：`known-failures.mjs`（L718–729）中的非字幕 `text_box_overflow`（字形轻微溢出自身容器数像素）视觉影响远小于 `content_overlap`，应纳入非致命软放行白名单；而 `text_not_painted`（透明隐形字，L658）与 `[Runtime]` 错误必须明确归为**致命阻断**。 |
+| **5. 补跑 Visual Gate 的时机与剩余轮次衔接优化** | 3 轮耗尽后补跑一次 `verify-all.mjs --phase visual`，失败则直接退出 | **优化**：若因“中途零编辑”在第 `r < max_fix` 轮提前进入软放行评估，补跑 `--phase visual` 一旦发现 `VISUAL_GATE: FAIL`（如某帧主舞台偏空），不必直接判死，**可无缝切入现有的视觉修复分支（`_build_visual_fix_prompt`）继续利用剩余 `max_fix - r` 轮预算修复**；仅当轮次耗尽后 `--phase visual` 仍非 `0` 时才硬失败。 |
+| **6. 双维度熔断阈值 + 项目内落盘留痕（防静默劣化）** | 仅控制错误总条数 `<= 3` 并打一条 `WARNING` 日志 | **优化 ①（双阈值）**：同时约束**总条数 `<= 3`**（`HTMLVIDEO_VERIFY_SOFT_FAIL_MAX_ERRORS=3`，设 `0` 一键关闭）与**受影响帧数 `<= 2`**（`HTMLVIDEO_VERIFY_SOFT_FAIL_MAX_FRAMES=2`），防止全片多帧系统性排版崩坏被放行。<br>**优化 ②（双留痕）**：除 worker 日志打印固定前缀 `WARNING ... VERIFY_DEGRADED_PASS` 外，同步落盘 `snapshots/verify-degraded.json` 记录降级原因与残余 findings，便于离线抽检成片质量与监控上游回归率。 |
+
+---
+
+### 7.2 致命（Hard Fail）vs 非致命（Soft Fail）精确分级矩阵
+
+> **核心原则**：软放行**绝不降低日常门禁标准**——所有 finding 在 `1..max_fix` 轮内依然正常触发自动修复与 Claude 修复；**仅当修复手段耗尽（达到 `max_fix` 轮或模型零编辑停滞）时**，才对照下表决定“告警出片”还是“阻断退出”。
+
+| 门禁层级 | 检查项 / 错误码 | 分级 | 判定依据与后果说明 |
+|---|---|---|---|
+| **基础设施与前置 (`prepare` / `rc=2`)** | 缺核心文件、`index.html` 未组装、`transitions inject` 失败、子进程超时、`PARSER/INFRA` 计数矛盾 | **🔴 致命（阻断）** | 项目结构不完整或扫描器失真，渲染必败或无法评估质量 |
+| **单帧静态结构 (`frame-selfcheck`)** | `digit_led_selectors > 0` 及任何 `selfcheck_other_fails > 0`（`invalid_inline_script_syntax`、`skeleton_unfilled`、`literal_placeholder`、`missing_dom_selector` 等） | **🔴 致命（阻断）** | CSS 整条规则静默丢失、JS 语法抛错、空骨架或裸露模板占位符 |
+| **转场门禁 (`transitions verify`)** | `transitions_ok === false` | **🔴 致命（阻断）** | 跨帧转场时间轴损坏，渲染会出现黑闪或卡死 |
+| **静态 Lint (`hyperframes lint`)** | `lint_errors > 0`（如 `gsap_infinite_repeat`、`timeline_not_paused`、`gsap_non_transform_motion` 等） | **🔴 致命（阻断）** | 确定性帧采样（seek）失灵、动画卡顿或字体整族缺失（大部分已在 `frame_html` 与 `prepare` 自动消解） |
+| **运行时与不可见字 (`hyperframes check`)** | `section === "Runtime"`（JS 异常/Console error）、`text_not_painted`、未归类的未知 `check` 错误码 | **🔴 致命（阻断）** | 页面脚本崩溃或核心标题文字全透明隐形 |
+| **字幕禁区碰撞 (`hyperframes check`)** | 任一侧命中 `#caption-word-*` 的 `content_overlap` / `text_occluded` | **🔴 致命（阻断）** | 帧内元素与全局底部字幕直接叠字，严重破坏成片可读性 |
+| **像素视觉门禁 (`verify-pixels.py`)** | `empty frame`、`empty main stage`、`empty #stage-card interior`、`collapse` / `collapsed content inside #stage-card` | **🔴 致命（阻断）** | 整帧白屏/黑屏、主舞台空心或元素坍塌缩成一团 |
+| **局部排版/对比度瑕疵 (`hyperframes check`)** | 不涉及 `#caption-word-*` 的：<br>• `content_overlap`<br>• `text_occluded`<br>• `escaped_container`（warning 提升项）<br>• `canvas_overflow`（info 提升项）<br>• `contrast_aa_failure`（warning `<2.5:1` 提升项）<br>• `text_box_overflow`（非字幕） | **🟡 非致命（满足阈值时告警放行）** | 局部元素微碰、边角轻微裁切或局部配色偏浅；在 **总条数 `≤ 3` 且涉及帧数 `≤ 2` 且后续 `visual` 像素门禁 PASS** 时，降级放行出片 |
+
+---
+
+### 7.3 P1-2 精确落地方案（已落地验证）
+
+- **目标文件**：
+  1. `scripts/lib/verify-check-parse.mjs`
+  2. `scripts/verify-report.mjs`
+  3. `scripts/verify-all.mjs`
+  4. `html_utility/verify.py`
+  5. `test/test_verify_check_parse.mjs`、`test/test_verify.py`
+
+- **分步实现规范**：
+  1. **扩展 `VERIFY_FINDINGS_JSON` 载荷（`verify-check-parse.mjs` + `verify-report.mjs`）**：
+     - 在 `findingsPayload(errors)`（`verify-check-parse.mjs` L678–700）保留原字段，新增 `non_overlap_errors`，逐条记录非 overlap 错误的 `{ file, code, section, selector, container }`；
+     - 在 `verify-report.mjs`（L374–378）向 `payload` 补充 `lint_error_codes: lintErrors.map((e) => e.code)` 与 `selfcheck_other_fails: self.other.length`。
+  2. **新增独立视觉门禁相位 `--phase visual`（`verify-all.mjs`）**：
+     - 在 `verify-all.mjs` L58 将合法 `--phase` 扩展为 `all | prepare | verify | visual`；
+     - 当 `phase === "visual"` 时，直接调用 `visualGate()`（执行 `frame-midpoints.mjs` → `npx hyperframes snapshot` → `verify-pixels.py`），返回 `0`（截图成功且像素门禁 PASS）、`1`（`VISUAL_GATE: FAIL`）或 `2`（基础设施错误），耗时仅 `~12–18s`。
+  3. **在 `verify.py` 实现分级判定器与 `_try_degraded_pass()` 闭环**：
+     - 新增常量与配置读取：
+       - `_SOFT_FAIL_CODES = frozenset({"content_overlap", "text_occluded", "escaped_container", "canvas_overflow", "contrast_aa_failure", "text_box_overflow"})`
+       - `HTMLVIDEO_VERIFY_SOFT_FAIL_MAX_ERRORS`（默认 `3`；`0` 禁用软放行）
+       - `HTMLVIDEO_VERIFY_SOFT_FAIL_MAX_FRAMES`（默认 `2`）
+     - 新增 `evaluate_soft_fail(scan_output: str, max_errors: int, max_frames: int) -> tuple[bool, str, list[dict]]`：
+       - 若 `scan_looks_unactionable(scan_output)` 或 `classify_scan_failure(scan_output) != "mechanical"` → `(False, "not_actionable_mechanical", [])`；
+       - 解析 `VERIFY_FINDINGS_JSON`：若缺失 payload，或 `lint_errors > 0`、`digit_led_selectors > 0`、`selfcheck_other_fails > 0`、`transitions_ok is not True` → 返回 `False`；
+       - 汇总全部剩余 check rows（`designed_overlay + real_collision + ambiguous + non_overlap_errors`）：
+         - 若总数 `== 0` 或 `> max_errors` → 返回 `False`；
+         - 若任一条 `section == "Runtime"`，或 `code not in _SOFT_FAIL_CODES`，或 `selector` / `container` 匹配 `#caption-word-` → 返回 `False`；
+         - 统计去重后的非空 `file` 集合，若 `len(files) > max_frames` → 返回 `False`；
+       - 全部通过则返回 `(True, summary_str, rows)`。
+     - 新增 `_run_visual_only(project_dir, logger)` 调用 `verify-all.mjs --phase visual`，并在以下两处接入 `_try_degraded_pass()`：
+       - **接入点 A（`max_fix` 轮耗尽后，L1121 前）**：若 `rc == 1` 且 `evaluate_soft_fail()` 为 `True`，运行 `_run_visual_only()`；若返回 `0`，校验 `_validate_verify_outputs()`，写出 `snapshots/verify-degraded.json`，打 `logger.warning("VERIFY_DEGRADED_PASS ...")` 并返回 `contact_sheet`；若视觉门禁非 `0`，照常 `raise RuntimeError`。
+       - **接入点 B（`_apply_model_fix` 零编辑/截断异常兜底）**：在 `verify_frame()` 主循环捕获或前置判定零编辑/截断停滞时，若当前 `output` 满足 `evaluate_soft_fail()`：先跑 `_run_visual_only()`；若 `v_rc == 0` 直接告警放行；若 `v_rc == 1` 且 `round_no < max_fix`，将 `(rc, output)` 切换为 `(1, v_out)` 继续走剩余轮次的视觉像素修复！
+  4. **单元测试覆盖（`test_verify_check_parse.mjs` + `test_verify.py`）**：
+     - JS 测试：`findingsPayload()` 混合输入（`content_overlap` + `contrast_aa_failure` + `text_not_painted`）准确输出 `non_overlap_errors` 且 `other_check_errors` 保持兼容；
+     - Python 测试覆盖 6 个正反例：
+       1. 3 轮后仅剩 1 条 F7 `content_overlap` + `--phase visual` PASS → **返回 contact sheet，记录 `VERIFY_DEGRADED_PASS` 并生成 `verify-degraded.json`**；
+       2. 3 轮后剩 1 条 `#caption-word-12-0` 碰撞 → **拒绝放行，抛异常**；
+       3. 3 轮后剩 `lint_errors=1` 或 `text_not_painted` 或 `selfcheck_other_fails=1` → **拒绝放行，抛异常**；
+       4. 3 轮后剩 4 条 `content_overlap`（超 `MAX_ERRORS=3`）或跨 3 个帧文件（超 `MAX_FRAMES=2`） → **拒绝放行，抛异常**；
+       5. 3 轮后机械项满足软放行，但 `--phase visual` 检出 `empty frame` (`rc=1`) → **拒绝放行，抛异常**；
+       6. `HTMLVIDEO_VERIFY_SOFT_FAIL_MAX_ERRORS=0` 开关关闭时 → **严格阻断，行为与改造前 100% 一致**。
