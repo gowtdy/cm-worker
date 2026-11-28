@@ -1265,7 +1265,8 @@ function buildSharedStageMarkupAndCss(stageSpec, entry, tokens, dur) {
     const accentAttr = accentName ? ` data-accent="${escapeHtml(accentName)}"` : "";
     const icons =
       `<span class="hf-stage-dot" data-skeleton="stage"></span>` +
-      `<svg class="hf-stage-check" data-skeleton="stage" viewBox="0 0 16 16" aria-hidden="true"><path data-skeleton="stage" d="M3 8.5L6.5 12L13 4.5" fill="none" stroke="${c.ink}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      `<svg class="hf-stage-check" data-skeleton="stage" viewBox="0 0 16 16" aria-hidden="true"><path data-skeleton="stage" d="M3 8.5L6.5 12L13 4.5" fill="none" stroke="${c.ink}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>` +
+      `<svg class="hf-stage-warn" data-skeleton="stage" viewBox="0 0 16 16" aria-hidden="true"><path data-skeleton="stage" d="M4.2 4.2L11.8 11.8M11.8 4.2L4.2 11.8" fill="none" stroke="${c.ink}" stroke-width="2.4" stroke-linecap="round"/></svg>`;
     return `      <div class="hf-stage-slot" data-skeleton="stage" data-slot-index="${idx + 1}" data-state="${st.status}"${accentAttr}>${icons}<span class="hf-stage-label" data-skeleton="stage">${escapeHtml(label)}</span></div>`;
   }).join("\n");
   // The title is the lockup's only title node, so it can never collide inside
@@ -1305,9 +1306,11 @@ function buildSharedStageMarkupAndCss(stageSpec, entry, tokens, dur) {
 .hf-stage-slot[data-state="active"] { background: ${resolveAccent("", c.sky)}; box-shadow: 3px 3px 0 ${shadow}; opacity: 1; }
 .hf-stage-slot[data-state="done"] { background: ${resolveAccent("", c.mint)}; opacity: 0.92; }
 ${accentCss}
-.hf-stage-check { width: 1.1cqw; height: 1.1cqw; flex-shrink: 0; display: none; }
+.hf-stage-check, .hf-stage-warn { width: 1.1cqw; height: 1.1cqw; flex-shrink: 0; display: none; }
 .hf-stage-dot { width: 0.65cqw; height: 0.65cqw; border-radius: 50%; border: 2px solid ${c.outline}; flex-shrink: 0; }
 .hf-stage-slot[data-state="done"] .hf-stage-check { display: block; }
+.hf-stage-slot[data-state="done"][data-accent="coral"] .hf-stage-check { display: none; }
+.hf-stage-slot[data-state="done"][data-accent="coral"] .hf-stage-warn { display: block; }
 .hf-stage-slot[data-state="done"] .hf-stage-dot { display: none; }
 .hf-stage-label { overflow: hidden; text-overflow: ellipsis; }${layoutCss}
 /* Add this frame's hero styles for children inside #stage-card below: */`;
