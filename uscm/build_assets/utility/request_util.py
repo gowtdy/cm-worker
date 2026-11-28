@@ -24,6 +24,14 @@ from config.video_config import (
     DEFAULT_VIDEO_SOURCE,
     VIDEO_STYLES,
     DEFAULT_VIDEO_STYLE,
+    VIDEO_MESSAGE_MAX_LENGTH,
+    VIDEO_ANGLE_MAX_LENGTH,
+    VIDEO_ARC_MAX_LENGTH,
+    VIDEO_AUDIENCE_MAX_LENGTH,
+    VIDEO_NAME_MAX_LENGTH,
+    VIDEO_SUMMARY_MAX_LENGTH,
+    VIDEO_CUSTOMIZATION_MAX_LENGTH,
+    VIDEO_NOTES_MAX_LENGTH,
 )
 from utility.auth_session import authenticate_request
 from utility.allused_voicemodels import get_common_model
@@ -528,7 +536,7 @@ def validate_video_create_params(
         return ret, msg, params
 
     message = str(json_post_raw.get("message", '') or '').strip()
-    if not (0 < len(message) < 300):
+    if not (0 < len(message) < VIDEO_MESSAGE_MAX_LENGTH):
         ret = 1
         msg = f'message is invalid, reqid:{reqid}!'
         logger.warning(
@@ -538,7 +546,7 @@ def validate_video_create_params(
         return ret, msg, params
 
     angle = str(json_post_raw.get("angle", '') or '').strip()
-    if not (0 < len(angle) < 100):
+    if not (0 < len(angle) < VIDEO_ANGLE_MAX_LENGTH):
         ret = 1
         msg = f'angle is invalid, reqid:{reqid}!'
         logger.warning(
@@ -548,7 +556,7 @@ def validate_video_create_params(
         return ret, msg, params
 
     arc = str(json_post_raw.get("arc", '') or '').strip()
-    if not (0 < len(arc) < 100):
+    if not (0 < len(arc) < VIDEO_ARC_MAX_LENGTH):
         ret = 1
         msg = f'arc is invalid, reqid:{reqid}!'
         logger.warning(
@@ -558,7 +566,7 @@ def validate_video_create_params(
         return ret, msg, params
 
     audience = str(json_post_raw.get("audience", '') or '').strip()
-    if not (0 < len(audience) < 200):
+    if not (0 < len(audience) < VIDEO_AUDIENCE_MAX_LENGTH):
         ret = 1
         msg = f'audience is invalid, reqid:{reqid}!'
         logger.warning(
@@ -576,15 +584,15 @@ def validate_video_create_params(
             f'name:{json_post_raw.get("name")!r} referer:{referer}'
         )
         return ret, msg, params
-    if len(name) > 50:
+    if len(name) > VIDEO_NAME_MAX_LENGTH:
         logger.warning(
             f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} '
-            f'name truncated from {len(name)} to 50 referer:{referer}'
+            f'name truncated from {len(name)} to {VIDEO_NAME_MAX_LENGTH} referer:{referer}'
         )
-        name = name[:50]
+        name = name[:VIDEO_NAME_MAX_LENGTH]
 
     summary = str(json_post_raw.get("summary", '') or '').strip()
-    if not (0 < len(summary) < 2000):
+    if not (0 < len(summary) < VIDEO_SUMMARY_MAX_LENGTH):
         ret = 1
         msg = f'summary is invalid, reqid:{reqid}!'
         logger.warning(
@@ -594,19 +602,19 @@ def validate_video_create_params(
         return ret, msg, params
 
     customization = str(json_post_raw.get("customization", '') or '').strip()
-    if len(customization) > 1000:
+    if len(customization) > VIDEO_CUSTOMIZATION_MAX_LENGTH:
         logger.warning(
             f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} '
-            f'customization truncated from {len(customization)} to 1000 referer:{referer}'
+            f'customization truncated from {len(customization)} to {VIDEO_CUSTOMIZATION_MAX_LENGTH} referer:{referer}'
         )
-        customization = customization[:1000]
+        customization = customization[:VIDEO_CUSTOMIZATION_MAX_LENGTH]
     notes = str(json_post_raw.get("notes", '') or '').strip()
-    if len(notes) > 1000:
+    if len(notes) > VIDEO_NOTES_MAX_LENGTH:
         logger.warning(
             f'reqid:{reqid} ip:{real_ip} uid:{uid} email:{email} '
-            f'notes truncated from {len(notes)} to 1000 referer:{referer}'
+            f'notes truncated from {len(notes)} to {VIDEO_NOTES_MAX_LENGTH} referer:{referer}'
         )
-        notes = notes[:1000]
+        notes = notes[:VIDEO_NOTES_MAX_LENGTH]
 
     intent_taskid = json_post_raw.get("intent_taskid", "")
 
