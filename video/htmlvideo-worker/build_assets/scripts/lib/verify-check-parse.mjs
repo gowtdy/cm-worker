@@ -377,26 +377,30 @@ export function triageContentOverlap(item) {
   const conDecor = conT.filter((t) => DECOR_TOKENS.has(t));
   if (selDecor.length && conDecor.length) {
     return verdict(
-      "designed_overlay",
+      "ambiguous",
       `decorative tokens on both sides ("${selDecor[0]}" / "${conDecor[0]}")`,
     );
   }
   if (selDecor.length || conDecor.length) {
     const side = selDecor.length ? "selector" : "container";
     const found = selDecor.length ? selDecor : conDecor;
+    const otherIsText = side === "selector" ? conText : selText;
     const strong = found.find((t) => AUTOFIX_DECOR_TOKENS.has(t));
     if (strong) {
       // P0-3 (6b08f96c F7): a stamp/seal landing over a multi-word text block
       // (e.g. `div.f7-sub` "Sell when any signal breaks.") is usually a missing
-      // fade-out, not a safe deterministic allow-overlap — leave for verify.
-      const otherIsText = side === "selector" ? conText : selText;
+      // fade-out, not a safe deterministic allow-overlap — classify as
+      // real_collision so the model fixes CSS/GSAP instead of allow-silencing.
       const wordCount = String(item?.text || "").trim().split(/\s+/).filter(Boolean).length;
       if ((strong === "stamp" || strong === "seal") && otherIsText && wordCount >= 3) {
-        return verdict("designed_overlay", `stamp/seal over multi-word text ("${strong}")`);
+        return verdict("real_collision", `stamp/seal over multi-word text ("${strong}")`);
       }
       return verdict("designed_overlay", `decorative token "${strong}"`, side);
     }
-    return verdict("designed_overlay", `weak decorative token "${found[0]}"`);
+    if (otherIsText) {
+      return verdict("real_collision", `weak decorative token "${found[0]}" over text block`);
+    }
+    return verdict("ambiguous", `weak decorative token "${found[0]}"`);
   }
   // Number + checkmark in the SAME badge = status overlay (check fades in over
   // the number). Mark the check side so the overlay is allowed, deterministically.

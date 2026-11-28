@@ -561,6 +561,96 @@ for (const b of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script
       }
     }
   }
+
+  // --- P0-2 (6b096712 F8): gsap_non_transform_motion -------------------------
+  // Mirror hyperframes lint's gsap_non_transform_motion: animating layout props
+  // (left/top/right/bottom/margin*), text-reflow props (fontSize/letterSpacing/
+  // wordSpacing), or roundProps in to/from/fromTo stutters under frame-by-frame
+  // seek capture (instantaneous .set() is exempt; positional props are exempt
+  // when a <canvas layoutsubtree> exists).
+  {
+    const hasLayoutSubtree = /<canvas\b[^>]*\blayoutsubtree\b/i.test(tplHtml);
+    const LAYOUT_PROPS = new Set([
+      "left", "right", "top", "bottom",
+      "margin", "marginLeft", "marginRight", "marginTop", "marginBottom",
+    ]);
+    const REFLOW_OR_ROUND = new Set([
+      "fontSize", "letterSpacing", "wordSpacing", "roundProps",
+    ]);
+    const extractTopLevelKeys = (objLiteral) => {
+      const s = (objLiteral || "").trim();
+      if (!s.startsWith("{") || !s.endsWith("}")) return [];
+      const keys = [];
+      let depth = 0;
+      let inStr = null;
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (inStr) {
+          if (ch === "\\") { i++; continue; }
+          if (ch === inStr) inStr = null;
+          continue;
+        }
+        if (ch === '"' || ch === "'" || ch === "`") { inStr = ch; continue; }
+        if (ch === "{" || ch === "[" || ch === "(") { depth++; continue; }
+        if (ch === "}" || ch === "]" || ch === ")") { depth--; continue; }
+        if (depth === 1 && /[A-Za-z_$]/.test(ch)) {
+          const prev = i > 0 ? s[i - 1] : "";
+          if (/[A-Za-z0-9_$.]/.test(prev)) continue;
+          let j = i;
+          while (j < s.length && /[A-Za-z0-9_$]/.test(s[j])) j++;
+          let k = j;
+          while (k < s.length && /\s/.test(s[k])) k++;
+          if (s[k] === ":") keys.push(s.slice(i, j));
+          i = j - 1;
+        }
+      }
+      return keys;
+    };
+    for (const b of inlineScripts) {
+      const clean = stripJsComments(stripRuntime(b[1]));
+      const tweenRe = /\b(?:tl|timeline|gsap)\.(to|from|fromTo)\s*\(/g;
+      for (const tm of clean.matchAll(tweenRe)) {
+        const method = tm[1];
+        const startIdx = tm.index + tm[0].length;
+        let depth = 1;
+        let inStr = null;
+        const args = [];
+        let argStart = startIdx;
+        for (let i = startIdx; i < clean.length && depth > 0; i++) {
+          const ch = clean[i];
+          if (inStr) {
+            if (ch === "\\") { i++; continue; }
+            if (ch === inStr) inStr = null;
+            continue;
+          }
+          if (ch === '"' || ch === "'" || ch === "`") { inStr = ch; continue; }
+          if (ch === "(" || ch === "{" || ch === "[") depth++;
+          else if (ch === ")" || ch === "}" || ch === "]") {
+            depth--;
+            if (depth === 0) {
+              args.push(clean.slice(argStart, i).trim());
+              break;
+            }
+          } else if (ch === "," && depth === 1) {
+            args.push(clean.slice(argStart, i).trim());
+            argStart = i + 1;
+          }
+        }
+        const varArgs = method === "fromTo" ? [args[1], args[2]] : [args[1]];
+        const flagged = [];
+        for (const va of varArgs) {
+          for (const key of extractTopLevelKeys(va)) {
+            if (REFLOW_OR_ROUND.has(key) || (!hasLayoutSubtree && LAYOUT_PROPS.has(key))) {
+              if (!flagged.includes(key)) flagged.push(key);
+            }
+          }
+        }
+        if (flagged.length) {
+          fail(`GSAP \`.${method}(${args[0] || ""})\` animates non-transform property (${flagged.join(", ")}) — animate transforms (\`x\`/\`y\`/\`scale\`) instead of layout/reflow properties (gsap_non_transform_motion)`);
+        }
+      }
+    }
+  }
 }
 
 // --- warnings (do not gate) --------------------------------------------------
