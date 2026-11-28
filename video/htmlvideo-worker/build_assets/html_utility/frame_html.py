@@ -481,11 +481,163 @@ def _extract_template_html(text: str | None) -> str | None:
     return m.group(0).strip()
 
 
+_STYLE_BLOCK_RE = re.compile(r"(<style\b[^>]*>)([\s\S]*?)(</style>)", re.IGNORECASE)
+_INLINE_SCRIPT_BLOCK_RE = re.compile(
+    r"(<script\b(?![^>]*\bsrc=)[^>]*>)([\s\S]*?)(</script>)", re.IGNORECASE
+)
+_CSS_DIGIT_SEL_RE = re.compile(
+    r"(^|[ \t{},>+~():])([#.])([0-9]{1,2}[-_][A-Za-z][A-Za-z0-9_-]*)", re.MULTILINE
+)
+_JS_STR_DIGIT_SEL_RE = re.compile(
+    r"(^|[\s,>+~():])([#.])([0-9]{1,2}[-_][A-Za-z][A-Za-z0-9_-]*)"
+)
+_CSS_COMMENT_OR_CODE_RE = re.compile(r"/\*[\s\S]*?\*/", re.MULTILINE)
+_JS_TOKEN_RE = re.compile(
+    r"/\*[\s\S]*?\*/|(?<!:)//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`"
+)
+_PURE_SCALE_DECL_RE = re.compile(
+    r"([ \t]*\btransform\s*:\s*(?:scale|scaleX|scaleY)\s*\([^;)]+\)\s*;?[ \t]*)",
+    re.IGNORECASE,
+)
+
+
+def _rewrite_digit_led_selectors(html: str) -> tuple[str, int]:
+    """Deterministically rewrite CSS/JS digit-led selectors (`#07-x`, `.07-x`)
+    to valid attribute selectors (`[id="07-x"]`, `[class~="07-x"]`), preserving
+    comments, hex colors (`#1E1E1E`), decimals, and `getElementById("07-x")`.
+    """
+    count = 0
+
+    def _fix_css_chunk(chunk: str) -> str:
+        nonlocal count
+
+        def _rep(m):
+            nonlocal count
+            count += 1
+            pre, sig, tok = m.group(1), m.group(2), m.group(3)
+            attr = "id" if sig == "#" else "class~"
+            return f'{pre}[{attr}="{tok}"]'
+
+        return _CSS_DIGIT_SEL_RE.sub(_rep, chunk)
+
+    def _fix_style(m):
+        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
+        out, pos = [], 0
+        for cm in _CSS_COMMENT_OR_CODE_RE.finditer(body):
+            out.append(_fix_css_chunk(body[pos:cm.start()]))
+            out.append(cm.group(0))
+            pos = cm.end()
+        out.append(_fix_css_chunk(body[pos:]))
+        return open_tag + "".join(out) + close_tag
+
+    def _fix_script(m):
+        nonlocal count
+        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
+
+        def _tok_rep(tm):
+            nonlocal count
+            tok = tm.group(0)
+            if tok[0] not in ("'", '"', "`"):
+                return tok
+            q = tok[0]
+            inner_q = "'" if q == '"' else '"'
+            inner = tok[1:-1]
+
+            def _srep(sm):
+                nonlocal count
+                count += 1
+                pre, sig, name = sm.group(1), sm.group(2), sm.group(3)
+                attr = "id" if sig == "#" else "class~"
+                return f"{pre}[{attr}={inner_q}{name}{inner_q}]"
+
+            new_inner = _JS_STR_DIGIT_SEL_RE.sub(_srep, inner)
+            return q + new_inner + q
+
+        return open_tag + _JS_TOKEN_RE.sub(_tok_rep, body) + close_tag
+
+    next_html = _STYLE_BLOCK_RE.sub(_fix_style, html)
+    next_html = _INLINE_SCRIPT_BLOCK_RE.sub(_fix_script, next_html)
+    return next_html, count
+
+
+def _strip_redundant_css_scale_transforms(html: str) -> tuple[str, int]:
+    """Strip pure `transform: scale|scaleX|scaleY(...)` in `<style>` when an
+    inline `<script>` already initializes/animates scale on the same simple
+    selector via `tl/gsap.(set|to|fromTo)` (mirrors known-failures.mjs).
+    """
+    script_parts = "\n".join(m.group(2) for m in _INLINE_SCRIPT_BLOCK_RE.finditer(html))
+    if not script_parts:
+        return html, 0
+    count = 0
+
+    def _fix_style(m):
+        nonlocal count
+        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
+
+        def _rule_rep(rm):
+            nonlocal count
+            sel, decls = rm.group(1).strip(), rm.group(2)
+            t_m = re.search(r"\btransform\s*:\s*([^;]+)", decls, re.IGNORECASE)
+            if not t_m:
+                return rm.group(0)
+            t_val = t_m.group(1).strip()
+            if not re.fullmatch(r"(?:scale|scaleX|scaleY)\s*\([^)]+\)", t_val, re.IGNORECASE):
+                return rm.group(0)
+            esc = re.escape(sel)
+            gsap_owns = re.search(
+                rf"\b(?:tl|gsap)\.(?:set|to|fromTo)\s*\(\s*[\"'][^\"']*{esc}(?![A-Za-z0-9_-])[^\"']*[\"']\s*,\s*\{{[^}}]*\b(?:scale|scaleX|scaleY)\s*:",
+                script_parts,
+            )
+            if not gsap_owns:
+                return rm.group(0)
+            cleaned = _PURE_SCALE_DECL_RE.sub(" ", decls)
+            if cleaned == decls:
+                return rm.group(0)
+            count += 1
+            return f"{rm.group(1)}{{{cleaned}}}"
+
+        next_body = re.sub(
+            r"([#.][A-Za-z_-][A-Za-z0-9_-]*\s*)\{([^{}]+)\}", _rule_rep, body
+        )
+        return open_tag + next_body + close_tag
+
+    next_html = _STYLE_BLOCK_RE.sub(_fix_style, html)
+    return next_html, count
+
+
+def _normalize_frame_html(html: str) -> tuple[str, list[str]]:
+    """Deterministic pre-selfcheck cleanup for mechanical hedge/worker typos."""
+    notes: list[str] = []
+    out, n_digit = _rewrite_digit_led_selectors(html)
+    if n_digit:
+        notes.append(f"digit-led-selectors={n_digit}")
+    out, n_scale = _strip_redundant_css_scale_transforms(out)
+    if n_scale:
+        notes.append(f"css-scale-strip={n_scale}")
+    return out, notes
+
+
+def _normalize_frame_file(frame_path: str) -> list[str]:
+    if not os.path.isfile(frame_path):
+        return []
+    try:
+        with open(frame_path, encoding="utf-8") as f:
+            raw = f.read()
+    except OSError:
+        return []
+    cleaned, notes = _normalize_frame_html(raw)
+    if notes and cleaned != raw:
+        with open(frame_path, "w", encoding="utf-8") as f:
+            f.write(cleaned)
+    return notes
+
+
 def _extract_and_write_frame_html(frame_path: str, text: str | None) -> bool:
     """Write extracted `<template>…</template>` to ``frame_path``; True on success."""
     html = _extract_template_html(text)
     if not html:
         return False
+    html, _notes = _normalize_frame_html(html)
     os.makedirs(os.path.dirname(frame_path), exist_ok=True)
     with open(frame_path, "w", encoding="utf-8") as f:
         f.write(html + "\n")
@@ -1063,7 +1215,8 @@ def _hedge_suffix(text_out=False):
         "`y: \"2cqh\"`, never bare `y: 2cqh`); (3) NEVER render literal "
         "placeholders (`— figure —`, `{metric}`, `N%`) — use short qualitative "
         "labels when no number exists; (4) on shared-stage frames keep "
-        "`.hf-stage-lockup` completely static/untouched and only fill `#stage-card`. "
+        "`.hf-stage-lockup` completely static/untouched and only fill `#stage-card`; "
+        "(5) never tween `left`/`top`/`right`/`bottom`/`fontSize` in `tl.to`/`from`/`fromTo` — use `x`/`y`/`scale` only. "
         f"{end}\n"
     )
 
@@ -1295,6 +1448,8 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
             done = (rc == 0) and _extract_and_write_frame_html(frame_path, text)
         else:
             done = _worker_done_ok(fid, text)
+            if done:
+                _normalize_frame_file(frame_path)
         sc_ok, sc_out = _run_frame_selfcheck(wd, fid)
         ok = rc == 0 and done and sc_ok and os.path.isfile(frame_path)
         if ok and mode != "hedge":

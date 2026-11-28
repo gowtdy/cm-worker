@@ -369,11 +369,22 @@ def _filter_summary_for_file(tail: str, rel: str) -> str:
     return "".join(out)
 
 
+_ANTI_SILENCING_REJECTED_NOTE = (
+    "[PREVIOUS EDIT REJECTED BY ANTI-SILENCING GUARD] Your prior attempt added "
+    "`data-layout-allow-overlap` / `data-layout-allow-occlusion` without fixing "
+    "`<style>` or `<script>`, and was automatically reverted. You MUST modify CSS "
+    "positioning/spacing or GSAP timeline (e.g. fade covered text out with "
+    "`autoAlpha: 0` when a badge/pill enters) — adding `data-layout-allow-*` alone "
+    "is blocked.\n\n"
+)
+
+
 def _build_fix_prompt_from_fragment(
     fragment: str,
     project_dir: str,
     label: str,
     target_file: str | None = None,
+    anti_silencing_rejected: bool = False,
 ) -> str:
     root_line = f"Project root (absolute): {project_dir}\n\n" if project_dir else ""
     scope_line = ""
@@ -383,16 +394,22 @@ def _build_fix_prompt_from_fragment(
             f"Scope: fix ONLY `{target_file}` (`{abs_target}`). "
             "Do NOT Read or Edit any other frame file (parallel sibling workers own other files).\n\n"
         )
+    rejected_line = _ANTI_SILENCING_REJECTED_NOTE if anti_silencing_rejected else ""
     inline_block = _inline_target_file_block(project_dir, target_file)
     return (
-        _fix_prompt_prefix(root_line + scope_line, label)
+        rejected_line
+        + _fix_prompt_prefix(root_line + scope_line, label)
         + fragment
         + f"\n── end {label} ──\n"
         + inline_block
     )
 
 
-def _build_fix_prompt(scan_output: str, project_dir: str = "") -> str:
+def _build_fix_prompt(
+    scan_output: str,
+    project_dir: str = "",
+    anti_silencing_rejected: bool = False,
+) -> str:
     """Prompt for the one model turn that is still genuinely needed: apply the
     mechanical fixes the scan already enumerated. Only the actionable part of
     the scan is inlined (``HTMLVIDEO_VERIFY_FIX_FULL_SCAN=1`` restores the full
@@ -412,7 +429,11 @@ def _build_fix_prompt(scan_output: str, project_dir: str = "") -> str:
                     + _filter_summary_for_file(scan_text[idx:], target_file)
                 )
     return _build_fix_prompt_from_fragment(
-        scan_text, project_dir, label, target_file=target_file
+        scan_text,
+        project_dir,
+        label,
+        target_file=target_file,
+        anti_silencing_rejected=anti_silencing_rejected,
     )
 
 
@@ -831,6 +852,7 @@ def _apply_model_fix(
     scan_output: str,
     round_no: int,
     logger: logging.Logger,
+    reverted_files: set[str] | None = None,
 ) -> tuple[int, str]:
     """Batched model fixes, then rescan. Raises on a zero-edit digest.
 
@@ -847,6 +869,7 @@ def _apply_model_fix(
         if _reject_blanket_allow_enabled()
         else None
     )
+    prior_reverted = set(reverted_files or ())
     fragments: dict[str, str] = {}
     if not _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN"):
         fragments, _tail = _split_scan_by_file(_trim_scan_for_fix(scan_output))
@@ -858,7 +881,11 @@ def _apply_model_fix(
             futs = {}
             for rel, fragment in fragments.items():
                 prompt = _build_fix_prompt_from_fragment(
-                    fragment, project_dir, "scan findings", target_file=rel
+                    fragment,
+                    project_dir,
+                    "scan findings",
+                    target_file=rel,
+                    anti_silencing_rejected=(rel in prior_reverted),
                 )
                 prompts[rel] = (prompt, rel)
                 futs[ex.submit(_dispatch_fix, project_dir, prompt, round_no, logger, rel)] = rel
@@ -868,11 +895,16 @@ def _apply_model_fix(
                 if rc == TRUNCATED_RC:
                     truncated_labels.append(rel)
     else:
-        prompt = _build_fix_prompt(scan_output, project_dir)
         target_label = (
             None
             if _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN")
             else _single_target_frame(_trim_scan_for_fix(scan_output))
+        )
+        was_reverted = bool(
+            prior_reverted and (target_label is None or target_label in prior_reverted)
+        )
+        prompt = _build_fix_prompt(
+            scan_output, project_dir, anti_silencing_rejected=was_reverted
         )
         key = target_label or "-"
         prompts[key] = (prompt, target_label)
@@ -889,6 +921,8 @@ def _apply_model_fix(
         logger,
         truncated_labels=truncated_labels,
         before_snapshot=before_snapshot,
+        scan_output=scan_output,
+        reverted_out=reverted_files,
     )
 
 
@@ -899,6 +933,8 @@ def _require_changed_and_rescan(
     logger: logging.Logger,
     truncated_labels: list[str] | None = None,
     before_snapshot: dict[str, str] | None = None,
+    scan_output: str | None = None,
+    reverted_out: set[str] | None = None,
 ) -> tuple[int, str]:
     """Zero-edit guard + anti-silencing diff guard + rescan.
 
@@ -912,6 +948,16 @@ def _require_changed_and_rescan(
     after_digest = _composition_html_digest(project_dir)
     if after_digest == before_digest:
         if reverted:
+            if reverted_out is not None:
+                reverted_out.update(reverted)
+            if scan_output is not None:
+                logger.warning(
+                    "verify fix round %d reverted blanket allow-* silencing in [%s] "
+                    "— reusing scan findings without rescan to force CSS/GSAP layout fix",
+                    round_no,
+                    ", ".join(reverted),
+                )
+                return 1, scan_output
             logger.warning(
                 "verify fix round %d reverted blanket allow-* silencing in [%s] "
                 "— rescanning to force CSS/GSAP layout fix",
@@ -930,6 +976,10 @@ def _require_changed_and_rescan(
             "compositions/**/*.html — refusing to re-dispatch the same scan "
             "(model produced no Edit, or scan findings were non-actionable)"
         )
+    if reverted_out is not None:
+        reverted_out.clear()
+        if reverted:
+            reverted_out.update(reverted)
     if truncated_labels:
         logger.warning(
             "verify fix round %d [%s] hit truncation after writing edits to disk "
@@ -1005,6 +1055,7 @@ def verify_frame(
         )
 
     rc, output = _run_verify(project_dir, logger)
+    reverted_files: set[str] = set()
     for round_no in range(1, max_fix + 1):
         if rc == 0:
             logger.info(
@@ -1045,7 +1096,9 @@ def verify_frame(
                     "verify-all mechanical findings (round %d) — invoking claude for batched fixes",
                     round_no,
                 )
-                rc, output = _apply_model_fix(project_dir, output, round_no, logger)
+                rc, output = _apply_model_fix(
+                    project_dir, output, round_no, logger, reverted_files=reverted_files
+                )
                 continue
         logger.info(
             "verify-all visual findings (round %d) — invoking claude for pixels fix",
