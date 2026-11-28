@@ -42,6 +42,6 @@ services:
       - /home/aigc/data/ssh_control/htmlvideo-worker:/app/data/ssh_control
       - /home/aigc/data/rsync/socat_rsync_proxies:/app/data/socat_rsync_proxies
       - /home/aigc/.ssh:/mnt/ssh-keys:ro
-      - ../..:/workplace/cm-worker
+      - ./:/workspace/htmlvideo-worker
     extra_hosts:
       - "host.docker.internal:host-gateway"
