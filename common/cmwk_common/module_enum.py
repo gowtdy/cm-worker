@@ -26,9 +26,7 @@ class ToolType(Enum):
 class TaskStatus(Enum):
     """定义任务状态"""
     QUEUED = "queued"
-    PENDING = "pending"
     PROCESSING = "processing"
-    CANCELLED = "cancelled"
     COMPLETE = "complete"
     FAILED = "failed"
     # video 生成过程状态
@@ -39,7 +37,6 @@ class TaskStatus(Enum):
     VIDEO_VISUALED = "video_visualed"
     VIDEO_FRAME_PACKETED = "video_frame_packeted"
     VIDEO_FRAMED_HTML = "video_framed_html"
-    VIDEO_INDEXED = "video_indexed"
     VIDEO_VERIFIED = "video_verified"
     VIDEO_RENDERED = "video_rendered"
 
