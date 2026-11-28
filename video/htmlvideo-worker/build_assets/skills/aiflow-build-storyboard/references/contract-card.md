@@ -149,6 +149,7 @@ Pick 2–3 types for the whole video and repeat them. Ordered steps → consiste
 ## Continuity
 
 - Multi-frame sequences share a **consistent stage** (restate the same stage idea in each frame's `scene`).
+- On numbered checklist/step arcs (`how-to-process` / `listicle`), once earlier steps are checked off, later contrast/sell/CTA frames keep the stage progress strip intact and play the new contrast or payoff in the center card — never write a `scene` that dims, breaks apart, or resets completed step slots.
 - Share one **consistent transition** across the run.
 - A genuine element transform (a diagram node becomes a chart bar) stays inside **ONE frame** (`entrance → transform → settle`); note the intent in `scene`/prose — don't split it across a seam.
 

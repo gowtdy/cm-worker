@@ -1236,12 +1236,15 @@ class SharedStageAndHedgeOptimizationTest(unittest.TestCase):
     def test_frame_html_hedge_defaults_and_hard_noops(self):
         from html_utility import frame_html as fh
         self.assertEqual(fh.DEFAULT_HEDGE_EFFORT, "low")
-        self.assertEqual(fh.DEFAULT_MAX_HEDGES, 3)
+        self.assertEqual(fh.DEFAULT_MAX_HEDGES, 6)
         self.assertEqual(fh.HEDGE_TIMEOUT, 180)
         prompt = fh._worker_prompt(
             "01-hook", skeleton_mode=False, dispatch_text="# Dispatch: 01-hook\n", text_out=True
         )
-        self.assertIn("NO manual `onUpdate` / `gsap.ticker`", prompt)
+        self.assertIn("NO manual `gsap.ticker` / `requestAnimationFrame`", prompt)
+        self.assertIn("bounded per-effect `onUpdate` proxies", prompt)
+        self.assertNotIn("SLIM_PRIMARY_ENV", dir(fh))
+        self.assertNotIn("## Selected blueprint", prompt)
         self.assertIn("NO inline `<svg><feTurbulence>`", prompt)
         self.assertIn("NEVER set `white-space: nowrap` on multi-word sentences", prompt)
         self.assertIn("never ghost side-by-side", prompt)

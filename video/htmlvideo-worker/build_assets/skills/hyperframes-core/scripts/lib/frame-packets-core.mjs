@@ -973,10 +973,11 @@ export function resolvedConflictsSection(conflicts) {
   return `\n## Resolved conflicts\n\n> Deterministic packet-time checks found these contradictions in the inputs above. The rulings are final and override every section above (Scene list > design contract > blueprint > prose) — apply them, do not re-deliberate.\n\n${items.join("\n")}\n`;
 }
 
-// P1-3: trim per-frame assignment table (each frame already gets `## Selected
-// blueprint`) and duplicate verbatim palette/type block when frame.md tokens
-// are already inlined right above. Keeps the creative body 100% shared across
-// frames so cross-worker prompt prefix caching hits.
+// P1-3: trim per-frame Blueprint assignment table (visual Phase B already
+// expanded each frame's blueprint into Adapt + Scene 1..3 + rules) and
+// duplicate verbatim palette/type block when frame.md tokens are already
+// inlined right above. Keeps the creative body 100% shared across frames so
+// cross-worker prompt prefix caching hits.
 export function trimDesignContractForDispatch(designContract, hasFrameTokens = false) {
   let out = String(designContract ?? "").trim();
   if (!out) return "";
@@ -1005,7 +1006,11 @@ export function buildDispatchDocs({ projectDir, frames, outDir, animationDir, ca
   mkdirSync(outDir, { recursive: true });
   return frames.map((frame) => {
     const assigned = assignment.get(frameNumber(frame.heading));
-    const { sel, section: blueprintSection, blueprintText = "" } = blueprintSectionFor(
+    // Visual Phase B already consumed the blueprint prose into Adapt + Scene 1..3 + rules;
+    // do NOT inline `## Selected blueprint` into frame-html dispatch docs, and do NOT scan
+    // blueprintText for phantom conflicts. Still load blueprintText internally so
+    // `frameRules()` can consult its rule mapping when explicit rules are sparse.
+    const { sel, blueprintText = "" } = blueprintSectionFor(
       frame.block, animationDir, "Selected blueprint", frame.frameId, assigned);
     if (assigned && sel?.id && assigned.id.toLowerCase() !== sel.id.toLowerCase()) {
       console.warn(
@@ -1013,7 +1018,7 @@ export function buildDispatchDocs({ projectDir, frames, outDir, animationDir, ca
       );
     }
     const conflicts = detectConflicts({
-      block: frame.block, sel, assigned, blueprintText, direction, frameMd,
+      block: frame.block, sel, assigned, blueprintText: "", direction, frameMd,
     });
     for (const c of conflicts) console.warn(`frame-packets: ${frame.frameId}: conflict ${c.kind}: ${c.detail}`);
     const { rules, inferred } = frameRules(frame.block, ruleIds, { blueprintText });
@@ -1045,7 +1050,7 @@ ${sharedDesign ? `\n## Design contract (video-wide)\n\n${sharedDesign}\n` : ""}
 ## Assigned storyboard block
 
 ${frame.block}
-${blueprintSection}
+
 ${indexHeading}
 
 ${ruleIndex}
@@ -1191,7 +1196,12 @@ const __hf = {
   draw(tl, target, at, dur, ease = "power2.out") {
     const els = typeof target === "string" ? [...document.querySelectorAll(target)] : [target].filter(Boolean);
     for (const el of els) {
-      const len = typeof el.getTotalLength === "function" ? Math.ceil(el.getTotalLength()) : 600;
+      let len = typeof el.getTotalLength === "function" ? Math.ceil(el.getTotalLength()) : 600;
+      if (el.getAttribute && el.getAttribute("vector-effect") === "non-scaling-stroke") {
+        const ctm = typeof el.getScreenCTM === "function" ? el.getScreenCTM() : null;
+        const scale = ctm ? Math.max(1, Math.hypot(ctm.a, ctm.b), Math.hypot(ctm.c, ctm.d)) : 1;
+        len = Math.ceil(len * scale);
+      }
       tl.set(el, { strokeDasharray: len, strokeDashoffset: len }, 0);
       tl.fromTo(el, { strokeDashoffset: len }, { strokeDashoffset: 0, duration: Math.max(0.05, Number(dur) || 0.5), ease, immediateRender: false }, at);
     }

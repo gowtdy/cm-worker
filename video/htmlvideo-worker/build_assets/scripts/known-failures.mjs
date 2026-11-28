@@ -324,6 +324,77 @@ function injectHideInFrameCaptionCss(source, classes) {
 }
 
 /**
+ * Pure scale-only CSS transform declaration (never matches translate/rotate/skew/matrix).
+ * Safe to strip when GSAP already initializes scale on the same selector.
+ */
+const PURE_SCALE_TRANSFORM_RE =
+  /([ \t]*\btransform\s*:\s*(?:scale|scaleX|scaleY)\s*\([^;)]+\)\s*;?[ \t]*)/i;
+
+function scanRedundantCssScaleTransforms(ctx) {
+  if (!ctx?.videodir) return [];
+  const framesDir = path.join(ctx.videodir, "compositions", "frames");
+  if (!fs.existsSync(framesDir)) return [];
+  let names = [];
+  try {
+    names = fs.readdirSync(framesDir).filter((n) => n.endsWith(".html")).sort();
+  } catch {
+    return [];
+  }
+  const hits = [];
+  for (const name of names) {
+    const abs = path.join(framesDir, name);
+    const text = fs.readFileSync(abs, "utf8");
+    const styleM = /<style\b[^>]*>([\s\S]*?)<\/style>/i.exec(text);
+    const scriptParts = [...text.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]).join("\n");
+    if (!styleM || !scriptParts) continue;
+    const styleBody = styleM[1];
+    const selectors = [];
+    for (const cm of styleBody.matchAll(/([#.][A-Za-z_-][A-Za-z0-9_-]*)\s*\{([^{}]+)\}/g)) {
+      const sel = cm[1].trim();
+      const decls = cm[2];
+      const tMatch = /\btransform\s*:\s*([^;]+)/i.exec(decls);
+      if (!tMatch) continue;
+      const tVal = tMatch[1].trim();
+      // Only pure scale/scaleX/scaleY — never touch translate/rotate/skew/matrix
+      if (!/^(?:scale|scaleX|scaleY)\s*\([^)]+\)$/i.test(tVal)) continue;
+      const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const gsapOwnsScale = new RegExp(
+        `\\b(?:tl|gsap)\\.(?:set|to|fromTo)\\s*\\(\\s*["'][^"']*${esc}(?![A-Za-z0-9_-])[^"']*["']\\s*,\\s*\\{[^}]*\\b(?:scale|scaleX|scaleY)\\s*:`,
+      ).test(scriptParts);
+      if (gsapOwnsScale) selectors.push(sel);
+    }
+    if (selectors.length) {
+      hits.push({
+        file: path.join("compositions", "frames", name),
+        selectors: [...new Set(selectors)],
+      });
+    }
+  }
+  return hits;
+}
+
+function stripRedundantCssScaleTransforms(source, selectors) {
+  if (!selectors?.length) return { text: source, changed: false, count: 0 };
+  const styleM = /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/i.exec(source);
+  if (!styleM) return { text: source, changed: false, count: 0 };
+  const selSet = new Set(selectors);
+  let count = 0;
+  const nextStyle = styleM[2].replace(/([#.][A-Za-z_-][A-Za-z0-9_-]*)\s*\{([^{}]+)\}/g, (full, sel, decls) => {
+    if (!selSet.has(sel.trim())) return full;
+    const tMatch = /\btransform\s*:\s*([^;]+)/i.exec(decls);
+    if (!tMatch || !/^(?:scale|scaleX|scaleY)\s*\([^)]+\)$/i.test(tMatch[1].trim())) return full;
+    const cleaned = decls.replace(PURE_SCALE_TRANSFORM_RE, " ");
+    if (cleaned === decls) return full;
+    count++;
+    return `${sel} {${cleaned}}`;
+  });
+  if (!count) return { text: source, changed: false, count: 0 };
+  const idx = styleM.index;
+  const next = source.slice(0, idx) + styleM[1] + nextStyle + styleM[3] + source.slice(idx + styleM[0].length);
+  return { text: next, changed: true, count };
+}
+
+/**
  * checkErrors not claimed by a specific check entry above the catch-all.
  * Owned set lives here only: overlap substring (content-overlap), plus the
  * codes eaten by text-occluded / text-not-painted / contrast-aa-failure / the
@@ -426,6 +497,38 @@ export const KNOWN_FAILURES = [
   },
 
   {
+    id: "gsap-css-scale-transform-conflict",
+    title: "redundant CSS scale transform with GSAP",
+    match: (ctx) => scanRedundantCssScaleTransforms(ctx),
+    mode: "autofix",
+    autofix: (ctx, hits) => {
+      let changed = false;
+      let stripped = 0;
+      for (const hit of hits) {
+        const abs = path.join(ctx.videodir, hit.file);
+        if (!fs.existsSync(abs)) continue;
+        const text = fs.readFileSync(abs, "utf8");
+        const res = stripRedundantCssScaleTransforms(text, hit.selectors);
+        if (res.changed) {
+          fs.writeFileSync(abs, res.text, "utf8");
+          changed = true;
+          stripped += res.count;
+        }
+      }
+      return {
+        changed,
+        note: changed
+          ? `stripped ${stripped} redundant CSS scale transform(s) already owned by GSAP`
+          : "no redundant CSS scale transforms to strip",
+      };
+    },
+    prompt:
+      "Remove pure CSS `transform: scale/scaleX/scaleY(...)` when GSAP already initializes scale via `tl.set`/`tl.fromTo` (verify-all prepare strips this automatically).",
+    reason:
+      "2026-11-27 (6b0941c6 F4): `.pe-fill` declared both CSS `transform: scaleX(0)` and `tl.set('.pe-fill', { scaleX: 0 }, 0)`, triggering `gsap_css_transform_conflict` and a 41s+47s model fix round. Pure scale-only CSS transforms (no translate/rotate/skew/matrix) with matching GSAP `set`/`fromTo` are safely redundant.",
+  },
+
+  {
     id: "gsap-exit-missing-hard-kill",
     title: "gsap_exit_missing_hard_kill",
     match: (ctx) => scanGsapExitMissingHardKill(ctx),
@@ -505,7 +608,7 @@ export const KNOWN_FAILURES = [
         "Follow this triage (never blanket-allow). Decide each finding in ≤2 sentences, then emit every Edit in your FIRST batched pass — do NOT re-derive cqw/cqh geometry or re-trace the GSAP timeline; the scan already measured the boxes.",
       ];
       if (tri.designed_overlay.length) rows.push(`- designed_overlay×${tri.designed_overlay.length} (${where(tri.designed_overlay)}) → add data-layout-allow-overlap="true" on the text or an inner container (NOT the scene root).`);
-      if (tri.real_collision.length) rows.push(`- real_collision×${tri.real_collision.length} (${where(tri.real_collision)}) → reposition / reduce size; do NOT allow-overlap.`);
+      if (tri.real_collision.length) rows.push(`- real_collision×${tri.real_collision.length} (${where(tri.real_collision)}) → reposition / reduce size (or if a .pill / .badge / .stamp overlaps an underlying word/headline, either move the pill to the outer card corner/flex row clear of text OR fade the underlying text out with \`tl.to(wordSel, { autoAlpha: 0, duration: 0.2 }, label)\` when the pill enters); NEVER add \`data-layout-allow-overlap\`.`);
       if (tri.ambiguous.length) rows.push(`- ambiguous×${tri.ambiguous.length} (${where(tri.ambiguous)}) → sibling \`.pill\` / \`.card\` / \`.row\` items colliding with each other or their own inner text are REAL COLLISIONS: fix CSS/GSAP positioning or spacing and NEVER add \`data-layout-allow-overlap\`. Only a status icon overlaying a number in the exact same badge circle may use \`data-layout-allow-overlap="true"\`. Default to reposition — never re-read the file.`);
       rows.push(
         "- caption keep-out band: if either side is a `#caption-word-*`, delete the frame's own in-frame caption strip (it duplicates the auto-caption) or move it above `--cap-band-top` — NEVER add data-layout-allow-overlap for it.",
@@ -664,13 +767,27 @@ export const KNOWN_FAILURES = [
   },
 
   {
+    id: "gsap-css-transform-conflict",
+    title: "gsap_css_transform_conflict",
+    match: (ctx) => (ctx.lintErrors || []).filter((e) => e.code === "gsap_css_transform_conflict"),
+    mode: "model",
+    prompt: (_ctx, hits) =>
+      `Remove CSS \`transform\` on the named selector (${where(hits)}) and move ONLY that element's actual initial CSS transform values (e.g. \`xPercent: -50, yPercent: -50\` for \`translate(-50%, -50%)\`, or \`scaleX: 0\` for \`scaleX(0)\`) into \`tl.set(sel, {...}, 0)\` or \`tl.fromTo\`. Ignore any generic \`x: -1000\` example in the CLI \`[hint: …]\`. Apply the edit in ONE pass and reply \`fixed <n>\`.`,
+    reason:
+      "2026-11-27 (6b0941c6 F4): CLI lint fixHint emits a hardcoded `x: -1000` template example when cssTransformToGsapProps returns null, causing the verify fix worker to burn 41s / 1,964 thinking tokens debating whether to copy `x: -1000`. Pure scale-only CSS transforms are auto-stripped in prepare; residual translate/compound conflicts route here.",
+  },
+
+  {
     id: "other-lint-errors",
     title: "other lint errors",
-    match: (ctx) => (ctx.lintErrors || []).filter((e) => e.code !== "font_family_without_font_face"),
+    match: (ctx) =>
+      (ctx.lintErrors || []).filter(
+        (e) => e.code !== "font_family_without_font_face" && e.code !== "gsap_css_transform_conflict",
+      ),
     mode: "model",
     prompt: (_ctx, hits) =>
       `Fix the named file according to the lint message and its \`[hint: …]\` (${where(hits)}). Do not act on google_fonts_import or id_requires_css_escape (those are warning/info).`,
-    reason: "Lint errors other than font_family_without_font_face have no specific entry. google_fonts_import and id_requires_css_escape stay on their info entries.",
+    reason: "Lint errors other than font_family_without_font_face and gsap_css_transform_conflict have no specific entry. google_fonts_import and id_requires_css_escape stay on their info entries.",
   },
 ];
 

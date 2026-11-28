@@ -687,13 +687,13 @@ export function testBareModeBlueprint() {
     cardPath: card, frameMdPath: join(dir, "frame.md"), storyboard: sb,
   });
   const t3 = readFileSync(docs[0].path, "utf8");
-  assert.ok(t3.includes("## Selected blueprint: typewriter-reveal (mode: Adapt)"), "id from assignment");
-  assert.ok(t3.includes("BODY-typewriter"));
+  assert.ok(!t3.includes("## Selected blueprint"), "dispatch docs omit Selected blueprint (consumed upstream by visual)");
+  assert.ok(!t3.includes("BODY-typewriter"), "dispatch docs do not inline blueprint prose");
   const kinds = docs[0].conflicts.map((c) => c.kind);
   assert.ok(!kinds.includes("blueprint-assignment") && !kinds.includes("blueprint-fields"), kinds.join(","));
   assert.ok(!/`(?:Adapt|Reproduce)` is the frame's blueprint/i.test(t3));
   assert.ok(!t3.includes("ignore the assignment"));
-  // type-only rotation ban vs card tilt → scoped ruling, not the global 3D drop
+  // type-only rotation ban vs card tilt (from block prose) → scoped ruling, not the global 3D drop
   assert.ok(kinds.includes("type-rotation-scope"), kinds.join(","));
   assert.ok(!kinds.includes("negative-list-3d"), "type-scoped ban must not drop card 3D");
   const tail = t3.slice(t3.indexOf("## Resolved conflicts"));
@@ -743,12 +743,12 @@ export function testDualBlueprintDispatch() {
     cardPath: card, frameMdPath: join(dir, "frame.md"), storyboard: sb,
   });
   const t1 = readFileSync(docs[0].path, "utf8");
-  assert.ok(t1.includes("## Selected blueprint: titlecard-reveal (mode: Reproduce)"), "frame 1 heading");
-  assert.ok(t1.includes("BODY-titlecard-reveal"), "frame 1 inlines the moded blueprint");
-  assert.ok(!t1.includes("BODY-kinetic-type-beats"), "frame 1 must not inline the superseded blueprint");
-  assert.ok(t1.includes("superseded"), "frame 1 notes the superseded field");
+  assert.ok(!t1.includes("## Selected blueprint"), "dispatch docs omit Selected blueprint");
+  assert.ok(!t1.includes("BODY-titlecard-reveal"), "dispatch docs do not inline blueprint prose");
+  assert.ok(!t1.includes("BODY-kinetic-type-beats"), "frame 1 must not inline superseded blueprint");
+  assert.ok(t1.includes("superseded"), "frame 1 still rules on conflicting - blueprint: lines in Resolved conflicts");
   const t2 = readFileSync(docs[1].path, "utf8");
-  assert.ok(t2.includes("## Selected blueprint: kinetic-type-beats (mode: Adapt)"), "frame 2 heading");
+  assert.ok(!t2.includes("## Selected blueprint"), "frame 2 omits Selected blueprint");
   assert.ok(!t2.includes("BODY-grid-card-assemble"));
   // legacy packet path uses the same selection
   const pk = core.buildFramePackets({
@@ -870,9 +870,8 @@ export function testNarrowBlueprint() {
     projectDir: dir, frames, outDir: join(dir, out), animationDir: dir, cardPath: card, storyboard: sb,
   })[0].path, "utf8");
   const on = withEnv("HTMLVIDEO_FRAME_PACKETS_NARROW_BLUEPRINT", undefined, () => build("on"));
-  assert.ok(on.includes(`## Selected blueprint: kinetic-type-beats (mode: Reproduce)\n\n${core.NARROWED_BLUEPRINT_NOTE}`));
-  const off = withEnv("HTMLVIDEO_FRAME_PACKETS_NARROW_BLUEPRINT", "0", () => build("off"));
-  assert.ok(!off.includes(core.NARROWED_BLUEPRINT_NOTE) && off.includes(KINETIC.trim()), "off → full blueprint");
+  assert.ok(!on.includes("## Selected blueprint"), "dispatch docs no longer inline Selected blueprint prose");
+  assert.ok(!on.includes(KINETIC.trim()), "dispatch docs omit full blueprint body");
   console.log("narrow blueprint OK", plainBytes, Buffer.byteLength(hook.text), "bytes");
 }
 
@@ -1155,6 +1154,40 @@ Scene 1 (0.0–5.0s): scorecard.
   const flowOk = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
   assert.strictEqual(flowOk.status, 0, `class-positioned #check-seal must pass selfcheck:\n${flowOk.stdout}${flowOk.stderr}`);
 
+  // P0-1 (6b0941c6 F2): __hf.draw scales dasharray by CTM when vector-effect="non-scaling-stroke"
+  assert.ok(f2.includes('vector-effect') && f2.includes('getScreenCTM'),
+    "__hf.draw must scale strokeDasharray by getScreenCTM for non-scaling-stroke paths");
+
+  // P0-2 (6b0941c6 F4): type_caret_before_text catches caret preceding text in DOM order
+  writeFileSync(synPath, filledF2
+    .replace("Understand It", '<span id="vc-caret">|</span><span id="vc-text"></span>')
+    .replace(/<\/script>\s*<\/template>/, '__hf.type(tl, "#vc-text", "#vc-caret", "Cheaper on both", 1.0, 0.8);\n</script>\n</template>'));
+  const caretBad = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(caretBad.status, 1, "caret before text must fail selfcheck");
+  assert.ok(`${caretBad.stdout}${caretBad.stderr}`.includes("type_caret_before_text"));
+
+  writeFileSync(synPath, filledF2
+    .replace("Understand It", '<span id="vc-text"></span><span id="vc-caret">|</span>')
+    .replace(/<\/script>\s*<\/template>/, '__hf.type(tl, "#vc-text", "#vc-caret", "Cheaper on both", 1.0, 0.8);\n</script>\n</template>'));
+  const caretOk = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(caretOk.status, 0, `caret after text must pass selfcheck:\n${caretOk.stdout}${caretOk.stderr}`);
+
+  // P0-2 (6b0941c6 F4): gsap_css_transform_conflict catches CSS transform: scaleX(0) + tl.set(scaleX)
+  writeFileSync(synPath, filledF2
+    .replace("Understand It", '<div class="pe-fill"></div>')
+    .replace("</style>", ".pe-fill { transform-origin: 0% 50%; transform: scaleX(0); }\n</style>")
+    .replace(/<\/script>\s*<\/template>/, 'tl.set(".pe-fill", { scaleX: 0 }, 0);\n</script>\n</template>'));
+  const scaleConflict = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(scaleConflict.status, 1, "CSS scaleX + tl.set scaleX must fail selfcheck");
+  assert.ok(`${scaleConflict.stdout}${scaleConflict.stderr}`.includes("gsap_css_transform_conflict"));
+
+  // Static CSS transform: rotate(...) on non-animated decor must NOT trigger gsap_css_transform_conflict
+  writeFileSync(synPath, filledF2
+    .replace("Understand It", '<div class="fp-a"></div>')
+    .replace("</style>", ".fp-a { transform: rotate(-14deg); }\n</style>"));
+  const staticRotOk = spawnSync("node", [selfcheck, synPath], { encoding: "utf8" });
+  assert.strictEqual(staticRotOk.status, 0, `static rotate decor must pass selfcheck:\n${staticRotOk.stdout}${staticRotOk.stderr}`);
+
   // Dual skill copies of frame-worker-card.md stay byte-identical
   const cardA = readFileSync(join(ROOT, "skills", "aiflow-build-frame-html", "sub-agents", "frame-worker-card.md"));
   const cardB = readFileSync(join(ROOT, ".claude", "skills", "aiflow-build-frame-html", "sub-agents", "frame-worker-card.md"));
@@ -1203,7 +1236,48 @@ Scene 1 (0.0–5.0s): scorecard.
   assert.ok(f1Skel.includes('data-slot-index="2" data-state="dim" data-accent="sky"'), "slot 2 dim must inherit column accent sky");
   assert.ok(f1Skel.includes('data-slot-index="3" data-state="dim" data-accent="lime"'), "slot 3 dim must inherit column accent lime");
 
-  console.log("shared stage skeletons + __hf runtime + selfcheck syntax/placeholder/center/data-prop gates OK");
+  // P0-2 (6b096712 F8): gsap_non_transform_motion catches left/top/fontSize/roundProps in to/from/fromTo, exempts set() & x/y
+  const dirNtm = mkdtempSync(join(tmpdir(), "fp-ntm-"));
+  const badCursor = join(dirNtm, "08-bad.html");
+  writeFileSync(badCursor, `<template>
+<div id="root" data-composition-id="08-bad" data-width="1920" data-height="1080" data-duration="5">
+  <div class="clip bg" data-start="0" data-duration="5" data-track-index="0"></div>
+  <div id="cursor"></div>
+</div>
+<style>#cursor{position:absolute;}</style>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<script>
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({ paused: true });
+window.__timelines["08-bad"] = tl;
+tl.set("#cursor", { left: "6cqw", top: "16cqh" }, 0);
+tl.to("#cursor", { left: "51.5cqw", top: "43cqh", duration: 0.85 }, 1);
+</script>
+</template>`);
+  const rBadCursor = spawnSync("node", [join(ROOT, "scripts", "frame-selfcheck.mjs"), badCursor], { encoding: "utf8" });
+  assert.notStrictEqual(rBadCursor.status, 0, "tl.to left/top must fail selfcheck");
+  assert.ok(rBadCursor.stderr.includes("gsap_non_transform_motion"), rBadCursor.stderr);
+
+  const okCursor = join(dirNtm, "08-ok.html");
+  writeFileSync(okCursor, `<template>
+<div id="root" data-composition-id="08-ok" data-width="1920" data-height="1080" data-duration="5">
+  <div class="clip bg" data-start="0" data-duration="5" data-track-index="0"></div>
+  <div id="cursor"></div>
+</div>
+<style>#cursor{position:absolute;}</style>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<script>
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({ paused: true });
+window.__timelines["08-ok"] = tl;
+tl.set("#cursor", { left: "6cqw", top: "16cqh" }, 0);
+tl.to("#cursor", { x: 800, y: 300, duration: 0.85 }, 1);
+</script>
+</template>`);
+  const rOkCursor = spawnSync("node", [join(ROOT, "scripts", "frame-selfcheck.mjs"), okCursor], { encoding: "utf8" });
+  assert.strictEqual(rOkCursor.status, 0, `tl.set left/top + tl.to x/y must pass: ${rOkCursor.stderr}`);
+
+  console.log("shared stage skeletons + __hf runtime + selfcheck syntax/placeholder/center/data-prop/non-transform gates OK");
 }
 
 if (process.argv[1] && process.argv[1].endsWith("test_frame_packets.mjs")) {

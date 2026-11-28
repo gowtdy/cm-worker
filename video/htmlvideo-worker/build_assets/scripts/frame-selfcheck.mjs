@@ -498,7 +498,158 @@ for (const b of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script
   }
   for (const tm of allJs.matchAll(/\b__hf\.type\s*\(\s*[^,]+,\s*["']([^"']+)["'](?:\s*,\s*["']([^"']+)["'])?/g)) {
     checkStaticSelector(tm[1], "__hf.type");
-    if (tm[2]) checkStaticSelector(tm[2], "__hf.type");
+    if (tm[2]) {
+      checkStaticSelector(tm[2], "__hf.type");
+      // P0-2 (6b0941c6 F4): caret <span> must appear AFTER text <span> in DOM order
+      // so the typing cursor trails on the right instead of pinning on the left (`| Cheaper o`).
+      const findFirstTagIndex = (sel) => {
+        const clean = sel.trim().split(/[\s>+~]+/).pop() || "";
+        const idM = /#([A-Za-z_-][A-Za-z0-9_-]*)/.exec(clean);
+        if (idM) {
+          const esc = idM[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const m = new RegExp(`<[^>]*\\bid\\s*=\\s*["']${esc}["']`, "i").exec(tplHtml);
+          return m ? m.index : -1;
+        }
+        const clsM = /\.([A-Za-z_-][A-Za-z0-9_-]*)/.exec(clean);
+        if (clsM) {
+          const esc = clsM[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const m = new RegExp(`<[^>]*\\bclass\\s*=\\s*["'][^"']*\\b${esc}\\b[^"']*["']`, "i").exec(tplHtml);
+          return m ? m.index : -1;
+        }
+        return -1;
+      };
+      const textIdx = findFirstTagIndex(tm[1]);
+      const caretIdx = findFirstTagIndex(tm[2]);
+      if (textIdx >= 0 && caretIdx >= 0 && caretIdx < textIdx) {
+        fail(`__hf.type caret "${tm[2]}" precedes text element "${tm[1]}" in DOM order — place caret after text so the cursor trails on the right (type_caret_before_text)`);
+      }
+    }
+  }
+
+  // --- P0-2 (6b0941c6 F4): gsap_css_transform_conflict -----------------------
+  // Mirror hyperframes lint's gsap_css_transform_conflict for simple selectors:
+  // CSS `transform: ...scale/translate...` paired with non-from/fromTo GSAP
+  // `set`/`to` animating the same transform family fails the verify mechanical gate.
+  const cssScaleSels = new Map();
+  const cssTranslateSels = new Map();
+  for (const cm of allCss.matchAll(/([#.][A-Za-z_-][A-Za-z0-9_-]*)\s*\{([^{}]+)\}/g)) {
+    const sel = cm[1].trim();
+    const tMatch = /\btransform\s*:\s*([^;]+)/i.exec(cm[2]);
+    if (!tMatch) continue;
+    const tVal = tMatch[1].trim();
+    if (/\bscale[XY3D]?\s*\(/i.test(tVal)) cssScaleSels.set(sel, tVal);
+    if (/\btranslate[XY3D]?\s*\(/i.test(tVal)) cssTranslateSels.set(sel, tVal);
+  }
+  if (cssScaleSels.size || cssTranslateSels.size) {
+    const reportedConflict = new Set();
+    for (const jm of allJs.matchAll(/\b(?:tl|gsap)\.(set|to)\s*\(\s*["']([^"']+)["']\s*,\s*\{([^}]*)\}/g)) {
+      const rawSel = jm[2];
+      const vars = jm[3];
+      const hasScale = /\b(?:scale|scaleX|scaleY)\s*:/.test(vars);
+      const hasTranslate = /\b(?:x|y|xPercent|yPercent)\s*:/.test(vars);
+      if (!hasScale && !hasTranslate) continue;
+      for (const part of rawSel.split(",")) {
+        const sel = part.trim();
+        if (!sel || reportedConflict.has(sel)) continue;
+        const cssScale = hasScale ? cssScaleSels.get(sel) : undefined;
+        const cssTrans = hasTranslate ? cssTranslateSels.get(sel) : undefined;
+        if (cssScale || cssTrans) {
+          reportedConflict.add(sel);
+          const cssVal = cssScale || cssTrans;
+          fail(`"${sel}" has CSS \`transform: ${cssVal}\` and GSAP \`.${jm[1]}()\` animates transform — remove CSS transform and let GSAP own the initial state (gsap_css_transform_conflict)`);
+        }
+      }
+    }
+  }
+
+  // --- P0-2 (6b096712 F8): gsap_non_transform_motion -------------------------
+  // Mirror hyperframes lint's gsap_non_transform_motion: animating layout props
+  // (left/top/right/bottom/margin*), text-reflow props (fontSize/letterSpacing/
+  // wordSpacing), or roundProps in to/from/fromTo stutters under frame-by-frame
+  // seek capture (instantaneous .set() is exempt; positional props are exempt
+  // when a <canvas layoutsubtree> exists).
+  {
+    const hasLayoutSubtree = /<canvas\b[^>]*\blayoutsubtree\b/i.test(tplHtml);
+    const LAYOUT_PROPS = new Set([
+      "left", "right", "top", "bottom",
+      "margin", "marginLeft", "marginRight", "marginTop", "marginBottom",
+    ]);
+    const REFLOW_OR_ROUND = new Set([
+      "fontSize", "letterSpacing", "wordSpacing", "roundProps",
+    ]);
+    const extractTopLevelKeys = (objLiteral) => {
+      const s = (objLiteral || "").trim();
+      if (!s.startsWith("{") || !s.endsWith("}")) return [];
+      const keys = [];
+      let depth = 0;
+      let inStr = null;
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (inStr) {
+          if (ch === "\\") { i++; continue; }
+          if (ch === inStr) inStr = null;
+          continue;
+        }
+        if (ch === '"' || ch === "'" || ch === "`") { inStr = ch; continue; }
+        if (ch === "{" || ch === "[" || ch === "(") { depth++; continue; }
+        if (ch === "}" || ch === "]" || ch === ")") { depth--; continue; }
+        if (depth === 1 && /[A-Za-z_$]/.test(ch)) {
+          const prev = i > 0 ? s[i - 1] : "";
+          if (/[A-Za-z0-9_$.]/.test(prev)) continue;
+          let j = i;
+          while (j < s.length && /[A-Za-z0-9_$]/.test(s[j])) j++;
+          let k = j;
+          while (k < s.length && /\s/.test(s[k])) k++;
+          if (s[k] === ":") keys.push(s.slice(i, j));
+          i = j - 1;
+        }
+      }
+      return keys;
+    };
+    for (const b of inlineScripts) {
+      const clean = stripJsComments(stripRuntime(b[1]));
+      const tweenRe = /\b(?:tl|timeline|gsap)\.(to|from|fromTo)\s*\(/g;
+      for (const tm of clean.matchAll(tweenRe)) {
+        const method = tm[1];
+        const startIdx = tm.index + tm[0].length;
+        let depth = 1;
+        let inStr = null;
+        const args = [];
+        let argStart = startIdx;
+        for (let i = startIdx; i < clean.length && depth > 0; i++) {
+          const ch = clean[i];
+          if (inStr) {
+            if (ch === "\\") { i++; continue; }
+            if (ch === inStr) inStr = null;
+            continue;
+          }
+          if (ch === '"' || ch === "'" || ch === "`") { inStr = ch; continue; }
+          if (ch === "(" || ch === "{" || ch === "[") depth++;
+          else if (ch === ")" || ch === "}" || ch === "]") {
+            depth--;
+            if (depth === 0) {
+              args.push(clean.slice(argStart, i).trim());
+              break;
+            }
+          } else if (ch === "," && depth === 1) {
+            args.push(clean.slice(argStart, i).trim());
+            argStart = i + 1;
+          }
+        }
+        const varArgs = method === "fromTo" ? [args[1], args[2]] : [args[1]];
+        const flagged = [];
+        for (const va of varArgs) {
+          for (const key of extractTopLevelKeys(va)) {
+            if (REFLOW_OR_ROUND.has(key) || (!hasLayoutSubtree && LAYOUT_PROPS.has(key))) {
+              if (!flagged.includes(key)) flagged.push(key);
+            }
+          }
+        }
+        if (flagged.length) {
+          fail(`GSAP \`.${method}(${args[0] || ""})\` animates non-transform property (${flagged.join(", ")}) — animate transforms (\`x\`/\`y\`/\`scale\`) instead of layout/reflow properties (gsap_non_transform_motion)`);
+        }
+      }
+    }
   }
 }
 

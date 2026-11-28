@@ -377,26 +377,30 @@ export function triageContentOverlap(item) {
   const conDecor = conT.filter((t) => DECOR_TOKENS.has(t));
   if (selDecor.length && conDecor.length) {
     return verdict(
-      "designed_overlay",
+      "ambiguous",
       `decorative tokens on both sides ("${selDecor[0]}" / "${conDecor[0]}")`,
     );
   }
   if (selDecor.length || conDecor.length) {
     const side = selDecor.length ? "selector" : "container";
     const found = selDecor.length ? selDecor : conDecor;
+    const otherIsText = side === "selector" ? conText : selText;
     const strong = found.find((t) => AUTOFIX_DECOR_TOKENS.has(t));
     if (strong) {
       // P0-3 (6b08f96c F7): a stamp/seal landing over a multi-word text block
       // (e.g. `div.f7-sub` "Sell when any signal breaks.") is usually a missing
-      // fade-out, not a safe deterministic allow-overlap — leave for verify.
-      const otherIsText = side === "selector" ? conText : selText;
+      // fade-out, not a safe deterministic allow-overlap — classify as
+      // real_collision so the model fixes CSS/GSAP instead of allow-silencing.
       const wordCount = String(item?.text || "").trim().split(/\s+/).filter(Boolean).length;
       if ((strong === "stamp" || strong === "seal") && otherIsText && wordCount >= 3) {
-        return verdict("designed_overlay", `stamp/seal over multi-word text ("${strong}")`);
+        return verdict("real_collision", `stamp/seal over multi-word text ("${strong}")`);
       }
       return verdict("designed_overlay", `decorative token "${strong}"`, side);
     }
-    return verdict("designed_overlay", `weak decorative token "${found[0]}"`);
+    if (otherIsText) {
+      return verdict("real_collision", `weak decorative token "${found[0]}" over text block`);
+    }
+    return verdict("ambiguous", `weak decorative token "${found[0]}"`);
   }
   // Number + checkmark in the SAME badge = status overlay (check fades in over
   // the number). Mark the check side so the overlay is allowed, deterministically.
@@ -685,13 +689,25 @@ export function findingsPayload(errors) {
       mark_side: e.triage?.mark_side ?? null,
     };
   };
-  const overlapCount =
-    tri.designed_overlay.length + tri.real_collision.length + tri.ambiguous.length;
+  const nonOverlapRow = (e) => {
+    const { selector, container } = overlapSides(e);
+    return {
+      file: e.file || "",
+      code: String(e.code || ""),
+      section: String(e.section || ""),
+      selector,
+      container,
+    };
+  };
+  const nonOverlap = (errors || [])
+    .filter((e) => !String(e?.code || "").includes("overlap"))
+    .map(nonOverlapRow);
   return {
     version: 1,
     designed_overlay: tri.designed_overlay.map(row),
     real_collision: tri.real_collision.map(row),
     ambiguous: tri.ambiguous.map(row),
-    other_check_errors: Math.max(0, (errors || []).length - overlapCount),
+    other_check_errors: nonOverlap.length,
+    non_overlap_errors: nonOverlap,
   };
 }

@@ -55,8 +55,8 @@ if (!videodir) {
 
 const pi = argv.indexOf("--phase");
 const phase = pi >= 0 && argv[pi + 1] ? argv[pi + 1] : "all";
-if (!["all", "prepare", "verify"].includes(phase)) {
-  console.error(`verify-all.mjs: --phase must be all|prepare|verify (got ${phase})`);
+if (!["all", "prepare", "verify", "visual"].includes(phase)) {
+  console.error(`verify-all.mjs: --phase must be all|prepare|verify|visual (got ${phase})`);
   process.exit(2);
 }
 
@@ -233,4 +233,5 @@ console.log("videodir:", videodir);
 let rc = 0;
 if (phase === "all" || phase === "prepare") rc = prepare();
 if (rc === 0 && (phase === "all" || phase === "verify")) rc = verify();
+if (rc === 0 && phase === "visual") rc = visualGate();
 process.exit(rc);

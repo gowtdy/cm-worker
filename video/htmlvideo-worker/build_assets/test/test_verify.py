@@ -1147,6 +1147,254 @@ class FixPromptTest(unittest.TestCase):
             res["findings"],
         )
 
+    def test_anti_silencing_revert_skips_rescan_and_injects_next_round_note(self):
+        d = tempfile.mkdtemp(prefix="verify-antisilence-")
+        self.addCleanup(shutil.rmtree, d, True)
+        frames = os.path.join(d, "compositions", "frames")
+        os.makedirs(frames)
+        for name in ("hyperframes.json", "index.html", "STORYBOARD.md"):
+            with open(os.path.join(d, name), "w") as f:
+                f.write("x\n")
+        target = os.path.join(frames, "07-sell.html")
+        orig = '<template><span class="f7-verdict-word">Sell</span><style>.a{}</style><script></script></template>\n'
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(orig)
+        sheet = os.path.join(d, "snapshots", "contact-sheet.jpg")
+        os.makedirs(os.path.dirname(sheet), exist_ok=True)
+        with open(sheet, "wb") as f:
+            f.write(b"jpg")
+        scan = (
+            "── check ──\n"
+            "  ✗ [Layout] content_overlap in compositions/frames/07-sell.html — span.f7-verdict-word overlaps #f7-sell-pill\n"
+            "── actionable summary ──\n"
+            "  1) content_overlap — real_collision×1 (compositions/frames/07-sell.html: span.f7-verdict-word overlaps #f7-sell-pill)\n"
+            "GATE: FAIL ✗ (1 error finding(s))\n"
+        )
+        prompts = []
+
+        def fake_worker(project_dir, prompt, log, label, max_output=None):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                # Round 1: blanket allow-overlap only (no style/script change) -> reverted
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(orig.replace('class="f7-verdict-word"', 'class="f7-verdict-word" data-layout-allow-overlap="true"'))
+            else:
+                # Round 2: genuine CSS/GSAP edit -> accepted
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(orig.replace(".a{}", ".a{top:-3cqh;}"))
+            return 0
+
+        logger = logging.getLogger("test.verify.antisilence")
+        with mock.patch.object(v, "_run_prepare", return_value=(0, "ok\n")), \
+             mock.patch.object(v, "_run_verify", side_effect=[
+                 (1, scan),
+                 (0, "GATE: PASS ✓\nVISUAL_GATE: PASS\n"),
+             ]) as run_verify, \
+             mock.patch.object(v, "_run_fix_worker", side_effect=fake_worker):
+            out = v.verify_frame(d, logger)
+        self.assertEqual(out, sheet)
+        # Only 2 verify scans total (initial + after round 2); round 1 revert skipped rescan!
+        self.assertEqual(run_verify.call_count, 2)
+        self.assertEqual(len(prompts), 2)
+        self.assertNotIn("PREVIOUS EDIT REJECTED BY ANTI-SILENCING GUARD", prompts[0])
+        self.assertIn("PREVIOUS EDIT REJECTED BY ANTI-SILENCING GUARD", prompts[1])
+
+
+class VerifySoftFailDegradedPassTest(unittest.TestCase, _ProjectMixin):
+    def setUp(self):
+        self.d = self._make_project()
+        self.logger = logging.getLogger("test.verify.softfail")
+        self.sheet = os.path.join(self.d, "snapshots", "contact-sheet.jpg")
+        os.makedirs(os.path.dirname(self.sheet), exist_ok=True)
+        with open(self.sheet, "wb") as f:
+            f.write(b"jpg")
+        p = mock.patch.object(v, "_run_prepare", return_value=(0, "verify-all: prepare done ✓\n"))
+        self.prep = p.start()
+        self.addCleanup(p.stop)
+
+    def _soft_scan(self, **payload_overrides) -> str:
+        payload = {
+            "version": 1,
+            "designed_overlay": [],
+            "real_collision": [
+                {
+                    "file": "compositions/frames/07-sell.html",
+                    "code": "content_overlap",
+                    "selector": "span.f7-verdict-word",
+                    "container": "#f7-sell-pill",
+                    "reason": 'weak decorative token "pill" over text block',
+                    "autofix_ok": False,
+                    "mark_side": None,
+                }
+            ],
+            "ambiguous": [],
+            "other_check_errors": 0,
+            "non_overlap_errors": [],
+            "lint_errors": 0,
+            "lint_error_codes": [],
+            "digit_led_selectors": 0,
+            "selfcheck_other_fails": 0,
+            "transitions_ok": True,
+        }
+        payload.update(payload_overrides)
+        return (
+            "══ verify-all [verify] ══\n"
+            "── check ──\n"
+            "  ✗ [Layout] content_overlap in compositions/frames/07-sell.html — span.f7-verdict-word overlaps #f7-sell-pill\n"
+            "── actionable summary ──\n"
+            "  1) content_overlap — real_collision×1\n"
+            "GATE: FAIL ✗ (1 error finding(s))\n"
+            + ao.FINDINGS_JSON_PREFIX + json.dumps(payload) + "\n"
+        )
+
+    def _edit_frame(self, project_dir, prompt, logger, label, max_output=None):
+        with open(os.path.join(project_dir, "compositions", "frames", "05-price.html"), "a") as f:
+            f.write("<!-- edit -->\n")
+        return 0
+
+    def test_degraded_pass_after_max_rounds_when_visual_gate_passes(self):
+        scan = self._soft_scan()
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}, clear=False), \
+             mock.patch.object(v, "_run_verify", side_effect=[(1, scan), (1, scan)]), \
+             mock.patch.object(v, "_run_fix_worker", side_effect=self._edit_frame), \
+             mock.patch.object(v, "_run_visual_only", return_value=(0, "VISUAL_GATE: PASS\n")) as vis, \
+             self.assertLogs("test.verify.softfail", level="WARNING") as logs:
+            os.environ.pop("HTMLVIDEO_VERIFY_SOFT_FAIL_MAX_ERRORS", None)
+            out = v.verify_frame(self.d, self.logger)
+        self.assertEqual(out, self.sheet)
+        vis.assert_called_once()
+        self.assertTrue(any("VERIFY_DEGRADED_PASS" in m for m in logs.output))
+        marker = os.path.join(self.d, v.DEGRADED_MARKER_FILENAME)
+        self.assertTrue(os.path.isfile(marker))
+        with open(marker, encoding="utf-8") as fh:
+            data = json.load(fh)
+        self.assertEqual(data["status"], "degraded_pass")
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["findings"][0]["code"], "content_overlap")
+
+    def test_caption_keepout_overlap_blocks_soft_fail(self):
+        scan = self._soft_scan(real_collision=[{
+            "file": "compositions/frames/07-sell.html",
+            "code": "content_overlap",
+            "selector": "div.cap-sub",
+            "container": "#caption-word-12-0",
+        }])
+        ok, reason, _ = v.evaluate_soft_fail(scan)
+        self.assertFalse(ok)
+        self.assertIn("caption_keepout", reason)
+
+    def test_fatal_blockers_decline_soft_fail(self):
+        cases = [
+            {"lint_errors": 1},
+            {"digit_led_selectors": 1},
+            {"selfcheck_other_fails": 1},
+            {"transitions_ok": False},
+            {
+                "real_collision": [],
+                "other_check_errors": 1,
+                "non_overlap_errors": [{
+                    "file": "compositions/frames/03.html",
+                    "code": "text_not_painted",
+                    "section": "Layout",
+                    "selector": "#qmark",
+                    "container": "",
+                }],
+            },
+            {
+                "real_collision": [],
+                "other_check_errors": 1,
+                "non_overlap_errors": [{
+                    "file": "compositions/frames/02.html",
+                    "code": "content_overlap",
+                    "section": "Runtime",
+                    "selector": "#x",
+                    "container": "",
+                }],
+            },
+        ]
+        for overrides in cases:
+            ok, _reason, _ = v.evaluate_soft_fail(self._soft_scan(**overrides))
+            self.assertFalse(ok, f"expected hard fail for {overrides}")
+
+    def test_thresholds_enforce_max_errors_and_max_frames(self):
+        four_errors = [
+            {"file": "compositions/frames/07-sell.html", "code": "content_overlap",
+             "selector": f"#a{i}", "container": f"#b{i}"}
+            for i in range(4)
+        ]
+        ok, reason, _ = v.evaluate_soft_fail(self._soft_scan(real_collision=four_errors))
+        self.assertFalse(ok)
+        self.assertIn("too_many_errors", reason)
+
+        three_frames = [
+            {"file": f"compositions/frames/0{i}.html", "code": "content_overlap",
+             "selector": "#a", "container": "#b"}
+            for i in (1, 2, 3)
+        ]
+        ok, reason, _ = v.evaluate_soft_fail(self._soft_scan(real_collision=three_frames))
+        self.assertFalse(ok)
+        self.assertIn("too_many_frames", reason)
+
+    def test_visual_gate_fail_blocks_degraded_pass(self):
+        scan = self._soft_scan()
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1"}, clear=False), \
+             mock.patch.object(v, "_run_verify", side_effect=[(1, scan), (1, scan)]), \
+             mock.patch.object(v, "_run_fix_worker", side_effect=self._edit_frame), \
+             mock.patch.object(v, "_run_visual_only", return_value=(1, "VISUAL_GATE: FAIL\n")):
+            with self.assertRaises(RuntimeError) as ctx:
+                v.verify_frame(self.d, self.logger)
+        self.assertIn("after 1 fix rounds", str(ctx.exception))
+
+    def test_soft_fail_disabled_by_env_var(self):
+        scan = self._soft_scan()
+        with mock.patch.dict(
+            os.environ,
+            {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "1", "HTMLVIDEO_VERIFY_SOFT_FAIL_MAX_ERRORS": "0"},
+            clear=False,
+        ), \
+             mock.patch.object(v, "_run_verify", side_effect=[(1, scan), (1, scan)]), \
+             mock.patch.object(v, "_run_fix_worker", side_effect=self._edit_frame), \
+             mock.patch.object(v, "_run_visual_only") as vis:
+            with self.assertRaises(RuntimeError):
+                v.verify_frame(self.d, self.logger)
+        vis.assert_not_called()
+
+    def test_mid_loop_zero_edit_stall_degrades_or_hands_off_to_visual_fix(self):
+        scan = self._soft_scan()
+        # Case A: round 1 stalls with 0 edits, visual gate PASS → immediate degraded pass
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "3"}, clear=False), \
+             mock.patch.object(v, "_run_verify", return_value=(1, scan)), \
+             mock.patch.object(v, "_run_fix_worker", return_value=0) as claude, \
+             mock.patch.object(v, "_run_visual_only", return_value=(0, "VISUAL_GATE: PASS\n")) as vis:
+            os.environ.pop("HTMLVIDEO_VERIFY_SOFT_FAIL_MAX_ERRORS", None)
+            out = v.verify_frame(self.d, self.logger)
+        self.assertEqual(out, self.sheet)
+        self.assertEqual(claude.call_count, 1)
+        vis.assert_called_once()
+
+        # Case B: round 1 stalls with 0 edits, visual gate FAIL → hands off to visual fix on round 2
+        visual_fail = "── visual gate (snapshot + pixels) ──\nframe-05.png FAIL: empty frame\nVISUAL_GATE: FAIL\n"
+        calls = []
+
+        def worker_round2_fixes(project_dir, prompt, logger, label, max_output=None):
+            calls.append(prompt)
+            if len(calls) == 2:
+                with open(os.path.join(project_dir, "compositions", "frames", "05-price.html"), "a") as f:
+                    f.write("<!-- visual fix -->\n")
+            return 0
+
+        with mock.patch.dict(os.environ, {"HTMLVIDEO_VERIFY_FIX_ROUNDS": "3"}, clear=False), \
+             mock.patch.object(v, "_run_verify", side_effect=[
+                 (1, scan),
+                 (0, "GATE: PASS ✓\nVISUAL_GATE: PASS\n"),
+             ]), \
+             mock.patch.object(v, "_run_fix_worker", side_effect=worker_round2_fixes), \
+             mock.patch.object(v, "_run_visual_only", return_value=(1, visual_fail)):
+            out = v.verify_frame(self.d, self.logger)
+        self.assertEqual(out, self.sheet)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("VISUAL_GATE: FAIL", calls[1])
+
 
 if __name__ == "__main__":
     unittest.main()

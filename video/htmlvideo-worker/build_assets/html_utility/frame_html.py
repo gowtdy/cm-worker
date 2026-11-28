@@ -347,11 +347,9 @@ HEDGE_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE"
 HEDGE_AFTER_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_AFTER"
 MAX_HEDGES_ENV = "HTMLVIDEO_FRAME_HTML_MAX_HEDGES"
 HEDGE_EFFORT_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_EFFORT"
-SLIM_PRIMARY_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_PRIMARY"
-SLIM_FALLBACK_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_FALLBACK"
 SLIM_KEEP_SNIPPETS_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_KEEP_SNIPPETS"
 DEFAULT_HEDGE_AFTER = 150
-DEFAULT_MAX_HEDGES = 3
+DEFAULT_MAX_HEDGES = 6
 DEFAULT_HEDGE_EFFORT = "low"
 HEDGE_POLL_SECONDS = 5
 HEDGE_DIR = os.path.join(".hyperframes", "hedge")
@@ -483,11 +481,163 @@ def _extract_template_html(text: str | None) -> str | None:
     return m.group(0).strip()
 
 
+_STYLE_BLOCK_RE = re.compile(r"(<style\b[^>]*>)([\s\S]*?)(</style>)", re.IGNORECASE)
+_INLINE_SCRIPT_BLOCK_RE = re.compile(
+    r"(<script\b(?![^>]*\bsrc=)[^>]*>)([\s\S]*?)(</script>)", re.IGNORECASE
+)
+_CSS_DIGIT_SEL_RE = re.compile(
+    r"(^|[ \t{},>+~():])([#.])([0-9]{1,2}[-_][A-Za-z][A-Za-z0-9_-]*)", re.MULTILINE
+)
+_JS_STR_DIGIT_SEL_RE = re.compile(
+    r"(^|[\s,>+~():])([#.])([0-9]{1,2}[-_][A-Za-z][A-Za-z0-9_-]*)"
+)
+_CSS_COMMENT_OR_CODE_RE = re.compile(r"/\*[\s\S]*?\*/", re.MULTILINE)
+_JS_TOKEN_RE = re.compile(
+    r"/\*[\s\S]*?\*/|(?<!:)//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`"
+)
+_PURE_SCALE_DECL_RE = re.compile(
+    r"([ \t]*\btransform\s*:\s*(?:scale|scaleX|scaleY)\s*\([^;)]+\)\s*;?[ \t]*)",
+    re.IGNORECASE,
+)
+
+
+def _rewrite_digit_led_selectors(html: str) -> tuple[str, int]:
+    """Deterministically rewrite CSS/JS digit-led selectors (`#07-x`, `.07-x`)
+    to valid attribute selectors (`[id="07-x"]`, `[class~="07-x"]`), preserving
+    comments, hex colors (`#1E1E1E`), decimals, and `getElementById("07-x")`.
+    """
+    count = 0
+
+    def _fix_css_chunk(chunk: str) -> str:
+        nonlocal count
+
+        def _rep(m):
+            nonlocal count
+            count += 1
+            pre, sig, tok = m.group(1), m.group(2), m.group(3)
+            attr = "id" if sig == "#" else "class~"
+            return f'{pre}[{attr}="{tok}"]'
+
+        return _CSS_DIGIT_SEL_RE.sub(_rep, chunk)
+
+    def _fix_style(m):
+        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
+        out, pos = [], 0
+        for cm in _CSS_COMMENT_OR_CODE_RE.finditer(body):
+            out.append(_fix_css_chunk(body[pos:cm.start()]))
+            out.append(cm.group(0))
+            pos = cm.end()
+        out.append(_fix_css_chunk(body[pos:]))
+        return open_tag + "".join(out) + close_tag
+
+    def _fix_script(m):
+        nonlocal count
+        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
+
+        def _tok_rep(tm):
+            nonlocal count
+            tok = tm.group(0)
+            if tok[0] not in ("'", '"', "`"):
+                return tok
+            q = tok[0]
+            inner_q = "'" if q == '"' else '"'
+            inner = tok[1:-1]
+
+            def _srep(sm):
+                nonlocal count
+                count += 1
+                pre, sig, name = sm.group(1), sm.group(2), sm.group(3)
+                attr = "id" if sig == "#" else "class~"
+                return f"{pre}[{attr}={inner_q}{name}{inner_q}]"
+
+            new_inner = _JS_STR_DIGIT_SEL_RE.sub(_srep, inner)
+            return q + new_inner + q
+
+        return open_tag + _JS_TOKEN_RE.sub(_tok_rep, body) + close_tag
+
+    next_html = _STYLE_BLOCK_RE.sub(_fix_style, html)
+    next_html = _INLINE_SCRIPT_BLOCK_RE.sub(_fix_script, next_html)
+    return next_html, count
+
+
+def _strip_redundant_css_scale_transforms(html: str) -> tuple[str, int]:
+    """Strip pure `transform: scale|scaleX|scaleY(...)` in `<style>` when an
+    inline `<script>` already initializes/animates scale on the same simple
+    selector via `tl/gsap.(set|to|fromTo)` (mirrors known-failures.mjs).
+    """
+    script_parts = "\n".join(m.group(2) for m in _INLINE_SCRIPT_BLOCK_RE.finditer(html))
+    if not script_parts:
+        return html, 0
+    count = 0
+
+    def _fix_style(m):
+        nonlocal count
+        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
+
+        def _rule_rep(rm):
+            nonlocal count
+            sel, decls = rm.group(1).strip(), rm.group(2)
+            t_m = re.search(r"\btransform\s*:\s*([^;]+)", decls, re.IGNORECASE)
+            if not t_m:
+                return rm.group(0)
+            t_val = t_m.group(1).strip()
+            if not re.fullmatch(r"(?:scale|scaleX|scaleY)\s*\([^)]+\)", t_val, re.IGNORECASE):
+                return rm.group(0)
+            esc = re.escape(sel)
+            gsap_owns = re.search(
+                rf"\b(?:tl|gsap)\.(?:set|to|fromTo)\s*\(\s*[\"'][^\"']*{esc}(?![A-Za-z0-9_-])[^\"']*[\"']\s*,\s*\{{[^}}]*\b(?:scale|scaleX|scaleY)\s*:",
+                script_parts,
+            )
+            if not gsap_owns:
+                return rm.group(0)
+            cleaned = _PURE_SCALE_DECL_RE.sub(" ", decls)
+            if cleaned == decls:
+                return rm.group(0)
+            count += 1
+            return f"{rm.group(1)}{{{cleaned}}}"
+
+        next_body = re.sub(
+            r"([#.][A-Za-z_-][A-Za-z0-9_-]*\s*)\{([^{}]+)\}", _rule_rep, body
+        )
+        return open_tag + next_body + close_tag
+
+    next_html = _STYLE_BLOCK_RE.sub(_fix_style, html)
+    return next_html, count
+
+
+def _normalize_frame_html(html: str) -> tuple[str, list[str]]:
+    """Deterministic pre-selfcheck cleanup for mechanical hedge/worker typos."""
+    notes: list[str] = []
+    out, n_digit = _rewrite_digit_led_selectors(html)
+    if n_digit:
+        notes.append(f"digit-led-selectors={n_digit}")
+    out, n_scale = _strip_redundant_css_scale_transforms(out)
+    if n_scale:
+        notes.append(f"css-scale-strip={n_scale}")
+    return out, notes
+
+
+def _normalize_frame_file(frame_path: str) -> list[str]:
+    if not os.path.isfile(frame_path):
+        return []
+    try:
+        with open(frame_path, encoding="utf-8") as f:
+            raw = f.read()
+    except OSError:
+        return []
+    cleaned, notes = _normalize_frame_html(raw)
+    if notes and cleaned != raw:
+        with open(frame_path, "w", encoding="utf-8") as f:
+            f.write(cleaned)
+    return notes
+
+
 def _extract_and_write_frame_html(frame_path: str, text: str | None) -> bool:
     """Write extracted `<template>…</template>` to ``frame_path``; True on success."""
     html = _extract_template_html(text)
     if not html:
         return False
+    html, _notes = _normalize_frame_html(html)
     os.makedirs(os.path.dirname(frame_path), exist_ok=True)
     with open(frame_path, "w", encoding="utf-8") as f:
         f.write(html + "\n")
@@ -556,33 +706,31 @@ def _worker_prompt(
     if recipes_mode == "full":
         recipe_line = (
             "What the dispatch inlines: the frame.md design-token excerpt, the rule "
-            "card, your storyboard block, the selected blueprint body, and every "
-            "cited rule recipe IN FULL under `## Rule recipes (full)` (the "
-            "`## Rule index` lists their RULES_DIR paths for reference only). Do "
+            "card, your storyboard block, and every "
+            "cited rule recipe IN FULL under `## Rule recipes (full)`. Do "
             "NOT Read any recipe; never open frame.md or _role.md — they cannot "
             "add what the dispatch already carries.")
     elif recipes_mode == "snippets":
         if text_out:
             recipe_line = (
                 "What the dispatch inlines: the frame.md design-token excerpt, the rule "
-                "card, your storyboard block, the selected blueprint body, and a "
+                "card, your storyboard block, and a "
                 "mechanism + core-code SNIPPET of every cited recipe under "
                 "`## Rule recipes (snippets)`. Everything you need is inlined — do "
                 "NOT Read any recipe, frame.md, or _role.md.")
         else:
             recipe_line = (
                 "What the dispatch inlines: the frame.md design-token excerpt, the rule "
-                "card, your storyboard block, the selected blueprint body, and a "
+                "card, your storyboard block, and a "
                 "mechanism + core-code SNIPPET of every cited recipe under "
-                "`## Rule recipes (snippets)`. The `## Rule index` still lists the "
-                "`RULES_DIR/<id>.md` paths: do NOT batch-read them — Read a full "
+                "`## Rule recipes (snippets)`. Do NOT batch-read recipe files — Read a full "
                 "recipe only when a detail you need is missing from its snippet (at "
                 "most once per recipe); never open frame.md or _role.md — they cannot "
                 "add what the dispatch already carries.")
     else:
         recipe_line = (
             "What the dispatch inlines: the frame.md design-token excerpt, the rule "
-            "card, your storyboard block, and the selected blueprint body. Rule "
+            "card, and your storyboard block. Rule "
             "recipes are NOT inlined — the dispatch carries only a `## Rule index` "
             "of `RULES_DIR/<id>.md` paths. In your FIRST tool turn, Read every "
             "recipe listed in the Rule index in one parallel batch (all Read calls "
@@ -690,6 +838,14 @@ def _worker_prompt(
             f"one line: done OK {frame_id}\n"
             f"- On an unrecoverable failure instead reply only: fail {frame_id}: <reason>"
         )
+    if text_out:
+        dispatch_text = dispatch_text.replace(
+            "Do NOT batch-read the recipes; Read a full `RULES_DIR/<id>.md` only when a detail you need is missing (at most once per recipe). This overrides the card's first-turn recipe batch read.",
+            "Implement directly from these mechanism + core-code snippets (tools are disabled in this session — do NOT call Read).",
+        ).replace(
+            "// … truncated — Read the full recipe for the rest",
+            "// … snippet end (implement from the mechanism + core pattern above)",
+        )
     has_ledger = "## Layout ledger" in dispatch_text or "## Motion ledger" in dispatch_text
     ledger_line = (
         "- when the dispatch carries a `## Layout ledger` / `## Motion ledger`,\n"
@@ -714,10 +870,8 @@ STORYBOARD.md — exploring sibling frames burns turns and cannot help this fram
 Conflict priority (higher wins): the `## Resolved conflicts` rulings at the end
 of the dispatch (when present — they already settle the contradictions, do not
 re-deliberate) > the time-coded Scene list in your storyboard block >
-`## Video direction` / design contract > the blueprint body > frame.md
-narrative prose. frame.md token VALUES (hex, font families) are always exact.
-If the block lists several `- blueprint:` lines, the one under
-`## Selected blueprint` is authoritative.
+`## Video direction` / design contract > frame.md narrative prose. frame.md
+token VALUES (hex, font families) are always exact.
 
 {turn_line} Hard no-ops in thinking (each wastes the whole turn):
 - do NOT re-list the Scene beats — they are in your storyboard block below;
@@ -740,9 +894,12 @@ If the block lists several `- blueprint:` lines, the one under
   `<svg preserveAspectRatio="none">` bracket/frame directly on `#root` around a
   narrower centered group (place brackets inside the tight flex/grid group
   container or use CSS `border`).
-- NO manual `onUpdate` / `gsap.ticker` master time loops to drive text, glitch
-  ghosts, or state machines — always use declarative `tl.set` / `tl.to` /
-  `tl.fromTo` and the pre-injected `__hf.type` / `__hf.draw` helpers.
+- NO manual `gsap.ticker` / `requestAnimationFrame` loops or full-frame
+  `onUpdate` master state machines to drive scene transitions or typing — use
+  `tl.set` (instant text swaps), `__hf.type` (character typing), `tl.to` /
+  `tl.fromTo`, and `__hf.draw`; bounded per-effect `onUpdate` proxies from an
+  inlined recipe (e.g. `chromatic-glitch` amplitude envelope or
+  `sine-wave-loop` phase) are allowed.
 - NO inline `<svg><feTurbulence>` noise filters or URL-encoded SVG data-URI
   grain textures — use flat colors and lightweight CSS `radial-gradient` only.
 {draft_line}
@@ -1051,12 +1208,15 @@ def _hedge_suffix(text_out=False):
         "per element (rise/fade/scale-pop), static per-Scene layout, no 3D, no "
         "particles, no counters. Priority: a valid file with every Scene present "
         "> visual richness. Hard guardrails: (1) any `left: 50%` centered element "
-        "MUST include `transform: translateX(-50%)` (or flex centering on its "
-        "container); (2) quote every CSS-unit value in GSAP tweens (e.g. "
+        "MUST center via GSAP `xPercent: -50` when GSAP animates it (never mix "
+        "CSS `transform` with GSAP), or CSS `transform: translateX(-50%)` when "
+        "purely static (prefer flex/grid centering on its container); (2) quote "
+        "every CSS-unit value in GSAP tweens (e.g. "
         "`y: \"2cqh\"`, never bare `y: 2cqh`); (3) NEVER render literal "
         "placeholders (`— figure —`, `{metric}`, `N%`) — use short qualitative "
         "labels when no number exists; (4) on shared-stage frames keep "
-        "`.hf-stage-lockup` completely static/untouched and only fill `#stage-card`. "
+        "`.hf-stage-lockup` completely static/untouched and only fill `#stage-card`; "
+        "(5) never tween `left`/`top`/`right`/`bottom`/`fontSize` in `tl.to`/`from`/`fromTo` — use `x`/`y`/`scale` only. "
         f"{end}\n"
     )
 
@@ -1188,8 +1348,6 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
                 DEFAULT_HEDGE_EFFORT,
             )
         hedge_effort = DEFAULT_HEDGE_EFFORT
-    slim_primary = _env_on(SLIM_PRIMARY_ENV, default=True)
-    slim_fallback = _env_on(SLIM_FALLBACK_ENV, default=True)
     slim_keep_snippets = _env_on(SLIM_KEEP_SNIPPETS_ENV, default=True)
     degrade_on = _env_on(DEGRADE_ENV)
     degrade_window = _env_positive_int(
@@ -1238,9 +1396,9 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
             kw["timeout"] = SALVAGE_TIMEOUT
         else:
             dispatch_text = _load_dispatch_text(project_dir, fid)
-            if (slim_primary and mode == "normal") or (slim_fallback and mode in ("degraded", "hedge")):
-                dispatch_text = _minimal_dispatch_text(
-                    dispatch_text, keep_snippets=slim_keep_snippets)
+            keep_snips = True if mode == "normal" else slim_keep_snippets
+            dispatch_text = _minimal_dispatch_text(
+                dispatch_text, keep_snippets=keep_snips)
             recipes_mode = _recipes_mode(dispatch_text)
             prompt = _worker_prompt(
                 fid, skeleton_mode, project_dir=project_dir,
@@ -1290,6 +1448,8 @@ def _build_frame_html_driver_pipeline(project_dir, logger):
             done = (rc == 0) and _extract_and_write_frame_html(frame_path, text)
         else:
             done = _worker_done_ok(fid, text)
+            if done:
+                _normalize_frame_file(frame_path)
         sc_ok, sc_out = _run_frame_selfcheck(wd, fid)
         ok = rc == 0 and done and sc_ok and os.path.isfile(frame_path)
         if ok and mode != "hedge":

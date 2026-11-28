@@ -17,8 +17,10 @@ visual fix prompt, not the mechanical actionable-summary playbook.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 import glob
 import hashlib
+import json
 import logging
 import os
 import re
@@ -33,6 +35,7 @@ from html_utility.verify_overlap_autofix import (
     auto_overlap_enabled,
     autofix_caption_keepout,
     autofix_designed_overlays,
+    parse_findings_payload,
     strip_findings_payload,
 )
 
@@ -50,12 +53,28 @@ VERIFY_ALL_SCRIPT = "/app/scripts/verify-all.mjs"
 _MAX_FIX_ROUNDS = 3  # default; HTMLVIDEO_VERIFY_FIX_ROUNDS overrides
 _PREPARE_TIMEOUT_S = 300
 _VERIFY_TIMEOUT_S = 900
+_VISUAL_TIMEOUT_S = 360
 _INLINE_FILE_MAX_BYTES = 16_384
 _SCAN_LOG_LIMIT = 2000
 # 2026-11-26 (6b0795df): one retry at a higher output cap when a fix worker hit
 # TRUNCATED_RC without landing any edit. HTMLVIDEO_VERIFY_TRUNC_RETRY_MAX_OUTPUT
 # overrides; 0 disables the retry (pre-2026-11-26 fail-fast behaviour).
 _TRUNC_RETRY_MAX_OUTPUT = 48000
+# P1-2 (2026-11-28): Non-fatal mechanical findings that may degrade to a
+# warning pass after fix rounds are exhausted (or stalled), provided the visual
+# pixel gate still passes and thresholds hold.
+_SOFT_FAIL_CODES = frozenset({
+    "content_overlap",
+    "text_occluded",
+    "escaped_container",
+    "canvas_overflow",
+    "contrast_aa_failure",
+    "text_box_overflow",
+})
+_SOFT_FAIL_MAX_ERRORS = 3  # HTMLVIDEO_VERIFY_SOFT_FAIL_MAX_ERRORS overrides; 0 disables
+_SOFT_FAIL_MAX_FRAMES = 2  # HTMLVIDEO_VERIFY_SOFT_FAIL_MAX_FRAMES overrides
+_CAPTION_WORD_SEL_RE = re.compile(r"#caption-word-\d+-\d+|caption-word", re.IGNORECASE)
+DEGRADED_MARKER_FILENAME = os.path.join(SNAPSHOTS_DIR, "verify-degraded.json")
 
 
 def _trunc_retry_max_output(logger: logging.Logger) -> int:
@@ -89,10 +108,10 @@ def _run_verify_phase(project_dir: str, phase: str, timeout: int, logger: loggin
         out += "\n[stderr]\n" + proc.stderr
     logger.info("verify-all %s done rc=%d (out %d bytes)", phase, proc.returncode, len(out))
     if proc.returncode != 0:
-        if phase == "verify":
+        if phase in ("verify", "visual"):
             summary = (
                 _trim_scan_for_visual(out)
-                if classify_scan_failure(out) == "visual"
+                if phase == "visual" or classify_scan_failure(out) == "visual"
                 else _trim_scan_for_fix(out)
             )
         else:
@@ -136,6 +155,11 @@ def _run_verify(project_dir: str, logger: logging.Logger) -> tuple[int, str]:
     return _run_verify_phase(project_dir, "verify", _VERIFY_TIMEOUT_S, logger)
 
 
+def _run_visual_only(project_dir: str, logger: logging.Logger) -> tuple[int, str]:
+    """Run only the visual gate (midpoints → snapshot → verify-pixels)."""
+    return _run_verify_phase(project_dir, "visual", _VISUAL_TIMEOUT_S, logger)
+
+
 # Per-failure fix rules live in ONE place — /app/scripts/known-failures.mjs —
 # shared with verify-report.mjs (which renders each matched rule into its
 # "actionable summary") and verify-all.mjs (whose prepare phase runs the
@@ -160,7 +184,7 @@ _FIX_HARD_CONSTRAINTS = """Hard constraints for this fix role (override project 
 - Do NOT run verify-all / lint / check / snapshot / `npm run check`.
 - Project CLAUDE.md "Always invoke skill" / "ALWAYS RUN check" do NOT apply here.
 - Edit `compositions/**/*.html` only, in ONE batched pass (parallel Edits), then stop.
-- Read each target file (absolute path) at most ONCE, then Edit it. Do NOT
+- Read each target file (absolute path) at most ONCE, then Edit it (skip Read when the file is already inlined below). Do NOT
   Grep / Glob / list directories or open files the findings do not name.
 """
 
@@ -369,11 +393,22 @@ def _filter_summary_for_file(tail: str, rel: str) -> str:
     return "".join(out)
 
 
+_ANTI_SILENCING_REJECTED_NOTE = (
+    "[PREVIOUS EDIT REJECTED BY ANTI-SILENCING GUARD] Your prior attempt added "
+    "`data-layout-allow-overlap` / `data-layout-allow-occlusion` without fixing "
+    "`<style>` or `<script>`, and was automatically reverted. You MUST modify CSS "
+    "positioning/spacing or GSAP timeline (e.g. fade covered text out with "
+    "`autoAlpha: 0` when a badge/pill enters) — adding `data-layout-allow-*` alone "
+    "is blocked.\n\n"
+)
+
+
 def _build_fix_prompt_from_fragment(
     fragment: str,
     project_dir: str,
     label: str,
     target_file: str | None = None,
+    anti_silencing_rejected: bool = False,
 ) -> str:
     root_line = f"Project root (absolute): {project_dir}\n\n" if project_dir else ""
     scope_line = ""
@@ -383,16 +418,22 @@ def _build_fix_prompt_from_fragment(
             f"Scope: fix ONLY `{target_file}` (`{abs_target}`). "
             "Do NOT Read or Edit any other frame file (parallel sibling workers own other files).\n\n"
         )
+    rejected_line = _ANTI_SILENCING_REJECTED_NOTE if anti_silencing_rejected else ""
     inline_block = _inline_target_file_block(project_dir, target_file)
     return (
-        _fix_prompt_prefix(root_line + scope_line, label)
+        rejected_line
+        + _fix_prompt_prefix(root_line + scope_line, label)
         + fragment
         + f"\n── end {label} ──\n"
         + inline_block
     )
 
 
-def _build_fix_prompt(scan_output: str, project_dir: str = "") -> str:
+def _build_fix_prompt(
+    scan_output: str,
+    project_dir: str = "",
+    anti_silencing_rejected: bool = False,
+) -> str:
     """Prompt for the one model turn that is still genuinely needed: apply the
     mechanical fixes the scan already enumerated. Only the actionable part of
     the scan is inlined (``HTMLVIDEO_VERIFY_FIX_FULL_SCAN=1`` restores the full
@@ -412,7 +453,11 @@ def _build_fix_prompt(scan_output: str, project_dir: str = "") -> str:
                     + _filter_summary_for_file(scan_text[idx:], target_file)
                 )
     return _build_fix_prompt_from_fragment(
-        scan_text, project_dir, label, target_file=target_file
+        scan_text,
+        project_dir,
+        label,
+        target_file=target_file,
+        anti_silencing_rejected=anti_silencing_rejected,
     )
 
 
@@ -831,6 +876,7 @@ def _apply_model_fix(
     scan_output: str,
     round_no: int,
     logger: logging.Logger,
+    reverted_files: set[str] | None = None,
 ) -> tuple[int, str]:
     """Batched model fixes, then rescan. Raises on a zero-edit digest.
 
@@ -847,6 +893,7 @@ def _apply_model_fix(
         if _reject_blanket_allow_enabled()
         else None
     )
+    prior_reverted = set(reverted_files or ())
     fragments: dict[str, str] = {}
     if not _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN"):
         fragments, _tail = _split_scan_by_file(_trim_scan_for_fix(scan_output))
@@ -858,7 +905,11 @@ def _apply_model_fix(
             futs = {}
             for rel, fragment in fragments.items():
                 prompt = _build_fix_prompt_from_fragment(
-                    fragment, project_dir, "scan findings", target_file=rel
+                    fragment,
+                    project_dir,
+                    "scan findings",
+                    target_file=rel,
+                    anti_silencing_rejected=(rel in prior_reverted),
                 )
                 prompts[rel] = (prompt, rel)
                 futs[ex.submit(_dispatch_fix, project_dir, prompt, round_no, logger, rel)] = rel
@@ -868,11 +919,16 @@ def _apply_model_fix(
                 if rc == TRUNCATED_RC:
                     truncated_labels.append(rel)
     else:
-        prompt = _build_fix_prompt(scan_output, project_dir)
         target_label = (
             None
             if _env_flag("HTMLVIDEO_VERIFY_FIX_FULL_SCAN")
             else _single_target_frame(_trim_scan_for_fix(scan_output))
+        )
+        was_reverted = bool(
+            prior_reverted and (target_label is None or target_label in prior_reverted)
+        )
+        prompt = _build_fix_prompt(
+            scan_output, project_dir, anti_silencing_rejected=was_reverted
         )
         key = target_label or "-"
         prompts[key] = (prompt, target_label)
@@ -889,6 +945,8 @@ def _apply_model_fix(
         logger,
         truncated_labels=truncated_labels,
         before_snapshot=before_snapshot,
+        scan_output=scan_output,
+        reverted_out=reverted_files,
     )
 
 
@@ -899,6 +957,8 @@ def _require_changed_and_rescan(
     logger: logging.Logger,
     truncated_labels: list[str] | None = None,
     before_snapshot: dict[str, str] | None = None,
+    scan_output: str | None = None,
+    reverted_out: set[str] | None = None,
 ) -> tuple[int, str]:
     """Zero-edit guard + anti-silencing diff guard + rescan.
 
@@ -912,6 +972,16 @@ def _require_changed_and_rescan(
     after_digest = _composition_html_digest(project_dir)
     if after_digest == before_digest:
         if reverted:
+            if reverted_out is not None:
+                reverted_out.update(reverted)
+            if scan_output is not None:
+                logger.warning(
+                    "verify fix round %d reverted blanket allow-* silencing in [%s] "
+                    "— reusing scan findings without rescan to force CSS/GSAP layout fix",
+                    round_no,
+                    ", ".join(reverted),
+                )
+                return 1, scan_output
             logger.warning(
                 "verify fix round %d reverted blanket allow-* silencing in [%s] "
                 "— rescanning to force CSS/GSAP layout fix",
@@ -930,6 +1000,10 @@ def _require_changed_and_rescan(
             "compositions/**/*.html — refusing to re-dispatch the same scan "
             "(model produced no Edit, or scan findings were non-actionable)"
         )
+    if reverted_out is not None:
+        reverted_out.clear()
+        if reverted:
+            reverted_out.update(reverted)
     if truncated_labels:
         logger.warning(
             "verify fix round %d [%s] hit truncation after writing edits to disk "
@@ -956,6 +1030,167 @@ def _apply_visual_fix(
     return _require_changed_and_rescan(
         project_dir, before_digest, round_no, logger, truncated_labels=truncated or None
     )
+
+
+def _env_nonneg_int(name: str, default: int, logger: logging.Logger) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning("invalid %s=%r; using %d", name, raw, default)
+        return default
+
+
+def evaluate_soft_fail(
+    scan_output: str,
+    max_errors: int = _SOFT_FAIL_MAX_ERRORS,
+    max_frames: int = _SOFT_FAIL_MAX_FRAMES,
+) -> tuple[bool, str, list[dict]]:
+    """Decide whether a mechanical gate FAIL contains ONLY bounded, non-fatal
+    layout/contrast residuals eligible for a degraded warning pass.
+
+    Returns ``(eligible, detail_or_reason, remaining_rows)``.
+    """
+    if max_errors <= 0 or max_frames <= 0:
+        return False, "disabled", []
+    if scan_looks_unactionable(scan_output):
+        return False, "unactionable_scan", []
+    if classify_scan_failure(scan_output) != "mechanical":
+        return False, "not_mechanical", []
+    payload = parse_findings_payload(scan_output)
+    if not payload:
+        return False, "missing_payload", []
+    if int(payload.get("lint_errors") or 0) > 0:
+        return False, f"lint_errors={payload.get('lint_errors')}", []
+    if int(payload.get("digit_led_selectors") or 0) > 0:
+        return False, f"digit_led_selectors={payload.get('digit_led_selectors')}", []
+    if int(payload.get("selfcheck_other_fails") or 0) > 0:
+        return False, f"selfcheck_other_fails={payload.get('selfcheck_other_fails')}", []
+    if payload.get("transitions_ok") is not True:
+        return False, f"transitions_ok={payload.get('transitions_ok')!r}", []
+
+    other_cnt = int(payload.get("other_check_errors") or 0)
+    non_overlap = payload.get("non_overlap_errors")
+    if other_cnt > 0 and (not isinstance(non_overlap, list) or len(non_overlap) < other_cnt):
+        return False, "other_check_errors_unlisted", []
+
+    rows: list[dict] = []
+    for key in ("designed_overlay", "real_collision", "ambiguous", "non_overlap_errors"):
+        bucket = payload.get(key)
+        if isinstance(bucket, list):
+            for item in bucket:
+                if isinstance(item, dict):
+                    rows.append(item)
+    if not rows:
+        return False, "zero_check_rows", []
+    if len(rows) > max_errors:
+        return False, f"too_many_errors={len(rows)}>{max_errors}", []
+
+    files: set[str] = set()
+    parts: list[str] = []
+    for row in rows:
+        section = str(row.get("section") or "").strip().lower()
+        if section == "runtime":
+            return False, "runtime_error", []
+        code = str(row.get("code") or "").strip()
+        if code not in _SOFT_FAIL_CODES:
+            return False, f"fatal_code={code or 'unknown'}", []
+        sel = str(row.get("selector") or "")
+        con = str(row.get("container") or "")
+        if _CAPTION_WORD_SEL_RE.search(sel) or _CAPTION_WORD_SEL_RE.search(con):
+            return False, f"caption_keepout={code}", []
+        rel = str(row.get("file") or "").strip()
+        if rel:
+            files.add(rel)
+        parts.append(f"{code}({rel or '?'}:{sel or '?'})")
+    if len(files) > max_frames:
+        return False, f"too_many_frames={len(files)}>{max_frames}", []
+    return True, ", ".join(parts), rows
+
+
+def _write_degraded_marker(
+    project_dir: str,
+    trigger: str,
+    rows: list[dict],
+    logger: logging.Logger,
+) -> None:
+    marker_path = os.path.join(project_dir, DEGRADED_MARKER_FILENAME)
+    payload = {
+        "status": "degraded_pass",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "trigger": trigger,
+        "count": len(rows),
+        "frames": sorted({str(r.get("file") or "?") for r in rows}),
+        "findings": [
+            {
+                "file": r.get("file", ""),
+                "code": r.get("code", ""),
+                "section": r.get("section", ""),
+                "selector": r.get("selector", ""),
+                "container": r.get("container", ""),
+            }
+            for r in rows
+        ],
+    }
+    try:
+        os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+        with open(marker_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+    except OSError as exc:
+        logger.warning("failed to write %s: %s", marker_path, exc)
+
+
+def _try_degraded_pass(
+    project_dir: str,
+    scan_output: str,
+    trigger: str,
+    logger: logging.Logger,
+) -> tuple[str | None, int, str]:
+    """Attempt a warning-only degraded pass if only bounded non-fatal mechanical
+    findings remain AND the visual pixel gate passes.
+
+    Returns ``(contact_sheet_or_None, visual_rc, visual_output)``.
+    ``visual_rc == -1`` means the mechanical scan was not eligible for soft-fail.
+    """
+    max_errors = _env_nonneg_int(
+        "HTMLVIDEO_VERIFY_SOFT_FAIL_MAX_ERRORS", _SOFT_FAIL_MAX_ERRORS, logger
+    )
+    max_frames = _env_nonneg_int(
+        "HTMLVIDEO_VERIFY_SOFT_FAIL_MAX_FRAMES", _SOFT_FAIL_MAX_FRAMES, logger
+    )
+    eligible, detail, rows = evaluate_soft_fail(
+        scan_output, max_errors=max_errors, max_frames=max_frames
+    )
+    if not eligible:
+        logger.info("verify soft-fail declined (%s): %s", trigger, detail)
+        return None, -1, ""
+    logger.warning(
+        "verify mechanical soft-fail eligible (%s, %d finding(s): %s) — running "
+        "visual gate (--phase visual) to confirm pixels",
+        trigger,
+        len(rows),
+        detail,
+    )
+    v_rc, v_out = _run_visual_only(project_dir, logger)
+    if v_rc == 0:
+        sheet = _validate_verify_outputs(project_dir)
+        _write_degraded_marker(project_dir, trigger, rows, logger)
+        frames = sorted({str(r.get("file") or "?") for r in rows})
+        logger.warning(
+            "VERIFY_DEGRADED_PASS trigger=%s count=%d frames=%s findings=[%s] contact_sheet=%s",
+            trigger,
+            len(rows),
+            ",".join(frames),
+            detail,
+            sheet,
+        )
+        return sheet, 0, v_out
+    logger.warning(
+        "verify soft-fail blocked by visual gate rc=%d (%s)", v_rc, trigger
+    )
+    return None, v_rc, v_out
 
 
 def verify_frame(
@@ -1005,6 +1240,7 @@ def verify_frame(
         )
 
     rc, output = _run_verify(project_dir, logger)
+    reverted_files: set[str] = set()
     for round_no in range(1, max_fix + 1):
         if rc == 0:
             logger.info(
@@ -1045,7 +1281,31 @@ def verify_frame(
                     "verify-all mechanical findings (round %d) — invoking claude for batched fixes",
                     round_no,
                 )
-                rc, output = _apply_model_fix(project_dir, output, round_no, logger)
+                try:
+                    rc, output = _apply_model_fix(
+                        project_dir, output, round_no, logger, reverted_files=reverted_files
+                    )
+                except RuntimeError as exc:
+                    msg = str(exc)
+                    if "made no changes" in msg or "truncated:" in msg:
+                        sheet, v_rc, v_out = _try_degraded_pass(
+                            project_dir, output, f"round_{round_no}_stalled", logger
+                        )
+                        if sheet is not None:
+                            return sheet
+                        if (
+                            v_rc == 1
+                            and round_no < max_fix
+                            and classify_scan_failure(v_out) == "visual"
+                        ):
+                            logger.warning(
+                                "verify soft-fail visual gate FAIL on round %d — "
+                                "handing off to visual fix loop",
+                                round_no,
+                            )
+                            rc, output = 1, v_out
+                            continue
+                    raise
                 continue
         logger.info(
             "verify-all visual findings (round %d) — invoking claude for pixels fix",
@@ -1065,6 +1325,12 @@ def verify_frame(
         return _validate_verify_outputs(project_dir)
     if rc == 2:
         raise RuntimeError("verify-all infrastructure failure: " + output[-2000:])
+    if rc == 1:
+        sheet, _v_rc, _v_out = _try_degraded_pass(
+            project_dir, output, f"max_rounds_{max_fix}", logger
+        )
+        if sheet is not None:
+            return sheet
     raise RuntimeError(
         f"verify-frame gate still failing after {max_fix} fix rounds"
     )
