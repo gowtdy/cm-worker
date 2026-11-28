@@ -373,7 +373,9 @@ say(`GATE: ${gate ? "PASS ✓ (lint+check+structural+transitions — go to snaps
 if (!gate) {
   const payload = findingsPayload(chk.errors);
   payload.lint_errors = lintErrors.length;
+  payload.lint_error_codes = lintErrors.map((e) => e.code);
   payload.digit_led_selectors = self.digit.length;
+  payload.selfcheck_other_fails = self.other.length;
   payload.transitions_ok = !tv.error && tv.status === 0;
   say(FINDINGS_JSON_PREFIX + JSON.stringify(payload));
 }

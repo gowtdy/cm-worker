@@ -689,13 +689,25 @@ export function findingsPayload(errors) {
       mark_side: e.triage?.mark_side ?? null,
     };
   };
-  const overlapCount =
-    tri.designed_overlay.length + tri.real_collision.length + tri.ambiguous.length;
+  const nonOverlapRow = (e) => {
+    const { selector, container } = overlapSides(e);
+    return {
+      file: e.file || "",
+      code: String(e.code || ""),
+      section: String(e.section || ""),
+      selector,
+      container,
+    };
+  };
+  const nonOverlap = (errors || [])
+    .filter((e) => !String(e?.code || "").includes("overlap"))
+    .map(nonOverlapRow);
   return {
     version: 1,
     designed_overlay: tri.designed_overlay.map(row),
     real_collision: tri.real_collision.map(row),
     ambiguous: tri.ambiguous.map(row),
-    other_check_errors: Math.max(0, (errors || []).length - overlapCount),
+    other_check_errors: nonOverlap.length,
+    non_overlap_errors: nonOverlap,
   };
 }
