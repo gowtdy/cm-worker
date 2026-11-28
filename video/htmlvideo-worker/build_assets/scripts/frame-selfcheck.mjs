@@ -317,7 +317,12 @@ for (const b of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script
     // --- S1-2: gsap_fromto_delayed_leak -------------------------------------
     // `tl.fromTo(target, { autoAlpha: 0.6 }, ..., at > 0)` without
     // `immediateRender: false` paints the `from` state at t=0 (6b083ee7 F6).
+    // Exempt pure exit tweens (`autoAlpha/opacity: 1 -> 0`) on elements that
+    // were NOT previously hidden by a `0 -> 1` reveal in the same script
+    // (6b0a4a1a F7 `.sig-icon.check`), and catch delayed `line-through`
+    // decoration leaks (6b0a4a1a F4).
     const ftRe = /\b(?:tl|timeline|gsap)\.fromTo\s*\(/g;
+    const ftCalls = [];
     for (const fm of clean.matchAll(ftRe)) {
       const startIdx = fm.index + fm[0].length;
       let depth = 1;
@@ -345,18 +350,38 @@ for (const b of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script
           argStart = i + 1;
         }
       }
-      if (args.length >= 4) {
-        const [targetArg, fromArg, toArg, posArg] = args;
-        const pos = posArg.trim();
-        const isZeroPos =
-          /^0(?:\.0+)?$/.test(pos)
-          || /^["'](?:0|scene1)["']$/.test(pos);
-        const fromVisible = /\b(?:autoAlpha|opacity)\s*:\s*(?:0?\.[1-9]\d*|1(?:\.0+)?)\b/.test(fromArg);
-        const hasNoImm = /\bimmediateRender\s*:\s*false\b/.test(fromArg) || /\bimmediateRender\s*:\s*false\b/.test(toArg);
-        if (!isZeroPos && fromVisible && !hasNoImm) {
-          fail(`delayed \`fromTo(${targetArg}, ...)\` at position ${pos} paints visible \`from\` state at t=0 — add \`immediateRender: false\` (gsap_fromto_delayed_leak)`);
-        }
+      if (args.length >= 4) ftCalls.push(args);
+    }
+    const hiddenFromTargets = new Set();
+    for (const [targetArg, fromArg] of ftCalls) {
+      if (/\b(?:autoAlpha|opacity)\s*:\s*0(?:\.0+)?\b/.test(fromArg)) {
+        hiddenFromTargets.add(targetArg.trim());
       }
+    }
+    for (const [targetArg, fromArg, toArg, posArg] of ftCalls) {
+      const pos = posArg.trim();
+      const isZeroPos =
+        /^0(?:\.0+)?$/.test(pos)
+        || /^["'](?:0|scene1)["']$/.test(pos);
+      const fromVisible = /\b(?:autoAlpha|opacity)\s*:\s*(?:0?\.[1-9]\d*|1(?:\.0+)?)\b/.test(fromArg);
+      const toHidden = /\b(?:autoAlpha|opacity)\s*:\s*0(?:\.0+)?\b/.test(toArg);
+      const isCleanExit = fromVisible && toHidden && !hiddenFromTargets.has(targetArg.trim());
+      const fromDecorLeak = /\btextDecoration(?:Line)?\s*:\s*["'][^"']*line-through[^"']*["']/i.test(fromArg);
+      const hasNoImm = /\bimmediateRender\s*:\s*false\b/.test(fromArg) || /\bimmediateRender\s*:\s*false\b/.test(toArg);
+      if (!isZeroPos && ((fromVisible && !isCleanExit) || fromDecorLeak) && !hasNoImm) {
+        fail(`delayed \`fromTo(${targetArg}, ...)\` at position ${pos} paints visible \`from\` state at t=0 — add \`immediateRender: false\` (gsap_fromto_delayed_leak)`);
+      }
+    }
+
+    // --- P0 (6b0a4a1a F3): gsap_pseudo_element_target -----------------------
+    // GSAP cannot target CSS pseudo-elements (`::before` / `::after`); it logs
+    // "GSAP target not found" and silently skips the animation.
+    const seenPseudo = new Set();
+    for (const pm of clean.matchAll(/\b(?:tl|timeline|gsap)\.(to|from|fromTo|set)\s*\(\s*(["'`])([^"'`]*::?(?:before|after)\b[^"'`]*)\2/gi)) {
+      const sel = pm[3].trim();
+      if (seenPseudo.has(sel)) continue;
+      seenPseudo.add(sel);
+      fail(`GSAP \`.${pm[1]}("${sel}")\` targets a CSS pseudo-element — GSAP cannot animate ::before/::after; use a real child element instead (gsap_pseudo_element_target)`);
     }
   }
 
