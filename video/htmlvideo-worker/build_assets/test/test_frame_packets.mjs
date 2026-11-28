@@ -1236,7 +1236,48 @@ Scene 1 (0.0–5.0s): scorecard.
   assert.ok(f1Skel.includes('data-slot-index="2" data-state="dim" data-accent="sky"'), "slot 2 dim must inherit column accent sky");
   assert.ok(f1Skel.includes('data-slot-index="3" data-state="dim" data-accent="lime"'), "slot 3 dim must inherit column accent lime");
 
-  console.log("shared stage skeletons + __hf runtime + selfcheck syntax/placeholder/center/data-prop gates OK");
+  // P0-2 (6b096712 F8): gsap_non_transform_motion catches left/top/fontSize/roundProps in to/from/fromTo, exempts set() & x/y
+  const dirNtm = mkdtempSync(join(tmpdir(), "fp-ntm-"));
+  const badCursor = join(dirNtm, "08-bad.html");
+  writeFileSync(badCursor, `<template>
+<div id="root" data-composition-id="08-bad" data-width="1920" data-height="1080" data-duration="5">
+  <div class="clip bg" data-start="0" data-duration="5" data-track-index="0"></div>
+  <div id="cursor"></div>
+</div>
+<style>#cursor{position:absolute;}</style>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<script>
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({ paused: true });
+window.__timelines["08-bad"] = tl;
+tl.set("#cursor", { left: "6cqw", top: "16cqh" }, 0);
+tl.to("#cursor", { left: "51.5cqw", top: "43cqh", duration: 0.85 }, 1);
+</script>
+</template>`);
+  const rBadCursor = spawnSync("node", [join(ROOT, "scripts", "frame-selfcheck.mjs"), badCursor], { encoding: "utf8" });
+  assert.notStrictEqual(rBadCursor.status, 0, "tl.to left/top must fail selfcheck");
+  assert.ok(rBadCursor.stderr.includes("gsap_non_transform_motion"), rBadCursor.stderr);
+
+  const okCursor = join(dirNtm, "08-ok.html");
+  writeFileSync(okCursor, `<template>
+<div id="root" data-composition-id="08-ok" data-width="1920" data-height="1080" data-duration="5">
+  <div class="clip bg" data-start="0" data-duration="5" data-track-index="0"></div>
+  <div id="cursor"></div>
+</div>
+<style>#cursor{position:absolute;}</style>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<script>
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({ paused: true });
+window.__timelines["08-ok"] = tl;
+tl.set("#cursor", { left: "6cqw", top: "16cqh" }, 0);
+tl.to("#cursor", { x: 800, y: 300, duration: 0.85 }, 1);
+</script>
+</template>`);
+  const rOkCursor = spawnSync("node", [join(ROOT, "scripts", "frame-selfcheck.mjs"), okCursor], { encoding: "utf8" });
+  assert.strictEqual(rOkCursor.status, 0, `tl.set left/top + tl.to x/y must pass: ${rOkCursor.stderr}`);
+
+  console.log("shared stage skeletons + __hf runtime + selfcheck syntax/placeholder/center/data-prop/non-transform gates OK");
 }
 
 if (process.argv[1] && process.argv[1].endsWith("test_frame_packets.mjs")) {

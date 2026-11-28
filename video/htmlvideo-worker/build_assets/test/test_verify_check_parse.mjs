@@ -241,9 +241,9 @@ function testDeclaredCountAndPartialMiss() {
 
 function testTriage() {
   const t = (o) => triageContentOverlap({ code: "content_overlap", ...o }).kind;
-  assert.equal(t({ selector: "#cui-bg > div:nth-of-type(5)", container: "#cui-badge" }), "designed_overlay");
+  assert.equal(t({ selector: "#cui-bg > div:nth-of-type(5)", container: "#cui-badge" }), "ambiguous");
   assert.equal(t({ selector: "#stamp-text", container: "#hero" }), "designed_overlay");
-  assert.equal(t({ selector: ".label-pill span", container: "#card" }), "designed_overlay");
+  assert.equal(t({ selector: ".label-pill span", container: "#card" }), "ambiguous");
   assert.equal(t({ selector: "#x", container: "#y", dataAttributes: { "data-layout-allow-overlap": "" } }), "designed_overlay");
   assert.equal(t({ selector: "#line1", container: "#line2" }), "real_collision");
   assert.equal(t({ selector: "#headline", container: ".body-copy" }), "real_collision");
@@ -261,7 +261,8 @@ function testTriage() {
   const hint = { fixHint: CLI_OVERLAP_FIX_HINT };
   assert.equal(t({ selector: "#a", container: "#b", ...hint }), "ambiguous");
   assert.equal(t({ selector: "div.stat-value", container: "div.stat-label", ...hint }), "ambiguous");
-  assert.equal(t({ selector: "div.price-num", container: "div.price-tag", ...hint }), "designed_overlay");
+  assert.equal(t({ selector: "div.price-num", container: "div.price-tag", ...hint }), "ambiguous");
+  assert.equal(t({ selector: "span.f7-verdict-word", container: "#f7-sell-pill", ...hint }), "real_collision");
   assert.equal(t({ selector: "h1.headline", container: "p.body-copy", ...hint }), "real_collision");
   const full = (o) => triageContentOverlap({ code: "content_overlap", ...hint, ...o });
   assert.equal(full({ selector: "#a", container: "#b" }).autofix, false);
@@ -310,9 +311,9 @@ function testTriageCaptionBand() {
 
 function testTriageAutofixWhitelist() {
   const full = (o) => triageContentOverlap({ code: "content_overlap", fixHint: CLI_OVERLAP_FIX_HINT, ...o });
-  // Both sides decorative → designed but never auto-fixed
+  // Both sides decorative → ambiguous (never auto-fixed, never allow-silenced)
   const both = full({ selector: "span.f8-dot", container: "div.f8-ticker" });
-  assert.equal(both.kind, "designed_overlay");
+  assert.equal(both.kind, "ambiguous");
   assert.equal(both.autofix, false);
   assert.equal(both.mark_side, null);
   assert.ok(both.reason.startsWith("decorative tokens on both sides"), both.reason);
@@ -331,13 +332,13 @@ function testTriageAutofixWhitelist() {
   assert.equal(full({ selector: "#stamp-text", container: "#hero" }).mark_side, "selector");
   // Mixed weak + strong on the same side: strong wins
   assert.equal(full({ selector: "div.pill-stamp", container: "#hero" }).reason, 'decorative token "stamp"');
-  // P0-3 (6b08f96c F7): stamp/seal over multi-word text block (e.g. subtitle) is NOT autofix-safe
+  // P0-3 (6b08f96c F7) & P0-1 (6b096712 F7): stamp/seal over multi-word text block → real_collision
   const stampOverSub = full({
     selector: "div.f7-sub",
     container: "div.f7-stamp",
     text: "Sell when any signal breaks.",
   });
-  assert.equal(stampOverSub.kind, "designed_overlay");
+  assert.equal(stampOverSub.kind, "real_collision");
   assert.equal(stampOverSub.autofix, false);
   assert.equal(stampOverSub.mark_side, null);
   // Short 1–2 word label under stamp remains autofix-safe
@@ -348,20 +349,22 @@ function testTriageAutofixWhitelist() {
   });
   assert.equal(stampOverShort.autofix, true);
   assert.equal(stampOverShort.mark_side, "container");
-  // Weak tokens: designed, but left for the model; reason must not read as safe
-  for (const [selector, container, tok] of [
-    ["span.tag", "#hero", "tag"],
-    ["div.price-num", "div.price-tag", "tag"],
-    ["div.price-tag", "div.price-num", "tag"],
-    ["span.f8-dot", "span.f8-row-text", "dot"],
-    ["#cui-bg > div:nth-of-type(5)", "#cui-badge", "badge"],
-    [".label-pill span", "#card", "pill"],
+  // Weak tokens: never designed_overlay (model must fix CSS/GSAP, not allow-silence).
+  // Over a TEXT_TOKENS block → real_collision; otherwise → ambiguous.
+  for (const [selector, container, tok, expectedKind] of [
+    ["span.tag", "#hero", "tag", "ambiguous"],
+    ["div.price-num", "div.price-tag", "tag", "ambiguous"],
+    ["div.price-tag", "div.price-num", "tag", "ambiguous"],
+    ["span.f8-dot", "span.f8-row-text", "dot", "real_collision"],
+    ["span.f7-verdict-word", "#f7-sell-pill", "pill", "real_collision"],
+    ["#cui-bg > div:nth-of-type(5)", "#cui-badge", "badge", "ambiguous"],
+    [".label-pill span", "#card", "pill", "ambiguous"],
   ]) {
     const v = full({ selector, container });
-    assert.equal(v.kind, "designed_overlay", `${selector} × ${container}`);
+    assert.equal(v.kind, expectedKind, `${selector} × ${container}`);
     assert.equal(v.autofix, false, `${selector} × ${container}`);
     assert.equal(v.mark_side, null);
-    assert.equal(v.reason, `weak decorative token "${tok}"`);
+    assert.ok(v.reason.includes(`weak decorative token "${tok}"`), v.reason);
     assert.ok(!v.reason.startsWith("decorative token"));
   }
   // dataAttributes keep priority over text-vs-text / both-sides decor
@@ -473,13 +476,8 @@ function testFindingsPayload() {
   ];
   const p = findingsPayload(errors);
   assert.equal(p.version, 1);
-  assert.equal(p.designed_overlay.length, 2);
+  assert.equal(p.designed_overlay.length, 1);
   assert.deepEqual(p.designed_overlay[0], {
-    file: "compositions/frames/05.html", code: "content_overlap",
-    selector: "div.price-num", container: "div.price-tag", reason: 'weak decorative token "tag"',
-    autofix_ok: false, mark_side: null,
-  });
-  assert.deepEqual(p.designed_overlay[1], {
     file: "compositions/frames/08.html", code: "content_overlap",
     selector: "div.f8-ticker > span:nth-of-type(5)", container: "span.f8-row-text",
     reason: 'decorative token "ticker"', autofix_ok: true, mark_side: "selector",
@@ -488,15 +486,20 @@ function testFindingsPayload() {
   assert.ok(p.real_collision.every((r) => r.autofix_ok === false && r.mark_side === null));
   const cap = p.real_collision.find((r) => r.selector === "div.cap-sub");
   assert.equal(cap.reason, "frame text inside caption keep-out band");
-  assert.equal(p.ambiguous.length, 0);
+  assert.equal(p.ambiguous.length, 1);
+  assert.deepEqual(p.ambiguous[0], {
+    file: "compositions/frames/05.html", code: "content_overlap",
+    selector: "div.price-num", container: "div.price-tag", reason: 'weak decorative token "tag"',
+    autofix_ok: false, mark_side: null,
+  });
   assert.equal(p.other_check_errors, 1);
-  // ticker separators: weak token "dot" → model (covered once .f8-ticker is marked)
+  // ticker separators: weak token "dot" over text block → real_collision (covered once .f8-ticker is marked)
   const dot = findingsPayload([{
     code: "content_overlap", file: "compositions/frames/08.html",
     selector: "span.f8-dot", container: "span.f8-row-text", msg: "", fixHint: CLI_OVERLAP_FIX_HINT,
   }]);
-  assert.equal(dot.designed_overlay[0].reason, 'weak decorative token "dot"');
-  assert.equal(dot.designed_overlay[0].autofix_ok, false);
+  assert.equal(dot.real_collision[0].reason, 'weak decorative token "dot" over text block');
+  assert.equal(dot.real_collision[0].autofix_ok, false);
   // container-side strong token and dataAttributes rows carry mark_side
   const sides = findingsPayload([
     { code: "content_overlap", file: "f.html", selector: "p.copy", container: "div.hero-watermark", msg: "" },

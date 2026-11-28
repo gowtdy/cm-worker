@@ -1147,6 +1147,58 @@ class FixPromptTest(unittest.TestCase):
             res["findings"],
         )
 
+    def test_anti_silencing_revert_skips_rescan_and_injects_next_round_note(self):
+        d = tempfile.mkdtemp(prefix="verify-antisilence-")
+        self.addCleanup(shutil.rmtree, d, True)
+        frames = os.path.join(d, "compositions", "frames")
+        os.makedirs(frames)
+        for name in ("hyperframes.json", "index.html", "STORYBOARD.md"):
+            with open(os.path.join(d, name), "w") as f:
+                f.write("x\n")
+        target = os.path.join(frames, "07-sell.html")
+        orig = '<template><span class="f7-verdict-word">Sell</span><style>.a{}</style><script></script></template>\n'
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(orig)
+        sheet = os.path.join(d, "snapshots", "contact-sheet.jpg")
+        os.makedirs(os.path.dirname(sheet), exist_ok=True)
+        with open(sheet, "wb") as f:
+            f.write(b"jpg")
+        scan = (
+            "── check ──\n"
+            "  ✗ [Layout] content_overlap in compositions/frames/07-sell.html — span.f7-verdict-word overlaps #f7-sell-pill\n"
+            "── actionable summary ──\n"
+            "  1) content_overlap — real_collision×1 (compositions/frames/07-sell.html: span.f7-verdict-word overlaps #f7-sell-pill)\n"
+            "GATE: FAIL ✗ (1 error finding(s))\n"
+        )
+        prompts = []
+
+        def fake_worker(project_dir, prompt, log, label, max_output=None):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                # Round 1: blanket allow-overlap only (no style/script change) -> reverted
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(orig.replace('class="f7-verdict-word"', 'class="f7-verdict-word" data-layout-allow-overlap="true"'))
+            else:
+                # Round 2: genuine CSS/GSAP edit -> accepted
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(orig.replace(".a{}", ".a{top:-3cqh;}"))
+            return 0
+
+        logger = logging.getLogger("test.verify.antisilence")
+        with mock.patch.object(v, "_run_prepare", return_value=(0, "ok\n")), \
+             mock.patch.object(v, "_run_verify", side_effect=[
+                 (1, scan),
+                 (0, "GATE: PASS ✓\nVISUAL_GATE: PASS\n"),
+             ]) as run_verify, \
+             mock.patch.object(v, "_run_fix_worker", side_effect=fake_worker):
+            out = v.verify_frame(d, logger)
+        self.assertEqual(out, sheet)
+        # Only 2 verify scans total (initial + after round 2); round 1 revert skipped rescan!
+        self.assertEqual(run_verify.call_count, 2)
+        self.assertEqual(len(prompts), 2)
+        self.assertNotIn("PREVIOUS EDIT REJECTED BY ANTI-SILENCING GUARD", prompts[0])
+        self.assertIn("PREVIOUS EDIT REJECTED BY ANTI-SILENCING GUARD", prompts[1])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -939,3 +939,43 @@ class TextOutAndPrefixCacheTest(unittest.TestCase):
         self.assertEqual(calls[1][2].get("CLAUDE_CODE_MAX_OUTPUT_TOKENS"), "64000")
         self.assertTrue(calls[2][0].endswith("-degraded"), calls[2][0])
         self.assertNotIn("HEAVY-BP", calls[2][1])
+
+    def test_normalize_frame_html_rewrites_digit_selectors_and_strips_pure_scale(self):
+        raw = (
+            '<template>\n'
+            '<div id="root" data-composition-id="07-sell" data-duration="7">\n'
+            '  <div class="07-sell-spread" id="07-card"><div class="volume-bar"></div><div class="rot"></div></div>\n'
+            '</div>\n'
+            '<style>\n'
+            '  /* .07-comment stays */\n'
+            '  .07-sell-spread { color: #1E1E1E; width: 0.5cqw; }\n'
+            '  #07-card { padding: 1cqw; }\n'
+            '  .volume-bar { transform-origin: bottom; transform: scaleY(0); }\n'
+            '  .rot { transform: translateX(-50%) scaleX(0); }\n'
+            '</style>\n'
+            '<script>\n'
+            '  const el = document.getElementById("07-card");\n'
+            '  tl.to(".07-sell-spread", { autoAlpha: 1 }, 0);\n'
+            '  tl.set("#07-card", { y: 0 }, 0);\n'
+            '  tl.set(".volume-bar", { scaleY: 0 }, 0);\n'
+            '  tl.set(".rot", { scaleX: 0 }, 0);\n'
+            '</script>\n'
+            '</template>'
+        )
+        cleaned, notes = fh._normalize_frame_html(raw)
+        self.assertIn("digit-led-selectors=4", notes)
+        self.assertIn("css-scale-strip=1", notes)
+        self.assertIn('[class~="07-sell-spread"] { color: #1E1E1E; width: 0.5cqw; }', cleaned)
+        self.assertIn('[id="07-card"] { padding: 1cqw; }', cleaned)
+        self.assertIn("/* .07-comment stays */", cleaned)
+        self.assertIn('document.getElementById("07-card")', cleaned)
+        self.assertIn('tl.to("[class~=\'07-sell-spread\']", { autoAlpha: 1 }, 0);', cleaned)
+        self.assertIn('tl.set("[id=\'07-card\']", { y: 0 }, 0);', cleaned)
+        self.assertNotIn("transform: scaleY(0)", cleaned)
+        self.assertIn("transform-origin: bottom;", cleaned)
+        # Compound translate+scale must NOT be stripped
+        self.assertIn("transform: translateX(-50%) scaleX(0);", cleaned)
+        # Idempotent on second pass
+        cleaned2, notes2 = fh._normalize_frame_html(cleaned)
+        self.assertEqual(cleaned2, cleaned)
+        self.assertEqual(notes2, [])
