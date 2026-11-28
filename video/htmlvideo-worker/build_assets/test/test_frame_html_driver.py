@@ -979,3 +979,27 @@ class TextOutAndPrefixCacheTest(unittest.TestCase):
         cleaned2, notes2 = fh._normalize_frame_html(cleaned)
         self.assertEqual(cleaned2, cleaned)
         self.assertEqual(notes2, [])
+
+    def test_normalize_frame_html_rewrites_degenerate_delayed_fromto_only(self):
+        raw = (
+            '<template>\n'
+            '<div id="root" data-composition-id="04-quality" data-duration="8">\n'
+            '  <div class="row-label">Debt</div><div id="stamp">BUY</div>\n'
+            '</div>\n'
+            '<script>\n'
+            '  tl.fromTo(label, { textDecorationLine: "line-through" }, { textDecorationLine: "line-through", duration: 0.01, ease: "none" }, st + 0.2);\n'
+            '  tl.fromTo("#stamp", { autoAlpha: 0, scale: 0.4 }, { autoAlpha: 1, scale: 1, duration: 0.6 }, 2.2);\n'
+            '  tl.fromTo(".row", { autoAlpha: 1 }, { autoAlpha: 1, duration: 0.01 }, 0);\n'
+            '</script>\n'
+            '</template>'
+        )
+        cleaned, notes = fh._normalize_frame_html(raw)
+        self.assertIn("degenerate-fromto-to-set=1", notes)
+        self.assertIn('tl.set(label, { textDecorationLine: "line-through" }, st + 0.2);', cleaned)
+        # Genuine 0 -> 1 delayed entrance must stay untouched (relies on immediateRender: true)
+        self.assertIn('tl.fromTo("#stamp", { autoAlpha: 0, scale: 0.4 }, { autoAlpha: 1, scale: 1, duration: 0.6 }, 2.2);', cleaned)
+        # t=0 call untouched
+        self.assertIn('tl.fromTo(".row", { autoAlpha: 1 }, { autoAlpha: 1, duration: 0.01 }, 0);', cleaned)
+        cleaned2, notes2 = fh._normalize_frame_html(cleaned)
+        self.assertEqual(cleaned2, cleaned)
+        self.assertEqual(notes2, [])

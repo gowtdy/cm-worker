@@ -1235,6 +1235,11 @@ Scene 1 (0.0–5.0s): scorecard.
   assert.ok(f1Skel.includes('data-slot-index="1" data-state="dim" data-accent="coral"'), "slot 1 dim must inherit column accent coral");
   assert.ok(f1Skel.includes('data-slot-index="2" data-state="dim" data-accent="sky"'), "slot 2 dim must inherit column accent sky");
   assert.ok(f1Skel.includes('data-slot-index="3" data-state="dim" data-accent="lime"'), "slot 3 dim must inherit column accent lime");
+  assert.ok(f1Skel.includes('class="hf-stage-warn"'), "shared stage slot must include coral warning icon");
+  assert.ok(f1Skel.includes('.hf-stage-slot[data-state="done"][data-accent="coral"] .hf-stage-warn { display: block; }'), "done:coral slot must show warning X icon instead of check");
+  const fpCoreA = readFileSync(join(ROOT, "skills", "hyperframes-core", "scripts", "lib", "frame-packets-core.mjs"));
+  const fpCoreB = readFileSync(join(ROOT, ".claude", "skills", "hyperframes-core", "scripts", "lib", "frame-packets-core.mjs"));
+  assert.ok(fpCoreA.equals(fpCoreB), "frame-packets-core.mjs skill copies out of sync");
 
   // P0-2 (6b096712 F8): gsap_non_transform_motion catches left/top/fontSize/roundProps in to/from/fromTo, exempts set() & x/y
   const dirNtm = mkdtempSync(join(tmpdir(), "fp-ntm-"));
@@ -1276,6 +1281,64 @@ tl.to("#cursor", { x: 800, y: 300, duration: 0.85 }, 1);
 </template>`);
   const rOkCursor = spawnSync("node", [join(ROOT, "scripts", "frame-selfcheck.mjs"), okCursor], { encoding: "utf8" });
   assert.strictEqual(rOkCursor.status, 0, `tl.set left/top + tl.to x/y must pass: ${rOkCursor.stderr}`);
+
+  // P0 (6b0a4a1a F3/F4/F7): pseudo-element target fails, delayed line-through fails, clean exit 1->0 passes
+  const badPseudo = join(dirNtm, "03-pseudo.html");
+  writeFileSync(badPseudo, `<template>
+<div id="root" data-composition-id="03-pseudo" data-width="1920" data-height="1080" data-duration="5">
+  <div class="clip bg" data-start="0" data-duration="5" data-track-index="0"></div>
+  <div class="zone"></div>
+</div>
+<style>.zone::before{content:"";}</style>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<script>
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({ paused: true });
+window.__timelines["03-pseudo"] = tl;
+tl.fromTo(".zone::before", { autoAlpha: 0 }, { autoAlpha: 0.5, duration: 0.4 }, 0.4);
+</script>
+</template>`);
+  const rPseudo = spawnSync("node", [join(ROOT, "scripts", "frame-selfcheck.mjs"), badPseudo], { encoding: "utf8" });
+  assert.notStrictEqual(rPseudo.status, 0, "GSAP ::before target must fail selfcheck");
+  assert.ok(rPseudo.stderr.includes("gsap_pseudo_element_target"), rPseudo.stderr);
+
+  const badStrike = join(dirNtm, "04-strike.html");
+  writeFileSync(badStrike, `<template>
+<div id="root" data-composition-id="04-strike" data-width="1920" data-height="1080" data-duration="5">
+  <div class="clip bg" data-start="0" data-duration="5" data-track-index="0"></div>
+  <div class="row-label">Debt</div>
+</div>
+<style>.row-label{color:#1A1A1A;}</style>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<script>
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({ paused: true });
+window.__timelines["04-strike"] = tl;
+const label = document.querySelector(".row-label");
+tl.fromTo(label, { textDecorationLine: "line-through" }, { textDecorationLine: "line-through", duration: 0.01 }, 3.0);
+</script>
+</template>`);
+  const rStrike = spawnSync("node", [join(ROOT, "scripts", "frame-selfcheck.mjs"), badStrike], { encoding: "utf8" });
+  assert.notStrictEqual(rStrike.status, 0, "delayed line-through fromTo without immediateRender:false must fail");
+  assert.ok(rStrike.stderr.includes("gsap_fromto_delayed_leak"), rStrike.stderr);
+
+  const okExit = join(dirNtm, "07-exit.html");
+  writeFileSync(okExit, `<template>
+<div id="root" data-composition-id="07-exit" data-width="1920" data-height="1080" data-duration="5">
+  <div class="clip bg" data-start="0" data-duration="5" data-track-index="0"></div>
+  <div class="sig-icon check"></div>
+</div>
+<style>.sig-icon{opacity:1;}</style>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<script>
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({ paused: true });
+window.__timelines["07-exit"] = tl;
+tl.fromTo(".sig-icon.check", { scale: 1, autoAlpha: 1 }, { scale: 0, autoAlpha: 0, duration: 0.22 }, 3.15);
+</script>
+</template>`);
+  const rOkExit = spawnSync("node", [join(ROOT, "scripts", "frame-selfcheck.mjs"), okExit], { encoding: "utf8" });
+  assert.strictEqual(rOkExit.status, 0, `clean 1->0 exit fromTo must pass: ${rOkExit.stderr}`);
 
   console.log("shared stage skeletons + __hf runtime + selfcheck syntax/placeholder/center/data-prop/non-transform gates OK");
 }

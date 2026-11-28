@@ -1206,6 +1206,17 @@ class SharedStageAndHedgeOptimizationTest(unittest.TestCase):
         self.assertNotIn(("1", "2"), pair_ids)
         self.assertIn(("2", "3"), pair_ids)
 
+    def test_shared_stage_pairs_ignores_f1_split_into_stage(self):
+        summaries = [
+            {"num": "1", "scene": "A single pill-shaped card sits center with a blurred question mark.", "duration": "5s"},
+            {"num": "2", "scene": "The same central card steadies and splits into a three-slot top row — Value, Quality, Timing.", "duration": "7s"},
+            {"num": "3", "scene": "The same three-slot stage holds; the Value slot illuminates.", "duration": "7s"},
+        ]
+        pairs = vis._shared_stage_pairs(summaries)
+        pair_ids = [(a, b) for a, b, _ in pairs]
+        self.assertNotIn(("1", "2"), pair_ids)
+        self.assertIn(("2", "3"), pair_ids)
+
     def test_design_prompt_and_stage_note_ban_recap_sweep_and_empty_closer(self):
         prompt = vis._build_design_prompt("preamble", ["1", "2", "3"], tokens=_TOKENS)
         self.assertIn("≤ 250 words total", prompt)
@@ -1236,7 +1247,8 @@ class SharedStageAndHedgeOptimizationTest(unittest.TestCase):
     def test_frame_html_hedge_defaults_and_hard_noops(self):
         from html_utility import frame_html as fh
         self.assertEqual(fh.DEFAULT_HEDGE_EFFORT, "low")
-        self.assertEqual(fh.DEFAULT_MAX_HEDGES, 6)
+        self.assertEqual(fh.DEFAULT_MAX_HEDGES, 9)
+        self.assertEqual(fh.DEFAULT_HEDGE_AFTER, 120)
         self.assertEqual(fh.HEDGE_TIMEOUT, 180)
         prompt = fh._worker_prompt(
             "01-hook", skeleton_mode=False, dispatch_text="# Dispatch: 01-hook\n", text_out=True
