@@ -348,8 +348,8 @@ HEDGE_AFTER_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_AFTER"
 MAX_HEDGES_ENV = "HTMLVIDEO_FRAME_HTML_MAX_HEDGES"
 HEDGE_EFFORT_ENV = "HTMLVIDEO_FRAME_HTML_HEDGE_EFFORT"
 SLIM_KEEP_SNIPPETS_ENV = "HTMLVIDEO_FRAME_HTML_SLIM_KEEP_SNIPPETS"
-DEFAULT_HEDGE_AFTER = 150
-DEFAULT_MAX_HEDGES = 6
+DEFAULT_HEDGE_AFTER = 120
+DEFAULT_MAX_HEDGES = 9
 DEFAULT_HEDGE_EFFORT = "low"
 HEDGE_POLL_SECONDS = 5
 HEDGE_DIR = os.path.join(".hyperframes", "hedge")
@@ -605,6 +605,138 @@ def _strip_redundant_css_scale_transforms(html: str) -> tuple[str, int]:
     return next_html, count
 
 
+_DEGENERATE_FROMTO_RE = re.compile(r"\b(tl|timeline|gsap)\.fromTo\s*\(")
+_ZERO_POS_RE = re.compile(r"^(?:0(?:\.0+)?|['\"](?:0|scene1)['\"])$")
+_IGNORED_TWEEN_KEYS = frozenset({"duration", "ease", "immediateRender", "delay"})
+
+
+def _parse_flat_js_object(obj_src: str) -> dict[str, str] | None:
+    """Parse a flat JS object literal `{ k: v, ... }` into normalized pairs.
+
+    Returns None if the object contains nested objects/arrays/functions or
+    syntax we should not touch.
+    """
+    s = (obj_src or "").strip()
+    if not (s.startswith("{") and s.endswith("}")):
+        return None
+    inner = s[1:-1].strip()
+    if not inner:
+        return None
+    parts: list[str] = []
+    cur: list[str] = []
+    in_str: str | None = None
+    i = 0
+    while i < len(inner):
+        ch = inner[i]
+        if in_str:
+            cur.append(ch)
+            if ch == "\\" and i + 1 < len(inner):
+                i += 1
+                cur.append(inner[i])
+            elif ch == in_str:
+                in_str = None
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            in_str = ch
+            cur.append(ch)
+        elif ch in ("{", "}", "[", "]", "(", ")"):
+            return None
+        elif ch == ",":
+            parts.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    if cur:
+        tail = "".join(cur).strip()
+        if tail:
+            parts.append(tail)
+    pairs: dict[str, str] = {}
+    for p in parts:
+        if ":" not in p:
+            return None
+        k, v = p.split(":", 1)
+        k = k.strip().strip("'\"")
+        v = v.strip()
+        if not k or not v:
+            return None
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            v = f'"{v[1:-1]}"'
+        pairs[k] = v
+    return pairs or None
+
+
+def _rewrite_degenerate_delayed_fromto(html: str) -> tuple[str, int]:
+    """Rewrite delayed degenerate `tl.fromTo(target, {P: X}, {P: X, duration: ...}, pos)`
+    (identical property values in `from` and `to`) into `tl.set(target, {P: X}, pos)`.
+
+    Prevents `immediateRender: true` from leaking states like `line-through` at t=0
+    without touching genuine `0 -> 1` delayed entrance tweens (6b0a4a1a F4).
+    """
+    count = 0
+
+    def _fix_script(m):
+        nonlocal count
+        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
+        out: list[str] = []
+        cursor = 0
+        for fm in _DEGENERATE_FROMTO_RE.finditer(body):
+            if fm.start() < cursor:
+                continue
+            start_idx = fm.end()
+            depth = 1
+            in_str: str | None = None
+            args: list[str] = []
+            arg_start = start_idx
+            i = start_idx
+            while i < len(body) and depth > 0:
+                ch = body[i]
+                if in_str:
+                    if ch == "\\":
+                        i += 2
+                        continue
+                    if ch == in_str:
+                        in_str = None
+                    i += 1
+                    continue
+                if ch in ("'", '"', "`"):
+                    in_str = ch
+                elif ch in ("(", "{", "["):
+                    depth += 1
+                elif ch in (")", "}", "]"):
+                    depth -= 1
+                    if depth == 0:
+                        args.append(body[arg_start:i].strip())
+                        break
+                elif ch == "," and depth == 1:
+                    args.append(body[arg_start:i].strip())
+                    arg_start = i + 1
+                i += 1
+            if depth != 0 or len(args) != 4:
+                continue
+            target_arg, from_arg, to_arg, pos_arg = args
+            if _ZERO_POS_RE.match(pos_arg.strip()):
+                continue
+            if "immediateRender" in from_arg or "immediateRender" in to_arg:
+                continue
+            from_pairs = _parse_flat_js_object(from_arg)
+            to_pairs = _parse_flat_js_object(to_arg)
+            if not from_pairs or not to_pairs:
+                continue
+            to_props = {k: v for k, v in to_pairs.items() if k not in _IGNORED_TWEEN_KEYS}
+            if from_pairs == to_props:
+                out.append(body[cursor:fm.start()])
+                out.append(f"{fm.group(1)}.set({target_arg}, {from_arg}, {pos_arg})")
+                cursor = i + 1
+                count += 1
+        out.append(body[cursor:])
+        return open_tag + "".join(out) + close_tag
+
+    next_html = _INLINE_SCRIPT_BLOCK_RE.sub(_fix_script, html)
+    return next_html, count
+
+
 def _normalize_frame_html(html: str) -> tuple[str, list[str]]:
     """Deterministic pre-selfcheck cleanup for mechanical hedge/worker typos."""
     notes: list[str] = []
@@ -614,6 +746,9 @@ def _normalize_frame_html(html: str) -> tuple[str, list[str]]:
     out, n_scale = _strip_redundant_css_scale_transforms(out)
     if n_scale:
         notes.append(f"css-scale-strip={n_scale}")
+    out, n_fromto = _rewrite_degenerate_delayed_fromto(out)
+    if n_fromto:
+        notes.append(f"degenerate-fromto-to-set={n_fromto}")
     return out, notes
 
 
@@ -824,6 +959,9 @@ def _worker_prompt(
             f"- Scope is exactly one file: {frame_file} (driver writes it from "
             f"your `<template>…</template>` output; do NOT Read "
             f"`.hyperframes/frame-packets/{frame_id}.dispatch.md`).{rich_note}\n"
+            f"- Thinking discipline: plan layout & timing in <=15 short bullets — "
+            f"NEVER draft raw CSS rules, HTML markup, or GSAP code blocks inside "
+            f"thinking; emit code once directly in `<template>…</template>`.\n"
             f"- Reply ONLY with the complete `<template>…</template>` fragment "
             f"(no markdown commentary; on unrecoverable failure reply only: "
             f"`fail {frame_id}: <reason>`).{skeleton_sec}"

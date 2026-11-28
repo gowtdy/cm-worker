@@ -405,6 +405,10 @@ _SAME_CANVAS_ONLY_RE = re.compile(
     r"(?:\s+(?:stage|canvas|background|backdrop|field|ground))?\b",
     re.I,
 )
+_STAGE_INTRO_SPLIT_RE = re.compile(
+    r"\b(?:splits?\s+into|introduc(?:es?|ing)|transforms?\s+into|opens?\s+(?:a|the)\s+(?:three|four|multi)[-\s]slot)\b",
+    re.I,
+)
 
 
 def _stage_words(text: str) -> set[str]:
@@ -430,7 +434,10 @@ def _shared_stage_pairs(summaries: list[dict[str, str]]) -> list[tuple[str, str,
         cue = _SAME_STAGE_CUE_RE.search(scene_text)
         if cue and not (
             cue.group(1).lower() == "same"
-            and _SAME_CANVAS_ONLY_RE.search(scene_text)
+            and (
+                _SAME_CANVAS_ONLY_RE.search(scene_text)
+                or (prev.get("num") == "1" and _STAGE_INTRO_SPLIT_RE.search(scene_text))
+            )
         ):
             pairs.append((prev["num"], cur["num"], f'scene says "{cue.group(1).lower()}"'))
             continue
